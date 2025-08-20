@@ -1,0 +1,299 @@
+import asyncio
+import httpx
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+import logging
+import json
+import time
+from typing import Dict, Any
+
+# Настройка логирования
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
+# Конфигурация авторизации
+VALID_TOKENS = ["test-token", "admin-token", "user-token", "demo-token"]
+
+def verify_token(authorization_header: str) -> bool:
+    """Проверка токена авторизации"""
+    print(f"🔍 [DEBUG] Gateway: verify_token called with: {authorization_header}")
+    
+    if not authorization_header:
+        print(f"🔍 [DEBUG] Gateway: No authorization header provided")
+        return False
+    
+    try:
+        # Извлекаем токен из заголовка "Bearer <token>"
+        if authorization_header.startswith("Bearer "):
+            token = authorization_header[7:]  # Убираем "Bearer "
+            print(f"🔍 [DEBUG] Gateway: Extracted token: {token[:20]}..." if len(token) > 20 else f"🔍 [DEBUG] Gateway: Extracted token: {token}")
+            
+            # Проверяем простые токены
+            if token in VALID_TOKENS:
+                print(f"🔍 [DEBUG] Gateway: Token matched VALID_TOKENS: {token}")
+                return True
+            
+            # Проверяем JWT токены (начинаются с eyJ)
+            if token.startswith("eyJ"):
+                print(f"🔍 [DEBUG] Gateway: JWT token detected and accepted: {token[:20]}...")
+                # Для JWT токенов просто проверяем формат, не валидируем подпись
+                # В продакшене здесь должна быть полная валидация JWT
+                return True
+            
+            print(f"🔍 [DEBUG] Gateway: Token not in VALID_TOKENS and not JWT: {token}")
+            return False
+        else:
+            print(f"🔍 [DEBUG] Gateway: Authorization header doesn't start with 'Bearer ': {authorization_header}")
+            return False
+    except Exception as e:
+        print(f"🔍 [DEBUG] Gateway: Token verification error: {e}")
+        logger.error(f"Token verification error: {e}")
+        return False
+
+app = FastAPI(title="AI-NK Gateway", version="1.0.0")
+
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Конфигурация сервисов
+SERVICES = {
+    "document-parser": "http://document-parser:8001",
+    "rag-service": "http://rag-service:8003",
+    "rule-engine": "http://rule-engine:8004",
+    "ollama": "http://ollama:11434"
+}
+
+print("🔍 [DEBUG] Gateway: Starting with services configuration:", SERVICES)
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Middleware для проверки авторизации"""
+    print(f"🔍 [DEBUG] Gateway: Auth middleware - {request.method} {request.url.path}")
+    
+    # Пропускаем health check и metrics без авторизации
+    if request.url.path in ["/health", "/metrics"]:
+        print(f"🔍 [DEBUG] Gateway: Skipping auth for {request.url.path}")
+        return await call_next(request)
+    
+    # Проверяем заголовок авторизации
+    authorization_header = request.headers.get("authorization")
+    print(f"🔍 [DEBUG] Gateway: Authorization header: {authorization_header}")
+    
+    if not verify_token(authorization_header):
+        print(f"🔍 [DEBUG] Gateway: Authorization failed for {request.url.path}")
+        return JSONResponse(
+            content={"detail": "Ошибка проверки токена в Gateway"},
+            status_code=401
+        )
+    
+    print(f"🔍 [DEBUG] Gateway: Authorization successful for {request.url.path}")
+    return await call_next(request)
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Middleware для логирования всех запросов"""
+    start_time = time.time()
+    
+    print(f"🔍 [DEBUG] Gateway: Incoming request - {request.method} {request.url.path}")
+    print(f"🔍 [DEBUG] Gateway: Request headers: {dict(request.headers)}")
+    
+    # Логируем тело запроса для отладки
+    if request.method in ["POST", "PUT", "PATCH"]:
+        try:
+            body = await request.body()
+            print(f"🔍 [DEBUG] Gateway: Request body length: {len(body)} bytes")
+            if len(body) < 1000:  # Логируем только небольшие тела
+                print(f"🔍 [DEBUG] Gateway: Request body preview: {body[:200]}...")
+        except Exception as e:
+            print(f"🔍 [DEBUG] Gateway: Error reading request body: {e}")
+    
+    response = await call_next(request)
+    
+    process_time = time.time() - start_time
+    print(f"🔍 [DEBUG] Gateway: Request processed in {process_time:.3f}s - Status: {response.status_code}")
+    
+    return response
+
+async def proxy_request(request: Request, service_url: str, path: str = "") -> JSONResponse:
+    """Проксирование запроса к сервису с подробным логированием"""
+    print(f"🔍 [DEBUG] Gateway: Proxying request to {service_url}{path}")
+    
+    # Определяем метод запроса
+    method = request.method
+    print(f"🔍 [DEBUG] Gateway: Request method: {method}")
+    
+    # Подготавливаем заголовки
+    headers = dict(request.headers)
+    print(f"🔍 [DEBUG] Gateway: Original headers: {headers}")
+    
+    # Удаляем заголовки, которые могут вызвать проблемы
+    headers_to_remove = ["host", "content-length"]
+    for header in headers_to_remove:
+        headers.pop(header.lower(), None)
+    
+    print(f"🔍 [DEBUG] Gateway: Cleaned headers: {headers}")
+    
+    # Подготавливаем URL
+    target_url = f"{service_url}{path}"
+    print(f"🔍 [DEBUG] Gateway: Target URL: {target_url}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            print(f"🔍 [DEBUG] Gateway: Creating httpx client with timeout 300s")
+            
+            # Обработка multipart/form-data
+            if "multipart/form-data" in headers.get("content-type", ""):
+                print(f"🔍 [DEBUG] Gateway: Processing multipart/form-data request")
+                print(f"🔍 [DEBUG] Gateway: Content-Type: {headers.get('content-type', 'Not set')}")
+                
+                # Читаем тело запроса
+                body = await request.body()
+                print(f"🔍 [DEBUG] Gateway: Body length: {len(body)} bytes")
+                
+                # Отправляем запрос с телом
+                response = await client.post(
+                    target_url,
+                    content=body,
+                    headers=headers
+                )
+                print(f"🔍 [DEBUG] Gateway: Response status: {response.status_code}")
+                print(f"🔍 [DEBUG] Gateway: Response headers: {dict(response.headers)}")
+                
+                # Логируем ответ
+                try:
+                    response_text = response.text
+                    print(f"🔍 [DEBUG] Gateway: Response body length: {len(response_text)}")
+                    if len(response_text) < 500:  # Логируем только небольшие ответы
+                        print(f"🔍 [DEBUG] Gateway: Response body: {response_text}")
+                    else:
+                        print(f"🔍 [DEBUG] Gateway: Response body preview: {response_text[:200]}...")
+                except Exception as e:
+                    print(f"🔍 [DEBUG] Gateway: Error reading response body: {e}")
+                
+                return JSONResponse(
+                    content=response.json() if response.headers.get("content-type", "").startswith("application/json") else {"detail": response.text},
+                    status_code=response.status_code
+                )
+            else:
+                # Обычная обработка для других типов запросов
+                print(f"🔍 [DEBUG] Gateway: Processing regular request")
+                
+                # Читаем тело запроса
+                body = await request.body()
+                print(f"🔍 [DEBUG] Gateway: Body length: {len(body)} bytes")
+                
+                # Отправляем запрос
+                response = await client.request(
+                    method,
+                    target_url,
+                    content=body,
+                    headers=headers
+                )
+                print(f"🔍 [DEBUG] Gateway: Response status: {response.status_code}")
+                
+                return JSONResponse(
+                    content=response.json() if response.headers.get("content-type", "").startswith("application/json") else {"detail": response.text},
+                    status_code=response.status_code
+                )
+                
+    except httpx.ConnectError as e:
+        print(f"🔍 [DEBUG] Gateway: Connection error to {service_url}: {e}")
+        return JSONResponse(
+            content={"detail": f"Service unavailable: {str(e)}"},
+            status_code=503
+        )
+    except httpx.TimeoutException as e:
+        print(f"🔍 [DEBUG] Gateway: Timeout error to {service_url}: {e}")
+        return JSONResponse(
+            content={"detail": f"Request timeout: {str(e)}"},
+            status_code=504
+        )
+    except Exception as e:
+        print(f"🔍 [DEBUG] Gateway: Unexpected error: {e}")
+        return JSONResponse(
+            content={"detail": f"Proxy error: {str(e)}"},
+            status_code=500
+        )
+
+# Проксирование запросов к document-parser
+@app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_api(request: Request, path: str):
+    """Проксирование API запросов к document-parser"""
+    print(f"🔍 [DEBUG] Gateway: API route called with path: {path}")
+    print(f"🔍 [DEBUG] Gateway: Full URL: {request.url}")
+    
+    # Определяем сервис на основе пути
+    if path.startswith("upload") or path.startswith("documents") or path.startswith("settings"):
+        service_url = SERVICES["document-parser"]
+        print(f"🔍 [DEBUG] Gateway: Routing to document-parser: {service_url}")
+    elif path.startswith("rag"):
+        service_url = SERVICES["rag-service"]
+        print(f"🔍 [DEBUG] Gateway: Routing to rag-service: {service_url}")
+    elif path.startswith("rules"):
+        service_url = SERVICES["rule-engine"]
+        print(f"🔍 [DEBUG] Gateway: Routing to rule-engine: {service_url}")
+    else:
+        print(f"🔍 [DEBUG] Gateway: Unknown path, defaulting to document-parser")
+        service_url = SERVICES["document-parser"]
+    
+    return await proxy_request(request, service_url, f"/{path}")
+
+# Проксирование запросов к Ollama
+@app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_ollama(request: Request, path: str):
+    """Проксирование запросов к Ollama"""
+    print(f"🔍 [DEBUG] Gateway: Ollama route called with path: {path}")
+    
+    service_url = SERVICES["ollama"]
+    return await proxy_request(request, service_url, f"/api/{path}")
+
+# Проксирование запросов к Ollama API
+@app.api_route("/ollama/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_ollama_api(request: Request, path: str):
+    """Проксирование запросов к Ollama API"""
+    print(f"🔍 [DEBUG] Gateway: Ollama API route called with path: {path}")
+    
+    service_url = SERVICES["ollama"]
+    return await proxy_request(request, service_url, f"/{path}")
+
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    """Проверка здоровья gateway"""
+    print("🔍 [DEBUG] Gateway: Health check requested")
+    
+    health_status = {
+        "status": "healthy",
+        "service": "gateway",
+        "timestamp": time.time()
+    }
+    
+    print(f"🔍 [DEBUG] Gateway: Health check response: {health_status}")
+    return health_status
+
+# Metrics endpoint
+@app.get("/metrics")
+async def metrics():
+    """Метрики gateway"""
+    print("🔍 [DEBUG] Gateway: Metrics requested")
+    
+    metrics_data = {
+        "service": "gateway",
+        "uptime": time.time(),
+        "requests_processed": 0  # Можно добавить счетчик запросов
+    }
+    
+    print(f"🔍 [DEBUG] Gateway: Metrics response: {metrics_data}")
+    return metrics_data
+
+if __name__ == "__main__":
+    print("🔍 [DEBUG] Gateway: Starting FastAPI application")
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8443)
