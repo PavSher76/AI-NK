@@ -1,0 +1,78 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+scrape_configs:
+  # Prometheus сам по себе
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # API Gateway
+  - job_name: 'gateway'
+    static_configs:
+      - targets: ['gateway:8443']
+    metrics_path: '/metrics'
+    scheme: 'https'
+    tls_config:
+      insecure_skip_verify: true
+
+  # Document Parser
+  - job_name: 'document-parser'
+    static_configs:
+      - targets: ['document-parser:8001']
+    metrics_path: '/metrics'
+
+  # Rule Engine
+  - job_name: 'rule-engine'
+    static_configs:
+      - targets: ['rule-engine:8002']
+    metrics_path: '/metrics'
+
+  # RAG Service
+  - job_name: 'rag-service'
+    static_configs:
+      - targets: ['rag-service:8003']
+    metrics_path: '/metrics'
+
+  # PostgreSQL
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['norms-db:5432']
+    metrics_path: '/metrics'
+
+  # Redis
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+    metrics_path: '/metrics'
+
+  # Qdrant
+  - job_name: 'qdrant'
+    static_configs:
+      - targets: ['qdrant:6333']
+    metrics_path: '/metrics'
+
+  # Node Exporter (если установлен)
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  # Docker
+  - job_name: 'docker'
+    static_configs:
+      - targets: ['docker:9323']
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # - alertmanager:9093
+
+# Загрузка правил из файлов
+# rule_files:
+#   - "rules/*.yml"
