@@ -13,10 +13,13 @@ import {
   BookOpen
 } from 'lucide-react';
 
-const DashboardPage = ({ systemStatus, models }) => {
+const DashboardPage = ({ systemStatus, models, isAuthenticated, userInfo, authMethod, onPageChange }) => {
   console.log('🔍 [DEBUG] DashboardPage.js: Component rendered with props:', {
     systemStatus,
-    modelsCount: models?.length || 0
+    modelsCount: models?.length || 0,
+    isAuthenticated,
+    authMethod,
+    userInfo: !!userInfo
   });
 
   // Отладочные логи для отслеживания изменений состояния
@@ -55,7 +58,9 @@ const DashboardPage = ({ systemStatus, models }) => {
 
   console.log('🔍 [DEBUG] DashboardPage.js: Rendering dashboard with:', {
     systemStatus,
-    modelsCount: models?.length || 0
+    modelsCount: models?.length || 0,
+    isAuthenticated,
+    authMethod
   });
 
   return (
@@ -164,15 +169,24 @@ const DashboardPage = ({ systemStatus, models }) => {
           </div>
           <div className="p-6">
             <div className="space-y-4">
-              <button className="w-full flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+              <button 
+                onClick={() => onPageChange && onPageChange('chat')}
+                className="w-full flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+              >
                 <MessageSquare className="w-4 h-4 mr-2" />
                 Открыть чат с ИИ
               </button>
-              <button className="w-full flex items-center justify-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+              <button 
+                onClick={() => onPageChange && onPageChange('normcontrol')}
+                className="w-full flex items-center justify-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+              >
                 <FileText className="w-4 h-4 mr-2" />
                 Загрузить документ для проверки
               </button>
-              <button className="w-full flex items-center justify-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+              <button 
+                onClick={() => onPageChange && onPageChange('documents')}
+                className="w-full flex items-center justify-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+              >
                 <BookOpen className="w-4 h-4 mr-2" />
                 Управление нормативными документами
               </button>

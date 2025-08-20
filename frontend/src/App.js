@@ -373,14 +373,28 @@ function App() {
 
   useEffect(() => {
     console.log('🔍 [DEBUG] App.js: Initial useEffect triggered');
+    console.log('🔍 [DEBUG] App.js: Current auth state:', { isAuthenticated, authToken: !!authToken });
+    
     const initializeApp = async () => {
       setIsLoading(true);
-      await Promise.all([checkSystemStatus(), loadModels()]);
+      console.log('🔍 [DEBUG] App.js: Starting app initialization');
+      
+      // Проверяем статус системы всегда
+      await checkSystemStatus();
+      
+      // Загружаем модели только если авторизованы
+      if (isAuthenticated && authToken) {
+        console.log('🔍 [DEBUG] App.js: User is authenticated, loading models');
+        await loadModels();
+      } else {
+        console.log('🔍 [DEBUG] App.js: User is not authenticated, skipping models load');
+      }
+      
       setIsLoading(false);
       console.log('🔍 [DEBUG] App.js: App initialization completed');
     };
     initializeApp();
-  }, []);
+  }, [isAuthenticated, authToken]);
 
   console.log('🔍 [DEBUG] App.js: Rendering with currentPage:', currentPage, 'isLoading:', isLoading);
 
@@ -403,9 +417,11 @@ function App() {
       {currentPage === 'dashboard' && (
         <DashboardPage
           systemStatus={systemStatus}
+          models={models}
           isAuthenticated={isAuthenticated}
           userInfo={userInfo}
           authMethod={authMethod}
+          onPageChange={setCurrentPage}
         />
       )}
 
