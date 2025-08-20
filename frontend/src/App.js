@@ -270,11 +270,10 @@ function App() {
     setError(null);
 
     try {
-      const response = await axios.post(`${API_BASE}/chat/completions`, {
+      const response = await axios.post(`/ollama/api/generate`, {
         model: selectedModel,
-        messages: [{ role: 'user', content: content }],
-        max_tokens: 1000,
-        temperature: 0.7
+        prompt: content,
+        stream: false
       }, {
         headers: { 
           Authorization: `Bearer ${authToken}`,
@@ -285,9 +284,13 @@ function App() {
       const assistantMessage = {
         id: Date.now() + 1,
         role: 'assistant',
-        content: response.data.choices[0].message.content,
+        content: response.data.response,
         timestamp: new Date().toISOString(),
-        usage: response.data.usage
+        usage: {
+          prompt_tokens: response.data.prompt_eval_count,
+          completion_tokens: response.data.eval_count,
+          total_tokens: response.data.prompt_eval_count + response.data.eval_count
+        }
       };
 
       setMessages(prev => [...prev, assistantMessage]);
@@ -333,11 +336,10 @@ function App() {
         // Отправляем запрос к AI с содержимым файла
         const prompt = `Файл: ${fileName}\n\nСодержимое файла:\n${fileContent}\n\nЗапрос пользователя: ${formData.get('message') || 'Обработай этот файл'}`;
         
-        const response = await axios.post(`${API_BASE}/chat/completions`, {
+        const response = await axios.post(`/ollama/api/generate`, {
           model: selectedModel,
-          messages: [{ role: 'user', content: prompt }],
-          max_tokens: 2000,
-          temperature: 0.7
+          prompt: prompt,
+          stream: false
         }, {
           headers: { 
             Authorization: `Bearer ${authToken}`,
@@ -348,9 +350,13 @@ function App() {
         const assistantMessage = {
           id: Date.now() + 1,
           role: 'assistant',
-          content: response.data.choices[0].message.content,
+          content: response.data.response,
           timestamp: new Date().toISOString(),
-          usage: response.data.usage
+          usage: {
+            prompt_tokens: response.data.prompt_eval_count,
+            completion_tokens: response.data.eval_count,
+            total_tokens: response.data.prompt_eval_count + response.data.eval_count
+          }
         };
 
         setMessages(prev => [...prev, assistantMessage]);
