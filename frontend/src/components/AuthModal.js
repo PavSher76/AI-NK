@@ -9,7 +9,7 @@ const AuthModal = ({ isOpen, onClose, onAuthSuccess }) => {
   const [error, setError] = useState('');
 
   // Keycloak configuration
-  const KEYCLOAK_URL = 'http://localhost:8081';
+  const KEYCLOAK_URL = 'https://localhost:8081';
   const REALM = 'ai-nk';
   const CLIENT_ID = 'ai-nk-frontend';
 

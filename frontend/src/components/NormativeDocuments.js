@@ -32,6 +32,7 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
 
   // Состояния для загрузки документов
   const [file, setFile] = useState(null);
+  const [selectedCategory, setSelectedCategory] = useState('gost'); // По умолчанию ГОСТ
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState(null);
@@ -138,11 +139,16 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
     console.log('🔍 [DEBUG] NormativeDocuments.js: fetchStats started');
     setIsLoadingStats(true);
     try {
-      const response = await fetch('/rag/stats');
+      const response = await fetch('/api/rag/stats', {
+        headers: {
+          'Authorization': 'Bearer test-token'
+        }
+      });
       console.log('🔍 [DEBUG] NormativeDocuments.js: fetchStats response status:', response.status);
       if (response.ok) {
         const data = await response.json();
         console.log('🔍 [DEBUG] NormativeDocuments.js: fetchStats success:', data);
+        console.log('🔍 [DEBUG] NormativeDocuments.js: Setting stats to:', data);
         setStats(data);
       } else {
         console.warn('🔍 [DEBUG] NormativeDocuments.js: fetchStats failed with status:', response.status);
@@ -331,6 +337,40 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
     }
   };
 
+  // Удаление настройки
+  const deleteSetting = async (settingKey) => {
+    console.log('🔍 [DEBUG] NormativeDocuments.js: deleteSetting started:', { settingKey });
+    
+    if (!window.confirm(`Вы уверены, что хотите удалить настройку "${settingKey}"?`)) {
+      console.log('🔍 [DEBUG] NormativeDocuments.js: deleteSetting cancelled by user');
+      return false;
+    }
+    
+    try {
+      const response = await fetch(`/api/settings/${settingKey}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': 'Bearer test-token',
+        }
+      });
+      
+      if (response.ok) {
+        // Удаляем из локального состояния
+        setSettings(prevSettings => 
+          prevSettings.filter(setting => setting.setting_key !== settingKey)
+        );
+        console.log('🔍 [DEBUG] NormativeDocuments.js: deleteSetting successful');
+        return true;
+      } else {
+        console.error('🔍 [DEBUG] NormativeDocuments.js: deleteSetting failed with status:', response.status);
+        return false;
+      }
+    } catch (err) {
+      console.error('🔍 [DEBUG] NormativeDocuments.js: deleteSetting error:', err);
+      return false;
+    }
+  };
+
   // Открытие модального окна настроек
   const openSettingsModal = async () => {
     console.log('🔍 [DEBUG] NormativeDocuments.js: openSettingsModal triggered');
@@ -376,6 +416,7 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
     try {
       const formData = new FormData();
       formData.append('file', file);
+      formData.append('category', selectedCategory); // Добавляем категорию
 
       const response = await fetch('/api/upload', {
         method: 'POST',
@@ -606,6 +647,7 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
       )}
 
       {/* Статистика */}
+      {console.log('🔍 [DEBUG] NormativeDocuments.js: Rendering stats section with:', { isLoadingStats, stats })}
       {isLoadingStats ? (
         <div className="bg-white p-8 rounded-lg border shadow-sm text-center">
           <Loader2 className="w-8 h-8 animate-spin mx-auto text-blue-600" />
@@ -885,7 +927,11 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Категория документа
                 </label>
-                <select className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                <select 
+                  value={selectedCategory}
+                  onChange={(e) => setSelectedCategory(e.target.value)}
+                  className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                >
                   {categories.map(category => (
                     <option key={category.value} value={category.value}>
                       {category.label}
@@ -1255,6 +1301,21 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
                       )}
                       
                       <div className="flex justify-end space-x-2">
+                        <button
+                          onClick={async () => {
+                            const success = await deleteSetting(setting.setting_key);
+                            if (success) {
+                              alert('Настройка удалена успешно!');
+                            } else {
+                              alert('Ошибка удаления настройки');
+                            }
+                          }}
+                          className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors flex items-center space-x-1"
+                          title="Удалить настройку"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                          <span>Удалить</span>
+                        </button>
                         <button
                           onClick={async () => {
                             const success = await updateSetting(setting.setting_key, setting.setting_value);

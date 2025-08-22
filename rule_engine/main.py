@@ -453,6 +453,173 @@ async def analyze_document_endpoint(document_id: int, auth_token: str):
     """Анализ документа"""
     return await rule_engine.analyze_document(document_id, auth_token)
 
+@app.get("/metrics")
+async def get_metrics():
+    """Получение метрик сервиса"""
+    try:
+        with rule_engine.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            # Статистика по результатам нормоконтроля
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_results,
+                    COUNT(CASE WHEN analysis_status = 'completed' THEN 1 END) as completed_analyses,
+                    COUNT(CASE WHEN analysis_status = 'pending' THEN 1 END) as pending_analyses,
+                    COUNT(CASE WHEN analysis_status = 'error' THEN 1 END) as error_analyses,
+                    COUNT(CASE WHEN analysis_type = 'full' THEN 1 END) as full_analyses,
+                    COUNT(CASE WHEN analysis_type = 'quick' THEN 1 END) as quick_analyses,
+                    COUNT(DISTINCT model_used) as unique_models,
+                    SUM(total_findings) as total_findings,
+                    SUM(critical_findings) as critical_findings,
+                    SUM(warning_findings) as warning_findings,
+                    SUM(info_findings) as info_findings,
+                    AVG(total_findings) as avg_findings_per_analysis,
+                    AVG(critical_findings) as avg_critical_per_analysis,
+                    AVG(warning_findings) as avg_warning_per_analysis,
+                    AVG(info_findings) as avg_info_per_analysis
+                FROM norm_control_results
+            """)
+            analysis_stats = cursor.fetchone()
+            
+            # Статистика по findings
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_findings,
+                    COUNT(CASE WHEN severity_level >= 4 THEN 1 END) as critical_findings,
+                    COUNT(CASE WHEN severity_level = 3 THEN 1 END) as warning_findings,
+                    COUNT(CASE WHEN severity_level <= 2 THEN 1 END) as info_findings,
+                    COUNT(DISTINCT category) as unique_categories,
+                    COUNT(DISTINCT rule_applied) as unique_rules,
+                    COUNT(DISTINCT finding_type) as unique_finding_types,
+                    AVG(severity_level) as avg_severity_level,
+                    AVG(confidence_score) as avg_confidence_score
+                FROM findings
+            """)
+            findings_stats = cursor.fetchone()
+            
+            # Статистика по категориям findings
+            cursor.execute("""
+                SELECT 
+                    category,
+                    COUNT(*) as count,
+                    AVG(severity_level) as avg_severity,
+                    COUNT(CASE WHEN severity_level >= 4 THEN 1 END) as critical_count
+                FROM findings 
+                GROUP BY category 
+                ORDER BY count DESC
+            """)
+            category_stats = cursor.fetchall()
+            
+            # Статистика по правилам
+            cursor.execute("""
+                SELECT 
+                    rule_applied,
+                    COUNT(*) as count,
+                    AVG(severity_level) as avg_severity,
+                    COUNT(CASE WHEN severity_level >= 4 THEN 1 END) as critical_count
+                FROM findings 
+                WHERE rule_applied IS NOT NULL
+                GROUP BY rule_applied 
+                ORDER BY count DESC
+            """)
+            rule_stats = cursor.fetchall()
+            
+            # Статистика по времени (последние 24 часа)
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as analyses_last_24h,
+                    COUNT(CASE WHEN analysis_status = 'completed' THEN 1 END) as completed_last_24h,
+                    AVG(total_findings) as avg_findings_last_24h
+                FROM norm_control_results 
+                WHERE created_at >= NOW() - INTERVAL '24 hours'
+            """)
+            time_stats = cursor.fetchone()
+            
+            # Статистика по моделям
+            cursor.execute("""
+                SELECT 
+                    model_used,
+                    COUNT(*) as usage_count,
+                    AVG(total_findings) as avg_findings,
+                    AVG(critical_findings) as avg_critical
+                FROM norm_control_results 
+                WHERE model_used IS NOT NULL
+                GROUP BY model_used 
+                ORDER BY usage_count DESC
+            """)
+            model_stats = cursor.fetchall()
+            
+        return {
+            "status": "success",
+            "timestamp": datetime.now().isoformat(),
+            "metrics": {
+                "analysis": {
+                    "total_results": analysis_stats["total_results"] or 0,
+                    "completed_analyses": analysis_stats["completed_analyses"] or 0,
+                    "pending_analyses": analysis_stats["pending_analyses"] or 0,
+                    "error_analyses": analysis_stats["error_analyses"] or 0,
+                    "by_type": {
+                        "full_analyses": analysis_stats["full_analyses"] or 0,
+                        "quick_analyses": analysis_stats["quick_analyses"] or 0
+                    },
+                    "unique_models": analysis_stats["unique_models"] or 0,
+                    "total_findings": analysis_stats["total_findings"] or 0,
+                    "critical_findings": analysis_stats["critical_findings"] or 0,
+                    "warning_findings": analysis_stats["warning_findings"] or 0,
+                    "info_findings": analysis_stats["info_findings"] or 0,
+                    "averages": {
+                        "findings_per_analysis": float(analysis_stats["avg_findings_per_analysis"] or 0),
+                        "critical_per_analysis": float(analysis_stats["avg_critical_per_analysis"] or 0),
+                        "warning_per_analysis": float(analysis_stats["avg_warning_per_analysis"] or 0),
+                        "info_per_analysis": float(analysis_stats["avg_info_per_analysis"] or 0)
+                    }
+                },
+                "findings": {
+                    "total": findings_stats["total_findings"] or 0,
+                    "critical": findings_stats["critical_findings"] or 0,
+                    "warning": findings_stats["warning_findings"] or 0,
+                    "info": findings_stats["info_findings"] or 0,
+                    "unique_categories": findings_stats["unique_categories"] or 0,
+                    "unique_rules": findings_stats["unique_rules"] or 0,
+                    "unique_finding_types": findings_stats["unique_finding_types"] or 0,
+                    "avg_severity_level": float(findings_stats["avg_severity_level"] or 0),
+                    "avg_confidence_score": float(findings_stats["avg_confidence_score"] or 0)
+                },
+                "categories": [
+                    {
+                        "category": cat["category"],
+                        "count": cat["count"],
+                        "avg_severity": float(cat["avg_severity"] or 0),
+                        "critical_count": cat["critical_count"]
+                    } for cat in category_stats
+                ],
+                "rules": [
+                    {
+                        "rule": rule["rule_applied"],
+                        "count": rule["count"],
+                        "avg_severity": float(rule["avg_severity"] or 0),
+                        "critical_count": rule["critical_count"]
+                    } for rule in rule_stats
+                ],
+                "models": [
+                    {
+                        "model": model["model_used"],
+                        "usage_count": model["usage_count"],
+                        "avg_findings": float(model["avg_findings"] or 0),
+                        "avg_critical": float(model["avg_critical"] or 0)
+                    } for model in model_stats
+                ],
+                "performance": {
+                    "analyses_last_24h": time_stats["analyses_last_24h"] or 0,
+                    "completed_last_24h": time_stats["completed_last_24h"] or 0,
+                    "avg_findings_last_24h": float(time_stats["avg_findings_last_24h"] or 0)
+                }
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Get metrics error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/health")
 async def health_check():
     """Проверка здоровья сервиса"""

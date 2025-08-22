@@ -400,7 +400,7 @@ services:
       - QDRANT_URL=http://qdrant:6333
       - OLLAMA_URL=http://ollama:11434
       - REDIS_URL=redis://:${REDIS_PASSWORD:-redispass}@redis:6379/0
-    command: ["python", "main_simple.py"]
+    command: ["python", "main.py"]
     depends_on:
       - norms-db
       - qdrant
