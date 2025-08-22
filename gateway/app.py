@@ -233,12 +233,18 @@ async def proxy_api(request: Request, path: str):
     if path.startswith("upload") or path.startswith("documents") or path.startswith("settings"):
         service_url = SERVICES["document-parser"]
         print(f"🔍 [DEBUG] Gateway: Routing to document-parser: {service_url}")
-    elif path.startswith("rag"):
+    elif path.startswith("rag/"):
         service_url = SERVICES["rag-service"]
-        print(f"🔍 [DEBUG] Gateway: Routing to rag-service: {service_url}")
+        # Убираем префикс "rag/" из пути
+        path = path[4:]  # Убираем "rag/"
+        print(f"🔍 [DEBUG] Gateway: Routing to rag-service: {service_url} with path: {path}")
     elif path.startswith("rules"):
         service_url = SERVICES["rule-engine"]
         print(f"🔍 [DEBUG] Gateway: Routing to rule-engine: {service_url}")
+    elif path.startswith("chat") or path.startswith("generate"):
+        service_url = SERVICES["ollama"]
+        print(f"🔍 [DEBUG] Gateway: Routing to ollama: {service_url} with path: {path}")
+        return await proxy_request(request, service_url, f"/api/{path}")
     else:
         print(f"🔍 [DEBUG] Gateway: Unknown path, defaulting to document-parser")
         service_url = SERVICES["document-parser"]

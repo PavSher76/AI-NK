@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # Redis для кэширования
   redis:
@@ -35,7 +33,7 @@ services:
   # Keycloak для аутентификации
   keycloak:
     image: quay.io/keycloak/keycloak:26.3.2
-    command: start --optimized --https-keystore=/opt/keycloak/ssl/keycloak.keystore --https-keystore-password=keycloak --https-port=8443 --hostname-strict=false --import-realm --import-realm-strategy=OVERWRITE_EXISTING --http-enabled=true --import-realm-overwrite=true --ssl-required=none
+    command: start --https-key-store-file=/opt/keycloak/ssl/keycloak.keystore --https-key-store-password=keycloak --https-port=8443 --hostname-strict=false --import-realm --import-realm-strategy=OVERWRITE_EXISTING --http-enabled=true
     environment:
       KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
@@ -77,9 +75,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 8G
-        reservations:
           memory: 6G
+        reservations:
+          memory: 4G
     # healthcheck:
     #   test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
     #   interval: 30s
@@ -99,7 +97,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: 1.5G
         reservations:
           memory: 1G
     # healthcheck:
@@ -187,7 +185,7 @@ services:
       - "${GRAFANA_PORT:-3000}:3000"
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
-      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+      - GF_PLUGINS_PREINSTALL=grafana-clock-panel,grafana-simple-json-datasource
     volumes:
       - grafana_data:/var/lib/grafana
       - ./configs/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
@@ -273,7 +271,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: 1.5G
         reservations:
           memory: 1G
     healthcheck:
@@ -309,7 +307,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: 1.5G
         reservations:
           memory: 1G
     healthcheck:
@@ -330,7 +328,10 @@ services:
       - QDRANT_URL=http://qdrant:6333
       - OLLAMA_URL=http://ollama:11434
       - REDIS_URL=redis://:${REDIS_PASSWORD:-redispass}@redis:6379/0
-    command: ["python", "main_simple.py"]
+      - TRANSFORMERS_CACHE=/app/models
+      - HF_HOME=/app/models
+    volumes:
+      - rag_models:/app/models
     depends_on:
       - norms-db
       - qdrant
@@ -340,9 +341,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 6G
         reservations:
-          memory: 512M
+          memory: 4G
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
       interval: 30s
@@ -363,6 +364,8 @@ volumes:
   norms_db_data:
     driver: local
   qdrant_data:
+    driver: local
+  rag_models:
     driver: local
 
 networks:

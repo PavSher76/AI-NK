@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     libpq-dev \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Копирование зависимостей
@@ -19,5 +20,10 @@ COPY . .
 # Создание директорий
 RUN mkdir -p /app/models /app/data
 
-# Запуск сервиса
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8003"]
+# Установка переменных окружения для оптимизации
+ENV PYTHONUNBUFFERED=1
+ENV TRANSFORMERS_CACHE=/app/models
+ENV HF_HOME=/app/models
+
+# Запуск сервиса с оптимизированными настройками
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8003", "--workers", "1"]

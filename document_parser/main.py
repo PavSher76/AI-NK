@@ -4,7 +4,7 @@ import json
 import logging
 import io
 from typing import List, Dict, Any, Optional
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Form
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -922,7 +922,7 @@ class DocumentParser:
             })
             
             # Если не нашли структурированных элементов, сохраняем базовую информацию
-            if len(elements) <= 1:  # Только статистика
+            if len(elements.document_pages_results) <= 1:  # Только статистика
                 elements.append({
                     "element_type": "text",
                     "element_content": f"IFC файл содержит {total_entities} сущностей различных типов",
@@ -1053,16 +1053,16 @@ class DocumentParser:
             logger.error(f"Database save error: {e}")
             raise
     
-    def create_initial_document_record(self, filename: str, file_type: str, file_size: int, document_hash: str, file_path: str) -> int:
+    def create_initial_document_record(self, filename: str, file_type: str, file_size: int, document_hash: str, file_path: str, category: str = "other") -> int:
         """Создание начальной записи документа в базе данных"""
         try:
             with self.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute("""
                     INSERT INTO uploaded_documents 
-                    (filename, original_filename, file_type, file_size, document_hash, processing_status, file_path)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    (filename, original_filename, file_type, file_size, document_hash, processing_status, file_path, category)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
-                """, (filename, filename, file_type, file_size, document_hash, "uploaded", file_path))
+                """, (filename, filename, file_type, file_size, document_hash, "uploaded", file_path, category))
                 
                 document_id = cursor.fetchone()["id"]
                 self.db_conn.commit()
@@ -1164,14 +1164,22 @@ class DocumentParser:
                     "confidence_score": page_result.page_text_confidence
                 })
             
-            # Отправляем данные в RAG-сервис
+            # Объединяем текст всех страниц
+            combined_text = ""
+            for page_result in inspection_result.document_pages_results:
+                if page_result.page_text:
+                    combined_text += page_result.page_text + "\n\n"
+                        # Отправляем данные в RAG-сервис
             async with httpx.AsyncClient(timeout=300.0) as client:
                 response = await client.post(
                     f"{RAG_SERVICE_URL}/index",
-                    json={
+                    data={
                         "document_id": document_id,
                         "document_title": document_title,
-                        "elements": elements
+                        "content": combined_text,
+                        "chapter": "",
+                        "section": "",
+                        "page_number": 1
                     }
                 )
                 
@@ -1346,7 +1354,7 @@ class DocumentParser:
                     return {"error": "Document not found or no elements"}
                 
                 stats = {
-                    "total_pages": len(elements),
+                    "total_pages": len(elements.document_pages_results),
                     "total_a4_sheets": 0.0,
                     "formats": {},
                     "orientations": {"portrait": 0, "landscape": 0},
@@ -1475,7 +1483,7 @@ class DocumentParser:
                 # Удаляем индексы из RAG сервиса
                 try:
                     async with httpx.AsyncClient() as client:
-                        response = await client.delete(f"{RAG_SERVICE_URL}/indexes/document/{document_id}")
+                        response = await client.delete(f"{RAG_SERVICE_URL}/index-documentes/document/{document_id}")
                         if response.status_code == 200:
                             logger.info(f"Successfully deleted indexes for document {document_id}")
                         else:
@@ -1552,8 +1560,8 @@ class DocumentParser:
             # Отправляем в RAG-сервис
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    f"{RAG_SERVICE_URL}/index-document",
-                    json={
+                    f"{RAG_SERVICE_URL}/index",
+                    data={
                         "document_id": document_id,
                         "document_title": document_title,
                         "content": content,
@@ -1638,6 +1646,20 @@ class DocumentParser:
                 return True
         except Exception as e:
             logger.error(f"Create system setting error: {e}")
+            return False
+
+    def delete_system_setting(self, setting_key: str) -> bool:
+        """Удаление настройки системы"""
+        try:
+            with self.db_conn.cursor() as cursor:
+                cursor.execute("""
+                    DELETE FROM system_settings
+                    WHERE setting_key = %s AND is_public = true
+                """, (setting_key,))
+                self.db_conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Delete system setting error: {e}")
             return False
 
     def get_normcontrol_prompt_template(self) -> str:
@@ -2049,7 +2071,8 @@ parser = DocumentParser()
 @app.post("/upload")
 async def upload_document(
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    category: str = Form("other")
 ):
     """Загрузка и парсинг документа"""
     print(f"🔍 [DEBUG] DocumentParser: Upload started for file: {file.filename}")
@@ -2097,7 +2120,8 @@ async def upload_document(
             file_type,
             file_size,
             document_hash,
-            file_path
+            file_path,
+            category
         )
         print(f"🔍 [DEBUG] DocumentParser: Created document record with ID: {document_id}")
         
@@ -2159,7 +2183,7 @@ async def process_document_async(document_id: int, file_path: str, file_type: st
         else:
             raise ValueError(f"Unsupported file type: {file_type}")
         
-        print(f"🔍 [DEBUG] DocumentParser: Parsing completed for document {document_id}, elements count: {len(elements)}")
+        print(f"🔍 [DEBUG] DocumentParser: Parsing completed for document {document_id}, elements count: {len(elements.document_pages_results)}")
         
         # Сохранение элементов в базу данных
         print(f"🔍 [DEBUG] DocumentParser: Saving elements to database for document {document_id}...")
@@ -2171,7 +2195,7 @@ async def process_document_async(document_id: int, file_path: str, file_type: st
         
         # Обновляем запись в базе данных
         print(f"🔍 [DEBUG] DocumentParser: Updating document record for {document_id}...")
-        parser.update_document_completion(document_id, len(elements), total_tokens)
+        parser.update_document_completion(document_id, len(elements.document_pages_results), total_tokens)
         
         # Асинхронная индексация в RAG-сервис
         print(f"🔍 [DEBUG] DocumentParser: Starting RAG indexing for document {document_id}...")
@@ -2179,7 +2203,7 @@ async def process_document_async(document_id: int, file_path: str, file_type: st
             parser.index_to_rag_service_async(
                 document_id=document_id,
                 document_title=filename,
-                elements=elements
+                inspection_result=elements
             )
         )
         
@@ -2204,7 +2228,7 @@ async def list_documents():
     try:
         with parser.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute("""
-                SELECT id, original_filename, file_type, file_size, upload_date, processing_status, token_count
+                SELECT id, original_filename, file_type, file_size, upload_date, processing_status, token_count, category
                 FROM uploaded_documents
                 ORDER BY upload_date DESC
             """)
@@ -2354,7 +2378,7 @@ async def upload_chat_file(
             "file_type": file_type,
             "file_size": file_size,
             "content": text_content,
-            "elements_count": len(elements)
+            "elements_count": len(elements.document_pages_results)
         }
         
     except HTTPException:
@@ -2594,7 +2618,7 @@ async def reindex_documents():
                 with parser.db_conn.cursor() as update_cursor:
                     update_cursor.execute("""
                         UPDATE uploaded_documents
-                        SET token_count = %s, updated_at = CURRENT_TIMESTAMP
+                        SET token_count = %s
                         WHERE id = %s
                     """, (total_doc_tokens, doc['id']))
                 
@@ -2670,7 +2694,7 @@ async def get_document_tokens(document_id: int):
             # Подсчитываем токены по типам элементов
             token_stats = {
                 "total_tokens": document['token_count'] or 0,
-                "elements_count": len(elements),
+                "elements_count": len(elements.document_pages_results),
                 "by_type": {},
                 "by_page": {}
             }
@@ -2832,6 +2856,21 @@ async def create_setting(request: SettingCreateRequest):
         logger.error(f"Create setting error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.delete("/settings/{setting_key}")
+async def delete_setting(setting_key: str):
+    """Удаление настройки"""
+    try:
+        success = parser.delete_system_setting(setting_key)
+        if success:
+            return {"status": "success", "message": f"Setting {setting_key} deleted successfully"}
+        else:
+            raise HTTPException(status_code=404, detail="Setting not found or cannot be deleted")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Delete setting error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/checkable-documents/{document_id}/report")
 async def get_checkable_document_report(document_id: int):
     """Получение отчета о проверке документа"""
@@ -2925,6 +2964,140 @@ async def get_document_format_statistics(document_id: int):
         return {"status": "success", "statistics": stats}
     except Exception as e:
         logger.error(f"Get document format statistics error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/metrics")
+async def get_metrics():
+    """Получение метрик сервиса"""
+    try:
+        with parser.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            # Статистика по загруженным документам
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_documents,
+                    COUNT(CASE WHEN processing_status = 'completed' THEN 1 END) as completed_documents,
+                    COUNT(CASE WHEN processing_status = 'pending' THEN 1 END) as pending_documents,
+                    COUNT(CASE WHEN processing_status = 'error' THEN 1 END) as error_documents,
+                    COUNT(CASE WHEN file_type = 'pdf' THEN 1 END) as pdf_documents,
+                    COUNT(CASE WHEN file_type = 'docx' THEN 1 END) as docx_documents,
+                    COUNT(CASE WHEN file_type = 'dwg' THEN 1 END) as dwg_documents,
+                    COUNT(CASE WHEN file_type = 'txt' THEN 1 END) as txt_documents,
+                    SUM(file_size) as total_size_bytes,
+                    AVG(file_size) as avg_file_size_bytes,
+                    SUM(token_count) as total_tokens
+                FROM uploaded_documents
+            """)
+            doc_stats = cursor.fetchone()
+            
+            # Статистика по проверяемым документам
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_checkable_documents,
+                    COUNT(CASE WHEN review_status = 'pending' THEN 1 END) as pending_reviews,
+                    COUNT(CASE WHEN review_status = 'completed' THEN 1 END) as completed_reviews,
+                    COUNT(CASE WHEN review_status = 'in_progress' THEN 1 END) as in_progress_reviews,
+                    COUNT(CASE WHEN review_status = 'overdue' THEN 1 END) as overdue_reviews
+                FROM checkable_documents
+            """)
+            checkable_stats = cursor.fetchone()
+            
+            # Статистика по извлеченным элементам
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_elements,
+                    COUNT(CASE WHEN element_type = 'text' THEN 1 END) as text_elements,
+                    COUNT(CASE WHEN element_type = 'table' THEN 1 END) as table_elements,
+                    COUNT(CASE WHEN element_type = 'figure' THEN 1 END) as figure_elements,
+                    COUNT(CASE WHEN element_type = 'stamp' THEN 1 END) as stamp_elements
+                FROM extracted_elements
+            """)
+            elements_stats = cursor.fetchone()
+            
+            # Статистика по результатам нормоконтроля
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_norm_control_results,
+                    COUNT(CASE WHEN analysis_status = 'completed' THEN 1 END) as completed_checks,
+                    COUNT(CASE WHEN analysis_status = 'pending' THEN 1 END) as pending_checks,
+                    COUNT(CASE WHEN analysis_status = 'error' THEN 1 END) as error_checks,
+                    SUM(total_findings) as total_findings,
+                    SUM(critical_findings) as critical_findings,
+                    SUM(warning_findings) as warning_findings,
+                    SUM(info_findings) as info_findings
+                FROM norm_control_results
+            """)
+            norm_control_stats = cursor.fetchone()
+            
+            # Статистика по отчетам
+            cursor.execute("""
+                SELECT COUNT(*) as total_review_reports
+                FROM review_reports
+            """)
+            reports_stats = cursor.fetchone()
+            
+            # Статистика по времени обработки (последние 24 часа)
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as documents_last_24h
+                FROM uploaded_documents 
+                WHERE upload_date >= NOW() - INTERVAL '24 hours'
+            """)
+            time_stats = cursor.fetchone()
+            
+        return {
+            "status": "success",
+            "timestamp": datetime.now().isoformat(),
+            "metrics": {
+                "documents": {
+                    "total": doc_stats["total_documents"] or 0,
+                    "completed": doc_stats["completed_documents"] or 0,
+                    "pending": doc_stats["pending_documents"] or 0,
+                    "error": doc_stats["error_documents"] or 0,
+                    "by_type": {
+                        "pdf": doc_stats["pdf_documents"] or 0,
+                        "docx": doc_stats["docx_documents"] or 0,
+                        "dwg": doc_stats["dwg_documents"] or 0,
+                        "txt": doc_stats["txt_documents"] or 0
+                    },
+                    "total_size_bytes": doc_stats["total_size_bytes"] or 0,
+                    "avg_file_size_bytes": float(doc_stats["avg_file_size_bytes"] or 0),
+                    "total_tokens": doc_stats["total_tokens"] or 0
+                },
+                "checkable_documents": {
+                    "total": checkable_stats["total_checkable_documents"] or 0,
+                    "pending_reviews": checkable_stats["pending_reviews"] or 0,
+                    "completed_reviews": checkable_stats["completed_reviews"] or 0,
+                    "in_progress_reviews": checkable_stats["in_progress_reviews"] or 0,
+                    "overdue_reviews": checkable_stats["overdue_reviews"] or 0
+                },
+                "elements": {
+                    "total": elements_stats["total_elements"] or 0,
+                    "text": elements_stats["text_elements"] or 0,
+                    "table": elements_stats["table_elements"] or 0,
+                    "figure": elements_stats["figure_elements"] or 0,
+                    "stamp": elements_stats["stamp_elements"] or 0
+                },
+                "norm_control": {
+                    "total_results": norm_control_stats["total_norm_control_results"] or 0,
+                    "completed_checks": norm_control_stats["completed_checks"] or 0,
+                    "pending_checks": norm_control_stats["pending_checks"] or 0,
+                    "error_checks": norm_control_stats["error_checks"] or 0,
+                    "total_findings": norm_control_stats["total_findings"] or 0,
+                    "critical_findings": norm_control_stats["critical_findings"] or 0,
+                    "warning_findings": norm_control_stats["warning_findings"] or 0,
+                    "info_findings": norm_control_stats["info_findings"] or 0
+                },
+                "reports": {
+                    "total": reports_stats["total_review_reports"] or 0
+                },
+                "performance": {
+                    "documents_last_24h": time_stats["documents_last_24h"] or 0
+                }
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Get metrics error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")

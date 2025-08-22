@@ -16,19 +16,17 @@ app = FastAPI(title="Ollama Adapter for Llama3", version="2.0.0")
 OLLAMA_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
 DEFAULT_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 
-# Оптимизированные параметры для MacBook Pro
+# Оптимизированные параметры для MacBook Pro с ограниченной памятью
 DEFAULT_OPTIONS = {
     "temperature": 0.7,
     "top_p": 0.9,
     "top_k": 40,
     "repeat_penalty": 1.1,
-    "num_ctx": 4096,
-    "num_predict": 512,
-    "num_thread": int(os.getenv("OLLAMA_CPU_THREADS", "8")),
-    "num_gpu": int(os.getenv("OLLAMA_GPU_LAYERS", "35")),
-    "batch_size": int(os.getenv("OLLAMA_BATCH_SIZE", "512")),
-    "rope_freq_base": 10000,
-    "rope_freq_scale": 0.5,
+    "num_ctx": 2048,  # Уменьшено с 4096
+    "num_predict": 256,  # Уменьшено с 512
+    "num_thread": int(os.getenv("OLLAMA_CPU_THREADS", "4")),  # Уменьшено с 8
+    "num_gpu": int(os.getenv("OLLAMA_GPU_LAYERS", "0")),  # Отключен GPU
+    "batch_size": int(os.getenv("OLLAMA_BATCH_SIZE", "1")),  # Уменьшено с 512
 }
 
 @app.get("/v1/models")
