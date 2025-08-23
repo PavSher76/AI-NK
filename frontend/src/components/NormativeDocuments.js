@@ -35,6 +35,7 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
   const [selectedCategory, setSelectedCategory] = useState('gost'); // По умолчанию ГОСТ
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadStage, setUploadStage] = useState('upload'); // 'upload' | 'processing'
   const [uploadError, setUploadError] = useState(null);
   const [uploadSuccess, setUploadSuccess] = useState(false);
   const [error, setError] = useState(null);
@@ -414,7 +415,7 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
     }
   };
 
-  // Загрузка документа
+  // Загрузка документа с отображением прогресса
   const uploadDocument = async () => {
     console.log('🔍 [DEBUG] NormativeDocuments.js: uploadDocument started');
     if (!file) {
@@ -424,41 +425,147 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
 
     setIsUploading(true);
     setUploadProgress(0);
+    setUploadStage('upload');
     setUploadError(null);
     setUploadSuccess(false);
 
     try {
       const formData = new FormData();
       formData.append('file', file);
-      formData.append('category', selectedCategory); // Добавляем категорию
+      formData.append('category', selectedCategory);
 
-      const response = await fetch('/api/upload', {
-        method: 'POST',
-        headers: {
-          'Authorization': 'Bearer test-token'
-        },
-        body: formData
+      // Создаем XMLHttpRequest для отслеживания прогресса
+      const xhr = new XMLHttpRequest();
+      
+      // Отслеживаем прогресс загрузки
+      xhr.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable) {
+          const progress = Math.round((event.loaded / event.total) * 100);
+          setUploadProgress(progress);
+          console.log(`🔍 [DEBUG] NormativeDocuments.js: Upload progress: ${progress}%`);
+        }
       });
 
-      console.log('🔍 [DEBUG] NormativeDocuments.js: uploadDocument response status:', response.status);
-
-      if (response.ok) {
-        const result = await response.json();
-        setUploadSuccess(true);
-        setFile(null);
-        // Очищаем input file
-        const fileInput = document.getElementById('file-input');
-        if (fileInput) fileInput.value = '';
+      // Обрабатываем завершение загрузки
+      xhr.addEventListener('load', async () => {
+        if (xhr.status === 200) {
+          try {
+            const result = JSON.parse(xhr.responseText);
+            console.log('🔍 [DEBUG] NormativeDocuments.js: Upload completed successfully');
+            
+            setUploadProgress(100);
+            
+            // Если загрузка завершена успешно, запускаем обработку
+            if (result.upload_complete && result.document_id) {
+              console.log('🔍 [DEBUG] NormativeDocuments.js: Starting document processing...');
+              
+              // Переключаемся на этап обработки
+              setUploadStage('processing');
+              setUploadProgress(0);
+              
+              try {
+                const processResponse = await fetch(`/api/documents/${result.document_id}/process`, {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': 'Bearer test-token'
+                  }
+                });
+                
+                if (processResponse.ok) {
+                  console.log('🔍 [DEBUG] NormativeDocuments.js: Processing started successfully');
+                  
+                  // Имитируем прогресс обработки
+                  let processingProgress = 0;
+                  const processingInterval = setInterval(() => {
+                    processingProgress += Math.random() * 10;
+                    if (processingProgress >= 90) {
+                      processingProgress = 90;
+                      clearInterval(processingInterval);
+                    }
+                    setUploadProgress(processingProgress);
+                  }, 500);
+                  
+                  // Ждем завершения обработки
+                  setTimeout(async () => {
+                    setUploadProgress(100);
+                    setUploadSuccess(true);
+                    setFile(null);
+                    
+                    // Очищаем input file
+                    const fileInput = document.getElementById('file-input');
+                    if (fileInput) fileInput.value = '';
+                    
+                    // Обновляем список документов
+                    await fetchDocuments();
+                    await fetchStats();
+                    
+                    clearInterval(processingInterval);
+                  }, 3000);
+                  
+                } else {
+                  console.error('🔍 [DEBUG] NormativeDocuments.js: Failed to start processing');
+                  setUploadError('Ошибка запуска обработки документа');
+                  setIsUploading(false);
+                  setUploadProgress(0);
+                }
+              } catch (processError) {
+                console.error('🔍 [DEBUG] NormativeDocuments.js: Processing error:', processError);
+                setUploadError('Ошибка запуска обработки документа');
+                setIsUploading(false);
+                setUploadProgress(0);
+              }
+            } else {
+              setUploadSuccess(true);
+              setFile(null);
+              
+              // Очищаем input file
+              const fileInput = document.getElementById('file-input');
+              if (fileInput) fileInput.value = '';
+              
+              // Обновляем список документов
+              await fetchDocuments();
+              await fetchStats();
+              
+              setIsUploading(false);
+              setUploadProgress(0);
+            }
+          } catch (parseError) {
+            console.error('🔍 [DEBUG] NormativeDocuments.js: Error parsing response:', parseError);
+            setUploadError('Ошибка обработки ответа сервера');
+          }
+        } else {
+          console.error('🔍 [DEBUG] NormativeDocuments.js: Upload failed with status:', xhr.status);
+          setUploadError(`Ошибка загрузки: ${xhr.status} - ${xhr.statusText}`);
+        }
         
-        // Обновляем список документов
-        await fetchDocuments();
-        await fetchStats();
-      } else {
-        throw new Error(`Ошибка загрузки: ${response.status}`);
-      }
+        setIsUploading(false);
+        setUploadProgress(0);
+      });
+
+      // Обрабатываем ошибки
+      xhr.addEventListener('error', () => {
+        console.error('🔍 [DEBUG] NormativeDocuments.js: Upload error');
+        setUploadError('Ошибка сети при загрузке файла');
+        setIsUploading(false);
+        setUploadProgress(0);
+      });
+
+      // Обрабатываем отмену
+      xhr.addEventListener('abort', () => {
+        console.log('🔍 [DEBUG] NormativeDocuments.js: Upload aborted');
+        setUploadError('Загрузка отменена');
+        setIsUploading(false);
+        setUploadProgress(0);
+      });
+
+      // Открываем соединение и отправляем данные
+      xhr.open('POST', '/api/upload');
+      xhr.setRequestHeader('Authorization', 'Bearer test-token');
+      xhr.send(formData);
+
     } catch (err) {
+      console.error('🔍 [DEBUG] NormativeDocuments.js: Upload error:', err);
       setUploadError(`Ошибка загрузки: ${err.message}`);
-    } finally {
       setIsUploading(false);
       setUploadProgress(0);
     }
@@ -974,18 +1081,36 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
                 </div>
               )}
               
-              {/* Прогресс */}
+              {/* Прогресс загрузки */}
               {isUploading && (
-                <div className="space-y-2">
+                <div className="space-y-3">
                   <div className="flex justify-between text-sm text-gray-600">
-                    <span>Загрузка...</span>
-                    <span>{uploadProgress}%</span>
+                    <span className="flex items-center space-x-2">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>
+                        {uploadStage === 'upload' ? 'Загрузка файла...' : 'Обработка документа...'}
+                      </span>
+                    </span>
+                    <span className="font-medium">{uploadProgress}%</span>
                   </div>
-                  <div className="w-full bg-gray-200 rounded-full h-2">
+                  
+                  {/* Прогресс-бар */}
+                  <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
                     <div 
-                      className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                      className={`h-3 rounded-full transition-all duration-300 ${
+                        uploadStage === 'upload' ? 'bg-blue-600' : 'bg-green-600'
+                      }`}
                       style={{ width: `${uploadProgress}%` }}
                     ></div>
+                  </div>
+                  
+                  {/* Дополнительная информация */}
+                  <div className="text-xs text-gray-500">
+                    {uploadStage === 'upload' ? (
+                      <span>Отправка файла на сервер...</span>
+                    ) : (
+                      <span>Парсинг документа и индексация...</span>
+                    )}
                   </div>
                 </div>
               )}
