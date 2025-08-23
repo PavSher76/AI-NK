@@ -5,3 +5,6 @@ python-jose[cryptography]
 redis
 prometheus-client
 python-multipart
+PyJWT
+cryptography
+requests
