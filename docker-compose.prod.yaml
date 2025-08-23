@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  ai-nk:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-nk-system
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8001:8001"
+      - "8002:8002"
+      - "8003:8003"
+      - "8004:8004"
+    volumes:
+      - ai-nk-data:/app/data
+      - ai-nk-logs:/app/logs
+      - ai-nk-uploads:/app/uploads
+    environment:
+      - POSTGRES_HOST=localhost
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=norms_db
+      - POSTGRES_USER=norms_user
+      - POSTGRES_PASSWORD=norms_password
+      - REDIS_HOST=localhost
+      - REDIS_PORT=6379
+      - QDRANT_HOST=localhost
+      - QDRANT_PORT=6333
+      - MAX_NORMATIVE_DOCUMENT_SIZE=104857600
+      - MAX_CHECKABLE_DOCUMENT_SIZE=104857600
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  ai-nk-data:
+    driver: local
+  ai-nk-logs:
+    driver: local
+  ai-nk-uploads:
+    driver: local
