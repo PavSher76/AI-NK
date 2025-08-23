@@ -2605,25 +2605,17 @@ async def upload_document(
         )
         print(f"🔍 [DEBUG] DocumentParser: Created document record with ID: {document_id}")
         
-        # Асинхронная обработка документа
-        print(f"🔍 [DEBUG] DocumentParser: Starting async document processing...")
-        print(f"🔍 [DEBUG] DocumentParser: Adding background task for document {document_id}")
-        background_tasks.add_task(
-            process_document_async,
-            document_id=document_id,
-            file_path=file_path,
-            file_type=file_type,
-            filename=file.filename
-        )
-        print(f"🔍 [DEBUG] DocumentParser: Background task added successfully")
+        # Создаем запись о загрузке без начала обработки
+        print(f"🔍 [DEBUG] DocumentParser: Document uploaded successfully, processing will start separately")
         
         result = {
             "document_id": document_id,
             "filename": file.filename,
             "file_type": file_type,
             "file_size": file_size,
-            "status": "processing",
-            "message": "Document uploaded successfully. Processing started in background."
+            "status": "uploaded",
+            "message": "Document uploaded successfully. Ready for processing.",
+            "upload_complete": True
         }
         print(f"🔍 [DEBUG] DocumentParser: Upload initiated successfully: {result}")
         return result
@@ -2636,6 +2628,54 @@ async def upload_document(
         import traceback
         print(f"🔍 [DEBUG] DocumentParser: Traceback: {traceback.format_exc()}")
         logger.error(f"Upload error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/documents/{document_id}/process")
+async def start_document_processing(document_id: int):
+    """Запуск обработки загруженного документа"""
+    try:
+        print(f"🔍 [DEBUG] DocumentParser: Starting processing for document {document_id}")
+        
+        # Получаем информацию о документе
+        with parser.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute("""
+                SELECT id, original_filename, file_type, file_path, processing_status
+                FROM uploaded_documents
+                WHERE id = %s
+            """, (document_id,))
+            document = cursor.fetchone()
+        
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        if document['processing_status'] != 'uploaded':
+            raise HTTPException(status_code=400, detail="Document is not ready for processing")
+        
+        # Запускаем асинхронную обработку
+        print(f"🔍 [DEBUG] DocumentParser: Adding background task for document {document_id}")
+        background_tasks = BackgroundTasks()
+        background_tasks.add_task(
+            process_document_async,
+            document_id=document_id,
+            file_path=document['file_path'],
+            file_type=document['file_type'],
+            filename=document['original_filename']
+        )
+        
+        # Обновляем статус на "processing"
+        parser.update_document_status(document_id, "processing")
+        
+        return {
+            "document_id": document_id,
+            "status": "processing",
+            "message": "Document processing started successfully."
+        }
+        
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"🔍 [DEBUG] DocumentParser: Error starting processing: {e}")
+        logger.error(f"Start processing error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 async def process_document_async(document_id: int, file_path: str, file_type: str, filename: str):
