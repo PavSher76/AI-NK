@@ -12,6 +12,8 @@ RUN apt-get update && apt-get install -y \
     poppler-utils \
     libglib2.0-0 \
     libgomp1 \
+    gcc \
+    python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка Python пакетов через pip
@@ -21,9 +23,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Копирование кода
 COPY . .
 
+# Копирование конфигурации проекта
+COPY config.py /app/config.py
+
 # Создание директорий
-RUN mkdir -p /app/uploads /app/temp
+RUN mkdir -p /app/uploads /app/temp /app/report_format
+
+# Копирование шаблона отчета
+COPY report_format/ОТЧЕТ_file_name.docx /app/report_format/
 
 EXPOSE 8001
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001", "--timeout-keep-alive", "600", "--limit-max-requests", "500", "--limit-concurrency", "5", "--timeout-graceful-shutdown", "60"]

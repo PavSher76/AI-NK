@@ -142,6 +142,47 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
     }
   };
 
+  // Скачивание PDF отчета
+  const downloadReport = async (documentId) => {
+    console.log('🔍 [DEBUG] CheckableDocuments.js: downloadReport started for document:', documentId);
+    try {
+      const response = await fetch(`${API_BASE}/checkable-documents/${documentId}/download-report`, {
+        headers: {
+          'Authorization': 'Bearer test-token'
+        }
+      });
+      
+      if (response.ok) {
+        // Получаем blob из ответа
+        const blob = await response.blob();
+        
+        // Создаем URL для blob
+        const url = window.URL.createObjectURL(blob);
+        
+        // Создаем временную ссылку и кликаем по ней
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `norm_control_report_${documentId}.pdf`;
+        document.body.appendChild(link);
+        link.click();
+        
+        // Очищаем
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(url);
+        
+        console.log('🔍 [DEBUG] CheckableDocuments.js: PDF report downloaded successfully');
+      } else {
+        console.error('🔍 [DEBUG] CheckableDocuments.js: downloadReport failed with status:', response.status);
+        const errorData = await response.json();
+        console.error('🔍 [DEBUG] CheckableDocuments.js: downloadReport error data:', errorData);
+        setError('Ошибка скачивания отчета');
+      }
+    } catch (error) {
+      console.error('🔍 [DEBUG] CheckableDocuments.js: downloadReport error:', error);
+      setError('Ошибка скачивания отчета');
+    }
+  };
+
   // Обработка выбора файла
   const handleFileSelect = (e) => {
     const file = e.target.files[0];
@@ -382,6 +423,15 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
       };
     }
     
+    // Если документ в процессе обработки
+    if (doc.processing_status === 'processing') {
+      return {
+        text: 'Обрабатывается',
+        color: 'bg-orange-100 text-orange-800',
+        icon: <Loader2 className="w-3 h-3 animate-spin" />
+      };
+    }
+    
     // Если обработка не завершена
     return {
       text: 'Загружен',
@@ -432,7 +482,18 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
   // Загрузка данных при монтировании компонента
   useEffect(() => {
     fetchDocuments();
-  }, []);
+    
+    // Автоматическое обновление статуса документов в процессе обработки
+    const interval = setInterval(() => {
+      const hasProcessingDocuments = documents.some(doc => doc.processing_status === 'processing');
+      if (hasProcessingDocuments) {
+        console.log('🔍 [DEBUG] CheckableDocuments.js: Auto-refreshing documents with processing status');
+        fetchDocuments();
+      }
+    }, 3000); // Обновляем каждые 3 секунды
+    
+    return () => clearInterval(interval);
+  }, [documents]);
 
   // Автоматическая загрузка отчетов для документов с завершенной обработкой
   useEffect(() => {
@@ -671,9 +732,14 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
                     </button>
                     
                     <button
-                      onClick={() => window.open(`/api/checkable-documents/${doc.id}/download`, '_blank')}
-                      className="p-2 text-gray-400 hover:text-blue-600 transition-colors"
-                      title="Скачать"
+                      onClick={() => downloadReport(doc.id)}
+                      className={`p-2 transition-colors ${
+                        doc.processing_status === 'completed' 
+                          ? 'text-gray-400 hover:text-blue-600' 
+                          : 'text-gray-300 cursor-not-allowed'
+                      }`}
+                      title={doc.processing_status === 'completed' ? 'Скачать отчет PDF' : 'Отчет недоступен'}
+                      disabled={doc.processing_status !== 'completed'}
                     >
                       <Download className="w-4 h-4" />
                     </button>

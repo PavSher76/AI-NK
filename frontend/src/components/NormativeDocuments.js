@@ -139,7 +139,7 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
     console.log('🔍 [DEBUG] NormativeDocuments.js: fetchStats started');
     setIsLoadingStats(true);
     try {
-      const response = await fetch('/api/rag/stats', {
+      const response = await fetch('/api/documents/stats', {
         headers: {
           'Authorization': 'Bearer test-token'
         }
@@ -149,7 +149,21 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
         const data = await response.json();
         console.log('🔍 [DEBUG] NormativeDocuments.js: fetchStats success:', data);
         console.log('🔍 [DEBUG] NormativeDocuments.js: Setting stats to:', data);
-        setStats(data);
+        
+        // Адаптируем данные для совместимости с фронтендом
+        const adaptedStats = {
+          total_documents: data.statistics.total_documents,
+          indexed_documents: data.statistics.indexed_documents,
+          indexing_progress: `${data.statistics.indexing_progress_percent}%`,
+          category_distribution: data.statistics.categories.reduce((acc, cat) => {
+            acc[cat.category] = cat.count;
+            return acc;
+          }, {}),
+          collection_name: 'normative_documents'
+        };
+        
+        console.log('🔍 [DEBUG] NormativeDocuments.js: Adapted stats:', adaptedStats);
+        setStats(adaptedStats);
       } else {
         console.warn('🔍 [DEBUG] NormativeDocuments.js: fetchStats failed with status:', response.status);
         // Если статистика недоступна, устанавливаем базовые значения

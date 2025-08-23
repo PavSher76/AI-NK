@@ -8,6 +8,15 @@ import json
 import time
 from typing import Dict, Any
 
+# Импортируем Keycloak middleware
+try:
+    from keycloak_middleware import keycloak_middleware
+    KEYCLOAK_ENABLED = True
+    print("🔑 [DEBUG] Gateway: Keycloak middleware loaded successfully")
+except ImportError:
+    KEYCLOAK_ENABLED = False
+    print("⚠️ [WARNING] Gateway: Keycloak middleware not available, using fallback authentication")
+
 # Настройка логирования
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -29,19 +38,32 @@ def verify_token(authorization_header: str) -> bool:
             token = authorization_header[7:]  # Убираем "Bearer "
             print(f"🔍 [DEBUG] Gateway: Extracted token: {token[:20]}..." if len(token) > 20 else f"🔍 [DEBUG] Gateway: Extracted token: {token}")
             
-            # Проверяем простые токены
+            # Проверяем простые токены (fallback)
             if token in VALID_TOKENS:
                 print(f"🔍 [DEBUG] Gateway: Token matched VALID_TOKENS: {token}")
                 return True
             
-            # Проверяем JWT токены (начинаются с eyJ)
+            # Проверяем JWT токены от Keycloak
+            if token.startswith("eyJ") and KEYCLOAK_ENABLED:
+                try:
+                    # Проверяем токен через Keycloak middleware
+                    payload = keycloak_middleware.verify_token(token)
+                    if payload:
+                        print(f"🔍 [DEBUG] Gateway: Keycloak JWT token verified successfully for user: {payload.get('preferred_username')}")
+                        return True
+                    else:
+                        print(f"🔍 [DEBUG] Gateway: Keycloak JWT token verification failed")
+                        return False
+                except Exception as e:
+                    print(f"🔍 [DEBUG] Gateway: Keycloak JWT token verification error: {e}")
+                    return False
+            
+            # Fallback для JWT токенов без Keycloak
             if token.startswith("eyJ"):
-                print(f"🔍 [DEBUG] Gateway: JWT token detected and accepted: {token[:20]}...")
-                # Для JWT токенов просто проверяем формат, не валидируем подпись
-                # В продакшене здесь должна быть полная валидация JWT
+                print(f"🔍 [DEBUG] Gateway: JWT token detected and accepted (fallback): {token[:20]}...")
                 return True
             
-            print(f"🔍 [DEBUG] Gateway: Token not in VALID_TOKENS and not JWT: {token}")
+            print(f"🔍 [DEBUG] Gateway: Token not in VALID_TOKENS and not valid JWT: {token}")
             return False
         else:
             print(f"🔍 [DEBUG] Gateway: Authorization header doesn't start with 'Bearer ': {authorization_header}")
@@ -198,10 +220,27 @@ async def proxy_request(request: Request, service_url: str, path: str = "") -> J
                 )
                 print(f"🔍 [DEBUG] Gateway: Response status: {response.status_code}")
                 
-                return JSONResponse(
-                    content=response.json() if response.headers.get("content-type", "").startswith("application/json") else {"detail": response.text},
-                    status_code=response.status_code
-                )
+                # Проверяем тип контента
+                content_type = response.headers.get("content-type", "")
+                print(f"🔍 [DEBUG] Gateway: Response content-type: {content_type}")
+                
+                # Для PDF, DOCX и других бинарных типов возвращаем Response
+                if (content_type.startswith("application/pdf") or 
+                    content_type.startswith("application/octet-stream") or
+                    content_type.startswith("application/vnd.openxmlformats-officedocument")):
+                    print(f"🔍 [DEBUG] Gateway: Returning binary response for content-type: {content_type}")
+                    from fastapi.responses import Response
+                    return Response(
+                        content=response.content,
+                        media_type=content_type,
+                        headers=dict(response.headers)
+                    )
+                else:
+                    # Для JSON и текстовых ответов возвращаем JSONResponse
+                    return JSONResponse(
+                        content=response.json() if content_type.startswith("application/json") else {"detail": response.text},
+                        status_code=response.status_code
+                    )
                 
     except httpx.ConnectError as e:
         print(f"🔍 [DEBUG] Gateway: Connection error to {service_url}: {e}")

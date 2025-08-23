@@ -3,6 +3,8 @@ import hashlib
 import json
 import logging
 import io
+import psutil
+import gc
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Form
 from fastapi.responses import JSONResponse
@@ -20,6 +22,48 @@ import httpx
 import asyncio
 import tiktoken
 
+# Импорт конфигурации проекта
+import sys
+sys.path.append('/app')
+try:
+    from config import MAX_CHECKABLE_DOCUMENT_SIZE, MAX_NORMATIVE_DOCUMENT_SIZE, LLM_REQUEST_TIMEOUT
+except ImportError:
+    # Fallback значения из переменных окружения
+    MAX_CHECKABLE_DOCUMENT_SIZE = int(os.getenv("MAX_CHECKABLE_DOCUMENT_SIZE", "104857600"))  # 100 МБ
+    MAX_NORMATIVE_DOCUMENT_SIZE = int(os.getenv("MAX_NORMATIVE_DOCUMENT_SIZE", "209715200"))  # 200 МБ
+    LLM_REQUEST_TIMEOUT = int(os.getenv("LLM_REQUEST_TIMEOUT", "120"))
+
+def get_memory_usage() -> Dict[str, float]:
+    """Получение информации об использовании памяти"""
+    process = psutil.Process()
+    memory_info = process.memory_info()
+    memory_percent = process.memory_percent()
+    
+    return {
+        "rss_mb": memory_info.rss / 1024 / 1024,  # RSS в МБ
+        "vms_mb": memory_info.vms / 1024 / 1024,  # VMS в МБ
+        "percent": memory_percent,  # Процент использования
+        "available_mb": psutil.virtual_memory().available / 1024 / 1024  # Доступная память в МБ
+    }
+
+def get_available_memory() -> float:
+    """Получение доступной памяти в МБ"""
+    return psutil.virtual_memory().available / 1024 / 1024
+
+def log_memory_usage(context: str = ""):
+    """Логирование использования памяти"""
+    memory_info = get_memory_usage()
+    logger.info(f"🔍 [DEBUG] DocumentParser: Memory usage {context}: "
+               f"RSS: {memory_info['rss_mb']:.1f}MB, "
+               f"VMS: {memory_info['vms_mb']:.1f}MB, "
+               f"Percent: {memory_info['percent']:.1f}%, "
+               f"Available: {memory_info['available_mb']:.1f}MB")
+
+def cleanup_memory():
+    """Очистка памяти"""
+    gc.collect()
+    logger.info(f"🔍 [DEBUG] DocumentParser: Memory cleanup completed")
+
 # OCR imports
 import pytesseract
 from PIL import Image
@@ -30,6 +74,16 @@ import tempfile
 import math
 
 from datetime import datetime, timedelta
+
+# PDF generation imports
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
 
 # структура данных о результате проверки документа и проверяемом документе
@@ -158,9 +212,11 @@ from starlette.responses import Response
 
 class LargeFileMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        # Увеличиваем лимит для загрузки файлов
-        if request.url.path == "/upload" or request.url.path == "/upload/checkable":
-            request.scope["max_content_size"] = 100 * 1024 * 1024  # 100MB
+        # Увеличиваем лимит для загрузки файлов из конфигурации
+        if request.url.path == "/upload":
+            request.scope["max_content_size"] = MAX_NORMATIVE_DOCUMENT_SIZE
+        elif request.url.path == "/upload/checkable":
+            request.scope["max_content_size"] = MAX_CHECKABLE_DOCUMENT_SIZE
         return await call_next(request)
 
 app.add_middleware(LargeFileMiddleware)
@@ -175,6 +231,46 @@ POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "norms_password")
 QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 RAG_SERVICE_URL = os.getenv("RAG_SERVICE_URL", "http://rag-service:8003")
+
+class TransactionContext:
+    """Контекстный менеджер для управления транзакциями PostgreSQL"""
+    
+    def __init__(self, connection):
+        self.connection = connection
+        self.cursor = None
+    
+    def __enter__(self):
+        """Начало транзакции"""
+        self.cursor = self.connection.cursor()
+        logger.debug("Transaction started")
+        return self.connection
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Завершение транзакции с автоматическим commit/rollback"""
+        try:
+            if exc_type is None:
+                # Нет исключений - коммитим транзакцию
+                self.connection.commit()
+                logger.debug("Transaction committed successfully")
+            else:
+                # Есть исключения - откатываем транзакцию
+                self.connection.rollback()
+                logger.error(f"Transaction rolled back due to error: {exc_type.__name__}: {exc_val}")
+        except Exception as e:
+            logger.error(f"Error during transaction cleanup: {e}")
+            # Пытаемся откатить транзакцию при ошибке очистки
+            try:
+                self.connection.rollback()
+            except:
+                pass
+        finally:
+            # Закрываем курсор
+            if self.cursor:
+                try:
+                    self.cursor.close()
+                except:
+                    pass
+
 
 class DocumentParser:
     def __init__(self):
@@ -205,6 +301,52 @@ class DocumentParser:
             logger.error(f"Database connection error: {e}")
             raise
     
+    def get_db_connection(self):
+        """Безопасное получение соединения с базой данных"""
+        try:
+            # Проверяем, что соединение существует и активно
+            if self.db_conn is None or self.db_conn.closed:
+                logger.info("Reconnecting to PostgreSQL...")
+                self.db_conn = psycopg2.connect(
+                    host=POSTGRES_HOST,
+                    database=POSTGRES_DB,
+                    user=POSTGRES_USER,
+                    password=POSTGRES_PASSWORD
+                )
+                logger.info("Reconnected to PostgreSQL")
+            
+            # Проверяем, что соединение работает
+            with self.db_conn.cursor() as cursor:
+                cursor.execute("SELECT 1")
+            
+            return self.db_conn
+            
+        except Exception as e:
+            logger.error(f"Database connection check failed: {e}")
+            # Пытаемся переподключиться
+            try:
+                if self.db_conn and not self.db_conn.closed:
+                    self.db_conn.close()
+            except:
+                pass
+            
+            self.db_conn = psycopg2.connect(
+                host=POSTGRES_HOST,
+                database=POSTGRES_DB,
+                user=POSTGRES_USER,
+                password=POSTGRES_PASSWORD
+            )
+            logger.info("Reconnected to PostgreSQL after error")
+            return self.db_conn
+    
+    def transaction_context(self):
+        """Контекстный менеджер для управления транзакциями"""
+        return TransactionContext(self.get_db_connection())
+    
+    def execute_in_transaction(self, operation, *args, **kwargs):
+        """Выполнение операции в транзакции с автоматическим управлением"""
+        with self.transaction_context() as conn:
+            return operation(conn, *args, **kwargs)
     def calculate_file_hash(self, file_content: bytes) -> str:
         """Вычисление SHA-256 хеша файла"""
         return hashlib.sha256(file_content).hexdigest()
@@ -497,6 +639,8 @@ class DocumentParser:
     
     def parse_pdf(self, file_content: bytes) -> DocumentInspectionResult:
         """Парсинг PDF документа с поддержкой векторных и сканированных страниц"""
+        logger.info(f"🔍 [DEBUG] DocumentParser: Starting PDF parsing for {len(file_content)} bytes")
+        log_memory_usage("before PDF parsing")
         result = DocumentInspectionResult()
         document_format_stats = {
             "total_pages": 0,
@@ -507,9 +651,11 @@ class DocumentParser:
         }
         
         try:
+            logger.info(f"🔍 [DEBUG] DocumentParser: Creating PDF reader from {len(file_content)} bytes")
             # Создаем file-like объект из bytes
             pdf_file = io.BytesIO(file_content)
             pdf_reader = PyPDF2.PdfReader(pdf_file)
+            logger.info(f"🔍 [DEBUG] DocumentParser: PDF reader created successfully")
             
             # Получаем информацию о документе
             document_info = self.get_document_info(pdf_reader)
@@ -539,114 +685,174 @@ class DocumentParser:
                 logger.warning(f"Failed to convert PDF to images: {e}")
                 images = []
             
-            for page_num, page in enumerate(pdf_reader.pages):
-                page_number = page_num + 1
-                logger.info(f"Processing page {page_number}")
+            logger.info(f"🔍 [DEBUG] DocumentParser: Starting to process {len(pdf_reader.pages)} pages")
+            
+            # Определение параметров страниц перед обработкой
+            logger.info(f"🔍 [DEBUG] DocumentParser: PDF document parameters:")
+            logger.info(f"🔍 [DEBUG] DocumentParser: - Total pages: {len(pdf_reader.pages)}")
+            logger.info(f"🔍 [DEBUG] DocumentParser: - File size: {len(file_content)} bytes")
+            logger.info(f"🔍 [DEBUG] DocumentParser: - Average page size: {len(file_content) // len(pdf_reader.pages)} bytes")
+            
+            # Настройки батчевой обработки
+            BATCH_SIZE = 5  # Обрабатываем по 5 страниц за раз
+            total_batches = (len(pdf_reader.pages) + BATCH_SIZE - 1) // BATCH_SIZE
+            logger.info(f"🔍 [DEBUG] DocumentParser: Batch processing settings:")
+            logger.info(f"🔍 [DEBUG] DocumentParser: - Batch size: {BATCH_SIZE} pages")
+            logger.info(f"🔍 [DEBUG] DocumentParser: - Total batches: {total_batches}")
+            
+            # Обработка страниц батчами
+            for batch_num in range(total_batches):
+                start_page = batch_num * BATCH_SIZE
+                end_page = min((batch_num + 1) * BATCH_SIZE, len(pdf_reader.pages))
                 
-                # Создаем объект результата страницы
-                page_result = DocumentPageInspectionResult()
-                page_result.page_number = page_number
+                logger.info(f"🔍 [DEBUG] DocumentParser: Starting batch {batch_num + 1}/{total_batches} (pages {start_page + 1}-{end_page})")
+                log_memory_usage(f"before batch {batch_num + 1}")
                 
-                # Получаем информацию о формате страницы
-                format_info = self.get_page_format_info(page)
-                document_format_stats["total_a4_sheets"] += format_info["a4_sheets"]
-                
-                # Заполняем информацию о формате страницы
-                page_result.page_format = format_info["format_name"]
-                page_result.page_width_mm = format_info["width_mm"]
-                page_result.page_height_mm = format_info["height_mm"]
-                page_result.page_orientation = format_info["orientation"]
-                page_result.page_a4_sheets_equivalent = format_info["a4_sheets"]
-                
-                # Обновляем статистику форматов
-                format_name = format_info["format_name"]
-                if format_name not in document_format_stats["formats"]:
-                    document_format_stats["formats"][format_name] = 0
-                document_format_stats["formats"][format_name] += 1
-                
-                # Обновляем статистику ориентаций
-                orientation = format_info["orientation"]
-                document_format_stats["orientations"][orientation] += 1
-                
-                # Логируем информацию о формате страницы
-                logger.info(f"Page {page_number} format: {format_name} "
-                          f"({format_info['width_mm']}x{format_info['height_mm']} mm, "
-                          f"{orientation}, {format_info['a4_sheets']} A4 sheets)")
-                
-                # Определяем тип страницы
-                page_type = self.detect_page_type(page)
-                page_result.page_type = page_type
-                document_format_stats["page_types"][page_type] += 1
-                logger.info(f"Page {page_number} type: {page_type}")
-                
-                if page_type == "vector":
-                    # Обработка векторной страницы
-                    text = page.extract_text()
-                    if text.strip():
-                        page_result.page_text = text
-                        page_result.page_text_confidence = 0.9
-                        page_result.page_text_method = "direct_extraction"
-                        page_result.page_text_length = len(text)
-                        logger.info(f"Page {page_number}: Extracted {len(text)} characters (vector)")
-                    else:
-                        logger.warning(f"Page {page_number}: No text extracted from vector page")
-                        page_result.page_text = ""
-                        page_result.page_text_confidence = 0.0
-                        page_result.page_text_method = "failed"
-                        page_result.page_text_length = 0
-                
-                elif page_type == "scanned" and page_num < len(images):
-                    # Обработка сканированной страницы с OCR
-                    logger.info(f"Page {page_number}: Processing as scanned page with OCR")
+                # Обработка страниц в текущем батче
+                for page_num in range(start_page, end_page):
+                    page = pdf_reader.pages[page_num]
+                    page_number = page_num + 1
                     
+                    logger.info(f"🔍 [DEBUG] DocumentParser: Processing page {page_number}/{len(pdf_reader.pages)} in batch {batch_num + 1}")
+                    
+                    # Создаем объект результата страницы
+                    page_result = DocumentPageInspectionResult()
+                    page_result.page_number = page_number
+                    
+                    # Анализ параметров страницы
                     try:
-                        # Извлекаем текст с помощью OCR
-                        ocr_result = self.extract_text_from_image(images[page_num], page_number)
-                        
-                        if ocr_result["text"]:
-                            page_result.page_text = ocr_result["text"]
-                            page_result.page_text_confidence = ocr_result["confidence"]
-                            page_result.page_text_method = f"ocr_{ocr_result['method']}"
-                            page_result.page_text_length = len(ocr_result["text"])
-                            page_result.page_ocr_confidence = ocr_result["confidence"]
-                            page_result.page_ocr_method = ocr_result["method"]
-                            page_result.page_ocr_all_results = ocr_result.get("all_results", [])
-                            logger.info(f"Page {page_number}: OCR extracted {len(ocr_result['text'])} characters "
-                                      f"(confidence: {ocr_result['confidence']})")
+                        page_text = page.extract_text()
+                        page_size = len(page_text) if page_text else 0
+                        logger.info(f"🔍 [DEBUG] DocumentParser: Page {page_number} parameters:")
+                        logger.info(f"🔍 [DEBUG] DocumentParser: - Text size: {page_size} characters")
+                        logger.info(f"🔍 [DEBUG] DocumentParser: - Has text: {bool(page_text)}")
+                        logger.info(f"🔍 [DEBUG] DocumentParser: - Text preview: {page_text[:100] if page_text else 'No text'}...")
+                    except Exception as e:
+                        logger.warning(f"🔍 [DEBUG] DocumentParser: Failed to extract text from page {page_number}: {e}")
+                        page_size = 0
+                    
+                    # Получаем информацию о формате страницы
+                    format_info = self.get_page_format_info(page)
+                    document_format_stats["total_a4_sheets"] += format_info["a4_sheets"]
+                    
+                    # Заполняем информацию о формате страницы
+                    page_result.page_format = format_info["format_name"]
+                    page_result.page_width_mm = format_info["width_mm"]
+                    page_result.page_height_mm = format_info["height_mm"]
+                    page_result.page_orientation = format_info["orientation"]
+                    page_result.page_a4_sheets_equivalent = format_info["a4_sheets"]
+                    
+                    # Обновляем статистику форматов
+                    format_name = format_info["format_name"]
+                    if format_name not in document_format_stats["formats"]:
+                        document_format_stats["formats"][format_name] = 0
+                    document_format_stats["formats"][format_name] += 1
+                    
+                    # Обновляем статистику ориентаций
+                    orientation = format_info["orientation"]
+                    document_format_stats["orientations"][orientation] += 1
+                    
+                    # Логируем информацию о формате страницы
+                    logger.info(f"Page {page_number} format: {format_name} "
+                              f"({format_info['width_mm']}x{format_info['height_mm']} mm, "
+                              f"{orientation}, {format_info['a4_sheets']} A4 sheets)")
+                    
+                    # Определяем тип страницы
+                    page_type = self.detect_page_type(page)
+                    page_result.page_type = page_type
+                    document_format_stats["page_types"][page_type] += 1
+                    logger.info(f"Page {page_number} type: {page_type}")
+                    
+                    if page_type == "vector":
+                        # Обработка векторной страницы
+                        text = page.extract_text()
+                        if text.strip():
+                            page_result.page_text = text
+                            page_result.page_text_confidence = 0.9
+                            page_result.page_text_method = "direct_extraction"
+                            page_result.page_text_length = len(text)
+                            logger.info(f"Page {page_number}: Extracted {len(text)} characters (vector)")
                         else:
-                            logger.warning(f"Page {page_number}: OCR failed to extract text")
-                            page_result.page_text = f"[OCR не смог извлечь текст со страницы {page_number}]"
-                            page_result.page_text_confidence = 0.1
-                            page_result.page_text_method = "ocr_failed"
+                            logger.warning(f"Page {page_number}: No text extracted from vector page")
+                            page_result.page_text = ""
+                            page_result.page_text_confidence = 0.0
+                            page_result.page_text_method = "failed"
                             page_result.page_text_length = 0
                     
-                    except Exception as e:
-                        logger.error(f"OCR processing failed for page {page_number}: {e}")
-                        page_result.page_text = f"[Ошибка OCR обработки страницы {page_number}: {str(e)}]"
-                        page_result.page_text_confidence = 0.0
-                        page_result.page_text_method = "ocr_error"
-                        page_result.page_text_length = 0
-                
-                else:
-                    # Неизвестный тип страницы или нет изображения
-                    logger.warning(f"Page {page_number}: Unknown type or no image available")
-                    text = page.extract_text()
-                    if text.strip():
-                        page_result.page_text = text
-                        page_result.page_text_confidence = 0.5
-                        page_result.page_text_method = "fallback_extraction"
-                        page_result.page_text_length = len(text)
+                    elif page_type == "scanned" and page_num < len(images):
+                        # Обработка сканированной страницы с OCR
+                        logger.info(f"🔍 [DEBUG] DocumentParser: Page {page_number}: Processing as scanned page with OCR")
+                    
+                        try:
+                            logger.info(f"🔍 [DEBUG] DocumentParser: Page {page_number}: Starting OCR processing")
+                            # Извлекаем текст с помощью OCR
+                            ocr_result = self.extract_text_from_image(images[page_num], page_number)
+                            logger.info(f"🔍 [DEBUG] DocumentParser: Page {page_number}: OCR processing completed")
+                            
+                            if ocr_result["text"]:
+                                page_result.page_text = ocr_result["text"]
+                                page_result.page_text_confidence = ocr_result["confidence"]
+                                page_result.page_text_method = f"ocr_{ocr_result['method']}"
+                                page_result.page_text_length = len(ocr_result["text"])
+                                page_result.page_ocr_confidence = ocr_result["confidence"]
+                                page_result.page_ocr_method = ocr_result["method"]
+                                page_result.page_ocr_all_results = ocr_result.get("all_results", [])
+                                logger.info(f"Page {page_number}: OCR extracted {len(ocr_result['text'])} characters "
+                                          f"(confidence: {ocr_result['confidence']})")
+                            else:
+                                logger.warning(f"Page {page_number}: OCR failed to extract text")
+                                page_result.page_text = f"[OCR не смог извлечь текст со страницы {page_number}]"
+                                page_result.page_text_confidence = 0.1
+                                page_result.page_text_method = "ocr_failed"
+                                page_result.page_text_length = 0
+                        
+                        except Exception as e:
+                            logger.error(f"OCR processing failed for page {page_number}: {e}")
+                            page_result.page_text = f"[Ошибка OCR обработки страницы {page_number}: {str(e)}]"
+                            page_result.page_text_confidence = 0.0
+                            page_result.page_text_method = "ocr_error"
+                            page_result.page_text_length = 0
+                    
                     else:
-                        page_result.page_text = f"[Не удалось обработать страницу {page_number}]"
-                        page_result.page_text_confidence = 0.0
-                        page_result.page_text_method = "failed"
-                        page_result.page_text_length = 0
+                        # Неизвестный тип страницы или нет изображения
+                        logger.warning(f"Page {page_number}: Unknown type or no image available")
+                        text = page.extract_text()
+                        if text.strip():
+                            page_result.page_text = text
+                            page_result.page_text_confidence = 0.5
+                            page_result.page_text_method = "fallback_extraction"
+                            page_result.page_text_length = len(text)
+                        else:
+                            page_result.page_text = f"[Не удалось обработать страницу {page_number}]"
+                            page_result.page_text_confidence = 0.0
+                            page_result.page_text_method = "failed"
+                            page_result.page_text_length = 0
                 
-                # Добавляем результат страницы в общий результат
-                result.document_pages_results.append(page_result)
+                    # Добавляем результат страницы в общий результат
+                    logger.info(f"🔍 [DEBUG] DocumentParser: Adding page {page_result.page_number} to results. Total results before: {len(result.document_pages_results)}")
+                    result.document_pages_results.append(page_result)
+                    logger.info(f"🔍 [DEBUG] DocumentParser: Added page {page_result.page_number} to results. Total results after: {len(result.document_pages_results)}")
+                    
+                    # Сохраняем только страницы с содержимым
+                    if page_result.page_text and len(page_result.page_text.strip()) > 0:
+                        logger.info(f"🔍 [DEBUG] DocumentParser: Page {page_result.page_number} has content ({len(page_result.page_text)} chars)")
+                    else:
+                        logger.warning(f"🔍 [DEBUG] DocumentParser: Page {page_result.page_number} has no content!")
+                    
+                    # TODO: Добавить извлечение таблиц, изображений, штампов
+                    # с помощью OpenCV и дополнительного анализа
+                    
+                    # Мониторинг памяти для каждой страницы
+                    log_memory_usage(f"processing page {page_number}")
+                    
+                    # Очистка памяти каждые 3 страницы в батче
+                    if (page_num - start_page) % 3 == 0:
+                        cleanup_memory()
                 
-                # TODO: Добавить извлечение таблиц, изображений, штампов
-                # с помощью OpenCV и дополнительного анализа
+                # Завершение обработки батча
+                logger.info(f"🔍 [DEBUG] DocumentParser: Completed batch {batch_num + 1}/{total_batches}")
+                log_memory_usage(f"after batch {batch_num + 1}")
+                cleanup_memory()
             
             # Заполняем общую статистику документа
             result.document_pages = document_format_stats['total_pages']
@@ -666,10 +872,14 @@ class DocumentParser:
             logger.info("=====================================")
                 
         except Exception as e:
-            logger.error(f"PDF parsing error: {e}")
+            logger.error(f"🔍 [DEBUG] DocumentParser: PDF parsing error: {e}")
+            import traceback
+            logger.error(f"🔍 [DEBUG] DocumentParser: PDF parsing traceback: {traceback.format_exc()}")
             raise
         
-        logger.info(f"PDF parsing completed. Total pages: {len(result.document_pages_results)}")
+        log_memory_usage("after PDF parsing")
+        cleanup_memory()
+        logger.info(f"🔍 [DEBUG] DocumentParser: PDF parsing completed successfully. Total pages: {len(result.document_pages_results)}")
         return result
     
     def parse_docx(self, file_content: bytes) -> List[Dict[str, Any]]:
@@ -951,15 +1161,21 @@ class DocumentParser:
         
         return elements
     
-    def save_to_database(self, filename: str, original_filename: str, file_type: str, 
-                        file_size: int, document_hash: str, inspection_result: DocumentInspectionResult, 
-                        category: str = "other", document_type: str = "normative") -> int:
+    def save_to_database(self, filename: str, original_filename: str, file_type: str,
+                         file_size: int, document_hash: str, inspection_result: DocumentInspectionResult,
+                         category: str = "other", document_type: str = "normative") -> int:
         """Сохранение документа и элементов в базу данных"""
+        logger.info(f"🔍 [DEBUG] DocumentParser: save_to_database called")
+        logger.info(f"🔍 [DEBUG] DocumentParser: document_type: {document_type}")
+        logger.info(f"🔍 [DEBUG] DocumentParser: pages to save: {len(inspection_result.document_pages_results)}")
+        
         try:
             with self.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 if document_type == "checkable":
                     # Сохраняем как проверяемый документ
+                    logger.info(f"🔍 [DEBUG] DocumentParser: Saving as checkable document...")
                     review_deadline = datetime.now() + timedelta(days=2)
+                    logger.info(f"🔍 [DEBUG] DocumentParser: Review deadline: {review_deadline}")
                     
                     cursor.execute("""
                         INSERT INTO checkable_documents 
@@ -970,6 +1186,7 @@ class DocumentParser:
                     """, (filename, original_filename, file_type, file_size, document_hash, 
                           "completed", category, review_deadline))
                     document_id = cursor.fetchone()["id"]
+                    logger.info(f"🔍 [DEBUG] DocumentParser: Checkable document saved with ID: {document_id}")
                 else:
                     # Сохраняем как нормативный документ
                     # Подсчитываем количество токенов
@@ -986,7 +1203,10 @@ class DocumentParser:
                     document_id = cursor.fetchone()["id"]
                 
                 # Сохранение элементов
-                for page_result in inspection_result.document_pages_results:
+                logger.info(f"🔍 [DEBUG] DocumentParser: Starting to save {len(inspection_result.document_pages_results)} elements...")
+                for i, page_result in enumerate(inspection_result.document_pages_results):
+                    logger.debug(f"🔍 [DEBUG] DocumentParser: Saving element {i+1}/{len(inspection_result.document_pages_results)}, page {page_result.page_number}")
+                    
                     # Подготавливаем дополнительные данные
                     metadata = {
                         "page_type": page_result.page_type,
@@ -1006,9 +1226,10 @@ class DocumentParser:
                         metadata["ocr_method"] = page_result.page_ocr_method
                     
                     if document_type == "checkable":
+                        logger.debug(f"🔍 [DEBUG] DocumentParser: Inserting into checkable_elements, text length: {len(page_result.page_text)}")
                         cursor.execute("""
                             INSERT INTO checkable_elements 
-                            (checkable_document_id, element_type, element_content, page_number, confidence_score, metadata)
+                            (checkable_document_id, element_type, element_content, page_number, confidence_score, element_metadata)
                             VALUES (%s, %s, %s, %s, %s, %s)
                         """, (
                             document_id,
@@ -1019,6 +1240,7 @@ class DocumentParser:
                             json.dumps(metadata)
                         ))
                     else:
+                        logger.debug(f"🔍 [DEBUG] DocumentParser: Inserting into extracted_elements, text length: {len(page_result.page_text)}")
                         cursor.execute("""
                             INSERT INTO extracted_elements 
                             (uploaded_document_id, element_type, element_content, page_number, confidence_score, metadata)
@@ -1033,19 +1255,23 @@ class DocumentParser:
                         ))
                 
                 self.db_conn.commit()
+                logger.info(f"🔍 [DEBUG] DocumentParser: Database commit successful")
                 
                 # Автоматическая проверка нормоконтроля для проверяемых документов
                 if document_type == "checkable":
+                    logger.info(f"🔍 [DEBUG] DocumentParser: Starting automatic norm control check...")
                     try:
                         # Объединяем содержимое для проверки
                         document_content = "\n\n".join([page_result.page_text for page_result in inspection_result.document_pages_results])
+                        logger.debug(f"🔍 [DEBUG] DocumentParser: Document content length for norm control: {len(document_content)} characters")
                         
                         # Запускаем проверку в фоновом режиме
                         asyncio.create_task(self.perform_norm_control_check(document_id, document_content))
-                        logger.info(f"Started automatic norm control check for document {document_id}")
+                        logger.info(f"🔍 [DEBUG] DocumentParser: Started automatic norm control check for document {document_id}")
                     except Exception as e:
-                        logger.error(f"Failed to start norm control check for document {document_id}: {e}")
+                        logger.error(f"🔍 [DEBUG] DocumentParser: Failed to start norm control check for document {document_id}: {e}")
                 
+                logger.info(f"🔍 [DEBUG] DocumentParser: save_to_database completed successfully, returning document_id: {document_id}")
                 return document_id
                 
         except Exception as e:
@@ -1055,8 +1281,8 @@ class DocumentParser:
     
     def create_initial_document_record(self, filename: str, file_type: str, file_size: int, document_hash: str, file_path: str, category: str = "other") -> int:
         """Создание начальной записи документа в базе данных"""
-        try:
-            with self.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+        def _create_record(conn):
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute("""
                     INSERT INTO uploaded_documents 
                     (filename, original_filename, file_type, file_size, document_hash, processing_status, file_path, category)
@@ -1065,36 +1291,64 @@ class DocumentParser:
                 """, (filename, filename, file_type, file_size, document_hash, "uploaded", file_path, category))
                 
                 document_id = cursor.fetchone()["id"]
-                self.db_conn.commit()
                 logger.info(f"Created initial document record with ID: {document_id}")
                 return document_id
-                
+        
+        try:
+            return self.execute_in_transaction(_create_record)
         except Exception as e:
             logger.error(f"Error creating initial document record: {e}")
             raise
     
     def update_document_status(self, document_id: int, status: str):
         """Обновление статуса документа"""
-        try:
-            with self.db_conn.cursor() as cursor:
+        def _update_status(conn):
+            with conn.cursor() as cursor:
                 cursor.execute("""
                     UPDATE uploaded_documents 
                     SET processing_status = %s
                     WHERE id = %s
                 """, (status, document_id))
-                self.db_conn.commit()
                 logger.info(f"Updated document {document_id} status to: {status}")
-                
+        
+        try:
+            self.execute_in_transaction(_update_status)
         except Exception as e:
             logger.error(f"Error updating document status: {e}")
             raise
     
+    def update_checkable_document_status(self, document_id: int, status: str):
+        """Обновление статуса проверяемого документа"""
+        def _update_status(conn):
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE checkable_documents 
+                    SET processing_status = %s
+                    WHERE id = %s
+                """, (status, document_id))
+                logger.info(f"Updated checkable document {document_id} status to: {status}")
+        
+        try:
+            self.execute_in_transaction(_update_status)
+        except Exception as e:
+            logger.error(f"Error updating checkable document status: {e}")
+            raise
+    
     def save_elements_to_database(self, document_id: int, inspection_result: DocumentInspectionResult):
         """Сохранение элементов документа в базу данных"""
-        try:
-            with self.db_conn.cursor() as cursor:
+        def _save_elements(conn):
+            with conn.cursor() as cursor:
+                # Очищаем старые элементы для этого документа
+                cursor.execute("DELETE FROM extracted_elements WHERE uploaded_document_id = %s", (document_id,))
+                logger.info(f"Cleared old elements for document {document_id}")
+                
                 # Сохранение элементов
-                for page_result in inspection_result.document_pages_results:
+                logger.info(f"Saving new document information {document_id}")
+                logger.info(f"Saving new document information {inspection_result.document_pages_results}")
+                # Сохранение элементов
+                logger.info(f"🔍 [DEBUG] DocumentParser: Starting to save {len(inspection_result.document_pages_results)} page results")
+                for i, page_result in enumerate(inspection_result.document_pages_results):
+                    logger.info(f"🔍 [DEBUG] DocumentParser: Saving page {page_result.page_number} (index {i}), text length: {len(page_result.page_text or '')}")
                     # Подготавливаем дополнительные данные
                     metadata = {
                         "page_type": page_result.page_type,
@@ -1126,25 +1380,27 @@ class DocumentParser:
                         json.dumps(metadata)
                     ))
                 
-                self.db_conn.commit()
                 logger.info(f"Saved {len(inspection_result.document_pages_results)} elements for document {document_id}")
-                
+        
+        try:
+            self.execute_in_transaction(_save_elements)
         except Exception as e:
             logger.error(f"Error saving elements to database: {e}")
             raise
     
     def update_document_completion(self, document_id: int, elements_count: int, token_count: int):
         """Обновление записи документа после завершения обработки"""
-        try:
-            with self.db_conn.cursor() as cursor:
+        def _update_completion(conn):
+            with conn.cursor() as cursor:
                 cursor.execute("""
                     UPDATE uploaded_documents 
                     SET processing_status = %s, token_count = %s
                     WHERE id = %s
                 """, ("completed", token_count, document_id))
-                self.db_conn.commit()
                 logger.info(f"Updated document {document_id} completion: {elements_count} elements, {token_count} tokens")
-                
+        
+        try:
+            self.execute_in_transaction(_update_completion)
         except Exception as e:
             logger.error(f"Error updating document completion: {e}")
             raise
@@ -1215,37 +1471,132 @@ class DocumentParser:
                                file_size: int, document_hash: str, inspection_result: DocumentInspectionResult, 
                                category: str = "other") -> int:
         """Сохранение проверяемого документа"""
-        return self.save_to_database(filename, original_filename, file_type, file_size, 
+        logger.info(f"🔍 [DEBUG] DocumentParser: save_checkable_document called")
+        logger.info(f"🔍 [DEBUG] DocumentParser: filename: {filename}")
+        logger.info(f"🔍 [DEBUG] DocumentParser: original_filename: {original_filename}")
+        logger.info(f"🔍 [DEBUG] DocumentParser: file_type: {file_type}")
+        logger.info(f"🔍 [DEBUG] DocumentParser: file_size: {file_size}")
+        logger.info(f"🔍 [DEBUG] DocumentParser: document_hash: {document_hash}")
+        logger.info(f"🔍 [DEBUG] DocumentParser: category: {category}")
+        logger.info(f"🔍 [DEBUG] DocumentParser: inspection_result pages: {len(inspection_result.document_pages_results)}")
+        
+        document_id = self.save_to_database(filename, original_filename, file_type, file_size, 
                                    document_hash, inspection_result, category, "checkable")
+        
+        logger.info(f"🔍 [DEBUG] DocumentParser: save_checkable_document completed, document_id: {document_id}")
+        return document_id
 
     def cleanup_expired_documents(self) -> int:
         """Очистка просроченных проверяемых документов"""
-        try:
-            with self.db_conn.cursor() as cursor:
+        def _cleanup(conn):
+            with conn.cursor() as cursor:
                 cursor.execute("SELECT cleanup_expired_checkable_documents()")
                 result = cursor.fetchone()
-                self.db_conn.commit()
                 return result[0] if result else 0
+        
+        try:
+            return self.execute_in_transaction(_cleanup)
         except Exception as e:
             logger.error(f"Cleanup error: {e}")
             return 0
 
     def get_checkable_documents(self) -> List[Dict[str, Any]]:
         """Получение списка проверяемых документов"""
-        try:
-            with self.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+        def _get_documents(conn):
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute("""
                     SELECT id, original_filename, file_type, file_size, upload_date, 
-                           processing_status, category, review_deadline, review_status,
-                           assigned_reviewer, review_notes
-                    FROM checkable_documents
+                           processing_status, category, review_deadline, review_status, 
+                           assigned_reviewer
+                    FROM checkable_documents 
                     ORDER BY upload_date DESC
                 """)
                 documents = cursor.fetchall()
                 return [dict(doc) for doc in documents]
+        
+        try:
+            return self.execute_in_transaction(_get_documents)
         except Exception as e:
             logger.error(f"Get checkable documents error: {e}")
             return []
+
+    def get_checkable_document(self, document_id: int) -> Optional[Dict[str, Any]]:
+        """Получение информации о проверяемом документе"""
+        try:
+            with self.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute("""
+                    SELECT id, original_filename, file_type, file_size, upload_date, 
+                           processing_status, category, review_deadline, review_status, 
+                           assigned_reviewer
+                    FROM checkable_documents 
+                    WHERE id = %s
+                """, (document_id,))
+                document = cursor.fetchone()
+                return dict(document) if document else None
+        except Exception as e:
+            logger.error(f"Get checkable document error: {e}")
+            return None
+
+    def get_norm_control_result_by_document_id(self, document_id: int) -> Optional[Dict[str, Any]]:
+        """Получение результатов нормоконтроля по ID документа"""
+        try:
+            with self.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute("""
+                    SELECT id, analysis_status, total_findings, critical_findings, warning_findings, 
+                           info_findings, analysis_date
+                    FROM norm_control_results
+                    WHERE checkable_document_id = %s
+                    ORDER BY analysis_date DESC
+                    LIMIT 1
+                """, (document_id,))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            logger.error(f"Get norm control result error: {e}")
+            return None
+
+    def get_page_results_by_document_id(self, document_id: int) -> List[Dict[str, Any]]:
+        """Получение результатов по страницам документа"""
+        try:
+            with self.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute("""
+                    SELECT 
+                        f.id,
+                        f.finding_type,
+                        f.severity_level,
+                        f.category,
+                        f.title,
+                        f.description,
+                        f.recommendation,
+                        f.confidence_score,
+                        f.created_at
+                    FROM findings f
+                    JOIN norm_control_results ncr ON f.norm_control_result_id = ncr.id
+                    WHERE ncr.checkable_document_id = %s
+                    ORDER BY f.severity_level DESC, f.created_at
+                """, (document_id,))
+                results = cursor.fetchall()
+                return [dict(result) for result in results]
+        except Exception as e:
+            logger.error(f"Get page results error: {e}")
+            return []
+
+    def get_review_report_by_norm_control_id(self, norm_control_id: int) -> Optional[Dict[str, Any]]:
+        """Получение отчета рецензента по ID результата нормоконтроля"""
+        try:
+            with self.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute("""
+                    SELECT id, reviewer_name, conclusion, report_date
+                    FROM review_reports
+                    WHERE norm_control_result_id = %s
+                    ORDER BY report_date DESC
+                    LIMIT 1
+                """, (norm_control_id,))
+                result = cursor.fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            logger.error(f"Get review report error: {e}")
+            return None
 
     def get_document_info(self, pdf_reader) -> Dict[str, Any]:
         """Извлечение информации о документе из PDF метаданных"""
@@ -1354,7 +1705,7 @@ class DocumentParser:
                     return {"error": "Document not found or no elements"}
                 
                 stats = {
-                    "total_pages": len(elements.document_pages_results),
+                    "total_pages": len(elements),
                     "total_a4_sheets": 0.0,
                     "formats": {},
                     "orientations": {"portrait": 0, "landscape": 0},
@@ -1434,34 +1785,36 @@ class DocumentParser:
 
     def update_review_status(self, document_id: int, status: str, reviewer: str = None, notes: str = None) -> bool:
         """Обновление статуса проверки документа"""
-        try:
-            with self.db_conn.cursor() as cursor:
+        def _update_status(conn):
+            with conn.cursor() as cursor:
                 cursor.execute("""
                     UPDATE checkable_documents 
-                    SET review_status = %s, assigned_reviewer = %s, review_notes = %s, updated_at = CURRENT_TIMESTAMP
+                    SET review_status = %s, assigned_reviewer = %s, updated_at = CURRENT_TIMESTAMP
                     WHERE id = %s
-                """, (status, reviewer, notes, document_id))
-                self.db_conn.commit()
+                """, (status, reviewer, document_id))
                 return cursor.rowcount > 0
+        
+        try:
+            return self.execute_in_transaction(_update_status)
         except Exception as e:
             logger.error(f"Update review status error: {e}")
             return False
 
     async def delete_normative_document(self, document_id: int) -> bool:
         """Удаление нормативного документа и связанных данных"""
-        try:
-            with self.db_conn.cursor() as cursor:
+        def _delete_document(conn):
+            with conn.cursor() as cursor:
                 # Получаем информацию о документе для логирования
                 cursor.execute("""
                     SELECT original_filename, document_hash 
                     FROM uploaded_documents 
-                    WHERE id = %s AND document_type = 'normative'
+                    WHERE id = %s
                 """, (document_id,))
                 doc_info = cursor.fetchone()
                 
                 if not doc_info:
-                    logger.warning(f"Document {document_id} not found or not a normative document")
-                    return False
+                    logger.warning(f"Document {document_id} not found")
+                    return False, None
                 
                 # Удаляем элементы документа
                 cursor.execute("DELETE FROM extracted_elements WHERE uploaded_document_id = %s", (document_id,))
@@ -1475,11 +1828,15 @@ class DocumentParser:
                 cursor.execute("DELETE FROM uploaded_documents WHERE id = %s", (document_id,))
                 document_deleted = cursor.rowcount
                 
-                self.db_conn.commit()
-                
                 logger.info(f"Deleted normative document {document_id} ({doc_info[0]}): "
                           f"{elements_deleted} elements, {results_deleted} results, {document_deleted} document")
                 
+                return document_deleted > 0, doc_info[0]
+        
+        try:
+            success, filename = self.execute_in_transaction(_delete_document)
+            
+            if success:
                 # Удаляем индексы из RAG сервиса
                 try:
                     async with httpx.AsyncClient() as client:
@@ -1490,18 +1847,17 @@ class DocumentParser:
                             logger.warning(f"Failed to delete indexes for document {document_id}: {response.status_code}")
                 except Exception as e:
                     logger.error(f"Error deleting indexes for document {document_id}: {e}")
-                
-                return document_deleted > 0
+            
+            return success
                 
         except Exception as e:
             logger.error(f"Delete normative document error: {e}")
-            self.db_conn.rollback()
             return False
 
     def delete_checkable_document(self, document_id: int) -> bool:
         """Удаление проверяемого документа и связанных данных"""
-        try:
-            with self.db_conn.cursor() as cursor:
+        def _delete_document(conn):
+            with conn.cursor() as cursor:
                 # Получаем информацию о документе для логирования
                 cursor.execute("""
                     SELECT original_filename, document_hash 
@@ -1530,17 +1886,16 @@ class DocumentParser:
                 cursor.execute("DELETE FROM checkable_documents WHERE id = %s", (document_id,))
                 document_deleted = cursor.rowcount
                 
-                self.db_conn.commit()
-                
                 logger.info(f"Deleted checkable document {document_id} ({doc_info[0]}): "
                           f"{elements_deleted} elements, {reports_deleted} reports, "
                           f"{results_deleted} results, {document_deleted} document")
                 
                 return document_deleted > 0
-                
+        
+        try:
+            return self.execute_in_transaction(_delete_document)
         except Exception as e:
             logger.error(f"Delete checkable document error: {e}")
-            self.db_conn.rollback()
             return False
     
     async def index_to_rag_service(self, document_id: int, document_title: str, elements: List[Dict[str, Any]]):
@@ -1615,15 +1970,17 @@ class DocumentParser:
 
     def update_system_setting(self, setting_key: str, setting_value: str) -> bool:
         """Обновление настройки системы"""
-        try:
-            with self.db_conn.cursor() as cursor:
+        def _update_setting(conn):
+            with conn.cursor() as cursor:
                 cursor.execute("""
                     UPDATE system_settings
                     SET setting_value = %s, updated_at = CURRENT_TIMESTAMP
                     WHERE setting_key = %s AND is_public = true
                 """, (setting_value, setting_key))
-                self.db_conn.commit()
                 return cursor.rowcount > 0
+        
+        try:
+            return self.execute_in_transaction(_update_setting)
         except Exception as e:
             logger.error(f"Update system setting error: {e}")
             return False
@@ -1631,8 +1988,8 @@ class DocumentParser:
     def create_system_setting(self, setting_key: str, setting_value: str, 
                             setting_description: str, setting_type: str = "text") -> bool:
         """Создание новой настройки системы"""
-        try:
-            with self.db_conn.cursor() as cursor:
+        def _create_setting(conn):
+            with conn.cursor() as cursor:
                 cursor.execute("""
                     INSERT INTO system_settings (setting_key, setting_value, setting_description, setting_type)
                     VALUES (%s, %s, %s, %s)
@@ -1642,22 +1999,26 @@ class DocumentParser:
                     setting_type = EXCLUDED.setting_type,
                     updated_at = CURRENT_TIMESTAMP
                 """, (setting_key, setting_value, setting_description, setting_type))
-                self.db_conn.commit()
                 return True
+        
+        try:
+            return self.execute_in_transaction(_create_setting)
         except Exception as e:
             logger.error(f"Create system setting error: {e}")
             return False
 
     def delete_system_setting(self, setting_key: str) -> bool:
         """Удаление настройки системы"""
-        try:
-            with self.db_conn.cursor() as cursor:
+        def _delete_setting(conn):
+            with conn.cursor() as cursor:
                 cursor.execute("""
                     DELETE FROM system_settings
                     WHERE setting_key = %s AND is_public = true
                 """, (setting_key,))
-                self.db_conn.commit()
                 return cursor.rowcount > 0
+        
+        try:
+            return self.execute_in_transaction(_delete_setting)
         except Exception as e:
             logger.error(f"Delete system setting error: {e}")
             return False
@@ -1682,27 +2043,60 @@ class DocumentParser:
             processed_prompt = normcontrol_prompt.replace("{document_content}", "{page_content}")
             processed_prompt = processed_prompt.replace("{normative_docs}", "нормативным требованиям")
             
-            # Создаем простой шаблон без сложного JSON для избежания конфликтов форматирования
+            # Создаем улучшенный шаблон для постраничной проверки
             simple_template = f"""
 {processed_prompt}
 
-СОДЕРЖИМОЕ СТРАНИЦЫ {{page_number}}:
+=== ПРОВЕРКА СТРАНИЦЫ {{page_number}} ===
+
+СОДЕРЖИМОЕ СТРАНИЦЫ:
 {{page_content}}
 
-ВАЖНО: Анализируйте только содержимое страницы {{page_number}}. Указывайте номер страницы в findings.
+ИНСТРУКЦИИ ПО ПРОВЕРКЕ:
+1. Анализируйте ТОЛЬКО содержимое страницы {{page_number}}
+2. Проверяйте соответствие нормативным требованиям (ГОСТ, СП, СНиП)
+3. Ищите ошибки в оформлении, нумерации, размерах, обозначениях
+4. Проверяйте полноту информации и корректность технических решений
+5. Оценивайте качество графических элементов и текста
 
-Сформируйте детальный отчет в формате JSON с полями:
-- page_number: номер страницы
-- overall_status: pass/fail/uncertain
-- confidence: 0.0-1.0
-- total_findings: количество найденных нарушений
-- critical_findings: количество критических нарушений
-- warning_findings: количество предупреждений
-- info_findings: количество информационных замечаний
-- findings: массив найденных нарушений
-- summary: общий вывод
-- compliance_percentage: процент соответствия (0-100)
-- recommendations: рекомендации по улучшению
+КРИТЕРИИ ОЦЕНКИ:
+- КРИТИЧЕСКИЕ: нарушения безопасности, несоответствие основным нормам
+- ПРЕДУПРЕЖДЕНИЯ: неполнота информации, неточности в оформлении
+- ИНФОРМАЦИОННЫЕ: рекомендации по улучшению, замечания по стилю
+
+СФОРМИРУЙТЕ ОТЧЕТ В ФОРМАТЕ JSON:
+
+{{
+  "page_number": {{page_number}},
+  "overall_status": "pass|fail|uncertain",
+  "confidence": 0.0-1.0,
+  "total_findings": число,
+  "critical_findings": число,
+  "warning_findings": число,
+  "info_findings": число,
+  "compliance_percentage": 0-100,
+  "findings": [
+    {{
+      "id": "уникальный_идентификатор",
+      "type": "critical|warning|info",
+      "category": "оформление|техническое_решение|нормативы|безопасность",
+      "title": "краткое_название_проблемы",
+      "description": "подробное_описание_проблемы",
+      "normative_reference": "ссылка_на_норматив",
+      "recommendation": "рекомендация_по_исправлению",
+      "severity": "critical|warning|info",
+      "location": "описание_места_на_странице"
+    }}
+  ],
+  "summary": "общий_вывод_по_странице",
+  "recommendations": "общие_рекомендации_по_улучшению"
+}}
+
+ВАЖНО: 
+- Возвращайте ТОЛЬКО валидный JSON без дополнительного текста
+- Указывайте точные ссылки на нормативные документы
+- Давайте конкретные рекомендации по исправлению
+- Оценивайте критичность каждого замечания
 """
             
             return simple_template
@@ -1712,8 +2106,80 @@ class DocumentParser:
             # Возвращаем базовый промпт в случае ошибки
             return "Ты - эксперт по нормоконтролю в строительстве и проектировании. Проведи проверку документа на соответствие нормативным требованиям."
 
+    def combine_page_results(self, document_id: int, page_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Объединение результатов проверки всех страниц в общий результат"""
+        try:
+            logger.info(f"🔍 [DEBUG] DocumentParser: Combining results from {len(page_results)} pages for document {document_id}")
+            
+            # Инициализируем общие счетчики
+            total_findings = 0
+            critical_findings = 0
+            warning_findings = 0
+            info_findings = 0
+            all_findings = []
+            successful_pages = 0
+            failed_pages = 0
+            
+            # Обрабатываем результаты каждой страницы
+            for page_result in page_results:
+                page_number = page_result.get("page_number", 0)
+                
+                if page_result.get("status") == "success":
+                    successful_pages += 1
+                    result_data = page_result.get("result", {})
+                    
+                    # Собираем замечания со страницы
+                    page_findings = result_data.get("findings", [])
+                    for finding in page_findings:
+                        finding["page_number"] = page_number
+                        all_findings.append(finding)
+                        
+                        # Подсчитываем по типам
+                        severity = finding.get("severity", "info")
+                        if severity == "critical":
+                            critical_findings += 1
+                        elif severity == "warning":
+                            warning_findings += 1
+                        else:
+                            info_findings += 1
+                    
+                    total_findings += len(page_findings)
+                    logger.info(f"🔍 [DEBUG] DocumentParser: Page {page_number}: {len(page_findings)} findings")
+                    
+                else:
+                    failed_pages += 1
+                    logger.warning(f"🔍 [DEBUG] DocumentParser: Page {page_number} failed: {page_result.get('error', 'Unknown error')}")
+            
+            # Создаем общий результат
+            combined_result = {
+                "document_id": document_id,
+                "total_pages": len(page_results),
+                "successful_pages": successful_pages,
+                "failed_pages": failed_pages,
+                "total_findings": total_findings,
+                "critical_findings": critical_findings,
+                "warning_findings": warning_findings,
+                "info_findings": info_findings,
+                "findings": all_findings,
+                "status": "completed" if failed_pages == 0 else "completed_with_errors"
+            }
+            
+            logger.info(f"🔍 [DEBUG] DocumentParser: Combined result: {total_findings} total findings, "
+                       f"{critical_findings} critical, {warning_findings} warnings, {info_findings} info")
+            
+            return combined_result
+            
+        except Exception as e:
+            logger.error(f"🔍 [DEBUG] DocumentParser: Error combining page results: {e}")
+            return {
+                "document_id": document_id,
+                "status": "error",
+                "error": str(e)
+            }
+
     def split_document_into_pages(self, document_id: int) -> List[Dict[str, Any]]:
         """Разбиение документа на страницы в соответствии с реальной структурой PDF"""
+        logger.info(f"🔍 [DEBUG] DocumentParser: Starting split_document_into_pages for document {document_id}")
         try:
             pages = []
             
@@ -1777,9 +2243,13 @@ class DocumentParser:
                     "elements": current_page_elements
                 })
             
-            logger.info(f"Split document {document_id} into {len(pages)} pages based on PDF structure")
+            logger.info(f"🔍 [DEBUG] DocumentParser: Split document {document_id} into {len(pages)} pages based on PDF structure")
+            logger.info(f"🔍 [DEBUG] DocumentParser: Page details for document {document_id}:")
             for page in pages:
-                logger.info(f"Page {page['page_number']}: {page['char_count']} chars, {page['element_count']} elements")
+                logger.info(f"🔍 [DEBUG] DocumentParser: - Page {page['page_number']}: {page['char_count']} chars, {page['element_count']} elements")
+                logger.info(f"🔍 [DEBUG] DocumentParser: - Page {page['page_number']} content preview: {page['content'][:100]}...")
+            
+            logger.info(f"🔍 [DEBUG] DocumentParser: split_document_into_pages completed for document {document_id}")
             
             return pages
             
@@ -1790,12 +2260,19 @@ class DocumentParser:
 
     async def perform_norm_control_check_for_page(self, document_id: int, page_data: Dict[str, Any]) -> Dict[str, Any]:
         """Выполнение проверки нормоконтроля для одной страницы документа"""
+        logger.info(f"🔍 [DEBUG] DocumentParser: Starting norm control check for document {document_id}, page {page_data['page_number']}")
+        logger.info(f"🔍 [DEBUG] DocumentParser: Page parameters:")
+        logger.info(f"🔍 [DEBUG] DocumentParser: - Page number: {page_data['page_number']}")
+        logger.info(f"🔍 [DEBUG] DocumentParser: - Content length: {len(page_data['content'])} characters")
+        logger.info(f"🔍 [DEBUG] DocumentParser: - Element count: {page_data['element_count']}")
+        logger.info(f"🔍 [DEBUG] DocumentParser: - Content preview: {page_data['content'][:100]}...")
+        
         try:
             page_number = page_data["page_number"]
             page_content = page_data["content"]
             
-            logger.info(f"Starting norm control check for document {document_id}, page {page_number}")
-            logger.info(f"Page content length: {len(page_content)} characters")
+            logger.info(f"🔍 [DEBUG] DocumentParser: Starting norm control check for document {document_id}, page {page_number}")
+            logger.info(f"🔍 [DEBUG] DocumentParser: Page content length: {len(page_content)} characters")
             
             # ===== ПОЛУЧЕНИЕ ПРОМПТА ДЛЯ LLM ИЗ СИСТЕМЫ НАСТРОЕК =====
             # Получаем полный шаблон промпта для нормоконтроля из системы настроек
@@ -1812,7 +2289,7 @@ class DocumentParser:
             logger.info(f"Sending request to LLM for page {page_number}...")
             logger.info(f"Prompt length: {len(prompt)} characters")
             
-            async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
+            async with httpx.AsyncClient(verify=False, timeout=LLM_REQUEST_TIMEOUT) as client:
                 response = await client.post(
                     "http://gateway:8443/v1/chat/completions",
                     headers={
@@ -1989,54 +2466,50 @@ class DocumentParser:
 
     async def save_norm_control_result(self, document_id: int, check_result: Dict[str, Any]):
         """Сохранение результата проверки нормоконтроля от LLM в базу данных"""
-        try:
-            with self.db_conn.cursor() as cursor:
+        def _save_result(conn):
+            with conn.cursor() as cursor:
                 cursor.execute("""
                     INSERT INTO norm_control_results 
-                    (checkable_document_id, analysis_date, analysis_type, model_used, overall_status, confidence,
-                     total_findings, critical_findings, warning_findings, info_findings,
-                     findings_details, summary, compliance_score, recommendations)
-                    VALUES (%s, CURRENT_TIMESTAMP, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (checkable_document_id, analysis_date, analysis_type, model_used, analysis_status,
+                     total_findings, critical_findings, warning_findings, info_findings)
+                    VALUES (%s, CURRENT_TIMESTAMP, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """, (
                     document_id,
                     "norm_control",
                     "llama3.1:8b",
                     check_result.get("overall_status", "uncertain"),
-                    check_result.get("confidence", 0.0),
                     check_result.get("total_findings", 0),
                     check_result.get("critical_findings", 0),
                     check_result.get("warning_findings", 0),
-                    check_result.get("info_findings", 0),
-                    json.dumps(check_result.get("findings", [])),
-                    check_result.get("summary", ""),
-                    check_result.get("compliance_percentage", 0),
-                    check_result.get("recommendations", "")
+                    check_result.get("info_findings", 0)
                 ))
                 
                 result_id = cursor.fetchone()[0]
-                self.db_conn.commit()
-                
-                # ===== СОЗДАНИЕ ОТЧЕТА О ПРОВЕРКЕ LLM =====
-                # Создаем отчет о проверке на основе результатов LLM
-                await self.create_review_report(document_id, result_id, check_result)
-                
                 logger.info(f"Saved norm control result {result_id} for document {document_id}")
                 return result_id
+        
+        try:
+            result_id = self.execute_in_transaction(_save_result)
+            
+            # ===== СОЗДАНИЕ ОТЧЕТА О ПРОВЕРКЕ LLM =====
+            # Создаем отчет о проверке на основе результатов LLM
+            await self.create_review_report(document_id, result_id, check_result)
+            
+            return result_id
                 
         except Exception as e:
             logger.error(f"Save norm control result error: {e}")
-            self.db_conn.rollback()
             raise
 
     async def create_review_report(self, document_id: int, result_id: int, check_result: Dict[str, Any]):
         """Создание отчета о проверке на основе результатов LLM"""
-        try:
-            with self.db_conn.cursor() as cursor:
+        def _create_report(conn):
+            with conn.cursor() as cursor:
                 cursor.execute("""
                     INSERT INTO review_reports 
                     (checkable_document_id, norm_control_result_id, report_date, review_type,
-                     overall_status, reviewer_notes, report_content)
+                     overall_status, reviewer_name, conclusion)
                     VALUES (%s, %s, CURRENT_TIMESTAMP, %s, %s, %s, %s)
                     RETURNING id
                 """, (
@@ -2044,19 +2517,18 @@ class DocumentParser:
                     result_id,
                     "automatic",
                     check_result.get("overall_status", "uncertain"),
-                    f"Автоматическая проверка: {check_result.get('summary', '')}",
-                    json.dumps(check_result)
+                    "AI System",
+                    f"Автоматическая проверка: {check_result.get('summary', '')}"
                 ))
                 
                 report_id = cursor.fetchone()[0]
-                self.db_conn.commit()
-                
                 logger.info(f"Created review report {report_id} for document {document_id}")
                 return report_id
-                
+        
+        try:
+            return self.execute_in_transaction(_create_report)
         except Exception as e:
             logger.error(f"Create review report error: {e}")
-            self.db_conn.rollback()
             raise
 
 # Модели Pydantic
@@ -2078,6 +2550,14 @@ async def upload_document(
     print(f"🔍 [DEBUG] DocumentParser: Upload started for file: {file.filename}")
     print(f"🔍 [DEBUG] DocumentParser: File size: {file.size} bytes")
     print(f"🔍 [DEBUG] DocumentParser: Content type: {file.content_type}")
+    
+    # Проверка размера файла из конфигурации
+    if file.size and file.size > MAX_NORMATIVE_DOCUMENT_SIZE:
+        print(f"🔍 [DEBUG] DocumentParser: File too large: {file.size} bytes (max: {MAX_NORMATIVE_DOCUMENT_SIZE})")
+        raise HTTPException(
+            status_code=413, 
+            detail=f"File too large. Maximum size is {MAX_NORMATIVE_DOCUMENT_SIZE // (1024*1024)}MB. Your file is {file.size // (1024*1024)}MB"
+        )
     
     try:
         # Чтение файла
@@ -2221,6 +2701,78 @@ async def process_document_async(document_id: int, file_path: str, file_type: st
             print(f"🔍 [DEBUG] DocumentParser: Failed to update error status: {update_error}")
         
         logger.error(f"Async processing error for document {document_id}: {e}")
+
+async def process_checkable_document_async(document_id: int, document_content: str, filename: str):
+    """Асинхронная обработка проверяемого документа с постраничной проверкой нормоконтроля"""
+    logger.info(f"🔍 [DEBUG] DocumentParser: Starting async processing for checkable document {document_id}")
+    logger.info(f"🔍 [DEBUG] DocumentParser: Async processing parameters:")
+    logger.info(f"🔍 [DEBUG] DocumentParser: - Document ID: {document_id}")
+    logger.info(f"🔍 [DEBUG] DocumentParser: - Document content size: {len(document_content)} characters")
+    logger.info(f"🔍 [DEBUG] DocumentParser: - Filename: {filename}")
+    log_memory_usage("start of async processing")
+    
+    try:
+        # Обновляем статус на "processing"
+        logger.info(f"🔍 [DEBUG] DocumentParser: Updating document {document_id} status to 'processing'")
+        parser.update_checkable_document_status(document_id, "processing")
+        logger.info(f"🔍 [DEBUG] DocumentParser: Updated document {document_id} status to 'processing'")
+        
+        # Разбиваем документ на страницы
+        logger.info(f"🔍 [DEBUG] DocumentParser: Splitting document {document_id} into pages")
+        pages = parser.split_document_into_pages(document_id)
+        logger.info(f"🔍 [DEBUG] DocumentParser: Document {document_id} split into {len(pages)} pages")
+        
+        if not pages:
+            logger.warning(f"🔍 [DEBUG] DocumentParser: No pages found for document {document_id}, using fallback")
+            # Fallback: используем старый метод
+            result = await parser.perform_norm_control_check(document_id, document_content)
+        else:
+            # Выполняем постраничную проверку нормоконтроля
+            logger.info(f"🔍 [DEBUG] DocumentParser: Starting page-by-page norm control check for document {document_id}")
+            all_page_results = []
+            
+            for i, page_data in enumerate(pages):
+                page_number = page_data["page_number"]
+                logger.info(f"🔍 [DEBUG] DocumentParser: Processing page {page_number}/{len(pages)} for document {document_id}")
+                
+                try:
+                    # Выполняем проверку для одной страницы
+                    page_result = await parser.perform_norm_control_check_for_page(document_id, page_data)
+                    page_result["page_number"] = page_number
+                    all_page_results.append(page_result)
+                    
+                    logger.info(f"🔍 [DEBUG] DocumentParser: Page {page_number} processed successfully")
+                    
+                except Exception as page_error:
+                    logger.error(f"🔍 [DEBUG] DocumentParser: Error processing page {page_number}: {page_error}")
+                    all_page_results.append({
+                        "page_number": page_number,
+                        "status": "error",
+                        "error": str(page_error)
+                    })
+            
+            # Объединяем результаты всех страниц
+            logger.info(f"🔍 [DEBUG] DocumentParser: Combining results from {len(all_page_results)} pages")
+            result = parser.combine_page_results(document_id, all_page_results)
+        
+        logger.info(f"🔍 [DEBUG] DocumentParser: Norm control check completed for document {document_id}")
+        
+        # Обновляем статус на "completed"
+        parser.update_checkable_document_status(document_id, "completed")
+        logger.info(f"🔍 [DEBUG] DocumentParser: Updated document {document_id} status to 'completed'")
+        
+        logger.info(f"🔍 [DEBUG] DocumentParser: Async processing completed successfully for document {document_id}")
+        
+    except Exception as e:
+        logger.error(f"🔍 [DEBUG] DocumentParser: Error in async processing for checkable document {document_id}: {str(e)}")
+        import traceback
+        logger.error(f"🔍 [DEBUG] DocumentParser: Async processing traceback: {traceback.format_exc()}")
+        
+        # Обновляем статус на "error"
+        try:
+            parser.update_checkable_document_status(document_id, "error")
+        except Exception as update_error:
+            logger.error(f"🔍 [DEBUG] DocumentParser: Failed to update error status: {update_error}")
 
 @app.get("/documents")
 async def list_documents():
@@ -2393,35 +2945,103 @@ async def upload_checkable_document(
     file: UploadFile = File(...)
 ):
     """Загрузка проверяемого документа"""
+    logger.info(f"🔍 [DEBUG] DocumentParser: upload_checkable_document started for file: {file.filename}")
+    logger.info(f"🔍 [DEBUG] DocumentParser: Content-Type: {file.content_type}")
+    logger.info(f"🔍 [DEBUG] DocumentParser: File size from UploadFile: {file.size}")
+    logger.info(f"🔍 [DEBUG] DocumentParser: Processing mode: ASYNC")
+    logger.info(f"🔍 [DEBUG] DocumentParser: Memory limit: {MAX_CHECKABLE_DOCUMENT_SIZE // (1024*1024)}MB")
+    
+    # Проверка размера файла из конфигурации
+    if file.size and file.size > MAX_CHECKABLE_DOCUMENT_SIZE:
+        logger.warning(f"🔍 [DEBUG] DocumentParser: File too large: {file.size} bytes (max: {MAX_CHECKABLE_DOCUMENT_SIZE})")
+        raise HTTPException(
+            status_code=413, 
+            detail=f"File too large. Maximum size is {MAX_CHECKABLE_DOCUMENT_SIZE // (1024*1024)}MB. Your file is {file.size // (1024*1024)}MB"
+        )
+    
+    # Проверка доступной памяти перед обработкой
+    log_memory_usage("before file processing")
+    available_memory = get_available_memory()
+    file_size_mb = file.size / (1024 * 1024) if file.size else 0
+    
+    if available_memory < file_size_mb * 3:  # Нужно минимум 3x памяти для обработки
+        logger.warning(f"🔍 [DEBUG] DocumentParser: Insufficient memory for file {file_size_mb:.1f}MB. Available: {available_memory:.1f}MB")
+        raise HTTPException(
+            status_code=507,  # Insufficient Storage
+            detail=f"Insufficient memory for processing. File size: {file_size_mb:.1f}MB, Available memory: {available_memory:.1f}MB"
+        )
+    
     try:
         # Чтение файла
+        logger.info(f"🔍 [DEBUG] DocumentParser: Reading file content...")
         file_content = await file.read()
         file_size = len(file_content)
+        logger.info(f"🔍 [DEBUG] DocumentParser: File content read successfully, size: {file_size} bytes")
+        logger.info(f"🔍 [DEBUG] DocumentParser: Content preview (first 100 bytes): {file_content[:100]}")
         
         # Определение типа файла
+        logger.info(f"🔍 [DEBUG] DocumentParser: Detecting file type...")
         file_type = parser.detect_file_type(file_content)
+        logger.info(f"🔍 [DEBUG] DocumentParser: Detected file type: {file_type}")
         
         # Вычисление хеша
+        logger.info(f"🔍 [DEBUG] DocumentParser: Calculating file hash...")
         document_hash = parser.calculate_file_hash(file_content)
+        logger.info(f"🔍 [DEBUG] DocumentParser: Calculated hash: {document_hash}")
         
         # Проверка на дубликат
+        logger.info(f"🔍 [DEBUG] DocumentParser: Checking for duplicate document...")
         with parser.db_conn.cursor() as cursor:
             cursor.execute("SELECT id FROM checkable_documents WHERE document_hash = %s", (document_hash,))
-            if cursor.fetchone():
+            existing_doc = cursor.fetchone()
+            if existing_doc:
+                logger.warning(f"🔍 [DEBUG] DocumentParser: Document already exists with hash: {document_hash}, existing ID: {existing_doc[0]}")
                 raise HTTPException(status_code=400, detail="Document already exists")
+            else:
+                logger.info(f"🔍 [DEBUG] DocumentParser: No duplicate found, proceeding with upload")
         
         # Парсинг документа
+        logger.info(f"🔍 [DEBUG] DocumentParser: Starting document parsing for type: {file_type}")
+        
         if file_type == "pdf":
-            # TODO: log start of parsing process
-            inspection_result = parser.parse_pdf(file_content)
-            # TODO: log result of partong PDF
+            logger.info(f"🔍 [DEBUG] DocumentParser: Parsing PDF document...")
+            logger.info(f"🔍 [DEBUG] DocumentParser: PDF size: {file_size / (1024*1024):.1f}MB")
+            
+            # Для больших файлов используем увеличенный таймаут
+            import asyncio
+            pdf_timeout = 1200 if file_size > 10 * 1024 * 1024 else 600  # 20 мин для файлов > 10MB, 10 мин для остальных
+            
+            try:
+                # Запускаем парсинг с таймаутом
+                inspection_result = await asyncio.wait_for(
+                    asyncio.to_thread(parser.parse_pdf, file_content),
+                    timeout=pdf_timeout
+                )
+                logger.info(f"🔍 [DEBUG] DocumentParser: PDF parsing completed successfully")
+                logger.info(f"🔍 [DEBUG] DocumentParser: Parsed {len(inspection_result.document_pages_results)} pages")
+                logger.info(f"🔍 [DEBUG] DocumentParser: Document stats - Total: {inspection_result.document_pages}, Vector: {inspection_result.document_pages_vector}, Scanned: {inspection_result.document_pages_scanned}")
+                
+            except asyncio.TimeoutError:
+                logger.error(f"🔍 [DEBUG] DocumentParser: PDF parsing timeout after {pdf_timeout} seconds")
+                raise HTTPException(
+                    status_code=408,  # Request Timeout
+                    detail=f"PDF parsing timeout after {pdf_timeout} seconds. File is too large or complex."
+                )
+            except Exception as pdf_error:
+                logger.error(f"🔍 [DEBUG] DocumentParser: PDF parsing error: {pdf_error}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"PDF parsing failed: {str(pdf_error)}"
+                )
 
         elif file_type == "docx":
+            logger.info(f"🔍 [DEBUG] DocumentParser: Parsing DOCX document...")
             # Временно используем старый метод для docx
             elements = parser.parse_docx(file_content)
+            logger.info(f"🔍 [DEBUG] DocumentParser: DOCX parsing completed, found {len(elements)} elements")
             inspection_result = DocumentInspectionResult()
             inspection_result.document_pages_results = []
-            for element in elements:
+            for i, element in enumerate(elements):
                 page_result = DocumentPageInspectionResult()
                 page_result.page_number = element.get("page_number", 1)
                 page_result.page_text = element.get("element_content", "")
@@ -2430,12 +3050,16 @@ async def upload_checkable_document(
                 page_result.page_text_length = len(element.get("element_content", ""))
                 page_result.page_type = "vector"
                 inspection_result.document_pages_results.append(page_result)
+                logger.debug(f"🔍 [DEBUG] DocumentParser: Processed DOCX element {i+1}, page {page_result.page_number}, text length: {page_result.page_text_length}")
+            logger.info(f"🔍 [DEBUG] DocumentParser: DOCX processing completed, created {len(inspection_result.document_pages_results)} page results")
         elif file_type == "dwg":
+            logger.info(f"🔍 [DEBUG] DocumentParser: Parsing DWG document...")
             # Временно используем старый метод для dwg
             elements = parser.parse_dwg(file_content)
+            logger.info(f"🔍 [DEBUG] DocumentParser: DWG parsing completed, found {len(elements)} elements")
             inspection_result = DocumentInspectionResult()
             inspection_result.document_pages_results = []
-            for element in elements:
+            for i, element in enumerate(elements):
                 page_result = DocumentPageInspectionResult()
                 page_result.page_number = element.get("page_number", 1)
                 page_result.page_text = element.get("element_content", "")
@@ -2444,12 +3068,16 @@ async def upload_checkable_document(
                 page_result.page_text_length = len(element.get("element_content", ""))
                 page_result.page_type = "vector"
                 inspection_result.document_pages_results.append(page_result)
+                logger.debug(f"🔍 [DEBUG] DocumentParser: Processed DWG element {i+1}, page {page_result.page_number}, text length: {page_result.page_text_length}")
+            logger.info(f"🔍 [DEBUG] DocumentParser: DWG processing completed, created {len(inspection_result.document_pages_results)} page results")
         elif file_type == "ifc":
+            logger.info(f"🔍 [DEBUG] DocumentParser: Parsing IFC document...")
             # Временно используем старый метод для ifc
             elements = parser.parse_ifc(file_content)
+            logger.info(f"🔍 [DEBUG] DocumentParser: IFC parsing completed, found {len(elements)} elements")
             inspection_result = DocumentInspectionResult()
             inspection_result.document_pages_results = []
-            for element in elements:
+            for i, element in enumerate(elements):
                 page_result = DocumentPageInspectionResult()
                 page_result.page_number = element.get("page_number", 1)
                 page_result.page_text = element.get("element_content", "")
@@ -2458,12 +3086,16 @@ async def upload_checkable_document(
                 page_result.page_text_length = len(element.get("element_content", ""))
                 page_result.page_type = "vector"
                 inspection_result.document_pages_results.append(page_result)
+                logger.debug(f"🔍 [DEBUG] DocumentParser: Processed IFC element {i+1}, page {page_result.page_number}, text length: {page_result.page_text_length}")
+            logger.info(f"🔍 [DEBUG] DocumentParser: IFC processing completed, created {len(inspection_result.document_pages_results)} page results")
         elif file_type == "txt":
+            logger.info(f"🔍 [DEBUG] DocumentParser: Parsing TXT document...")
             # Временно используем старый метод для txt
             elements = parser.parse_text(file_content)
+            logger.info(f"🔍 [DEBUG] DocumentParser: TXT parsing completed, found {len(elements)} elements")
             inspection_result = DocumentInspectionResult()
             inspection_result.document_pages_results = []
-            for element in elements:
+            for i, element in enumerate(elements):
                 page_result = DocumentPageInspectionResult()
                 page_result.page_number = element.get("page_number", 1)
                 page_result.page_text = element.get("element_content", "")
@@ -2472,14 +3104,21 @@ async def upload_checkable_document(
                 page_result.page_text_length = len(element.get("element_content", ""))
                 page_result.page_type = "vector"
                 inspection_result.document_pages_results.append(page_result)
+                logger.debug(f"🔍 [DEBUG] DocumentParser: Processed TXT element {i+1}, page {page_result.page_number}, text length: {page_result.page_text_length}")
+            logger.info(f"🔍 [DEBUG] DocumentParser: TXT processing completed, created {len(inspection_result.document_pages_results)} page results")
         else:
+            logger.error(f"🔍 [DEBUG] DocumentParser: Unsupported file type: {file_type}")
             raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_type}")
         
         # Определение категории документа
+        logger.info(f"🔍 [DEBUG] DocumentParser: Determining document category...")
         content_text = "\n".join([page_result.page_text for page_result in inspection_result.document_pages_results])
+        logger.debug(f"🔍 [DEBUG] DocumentParser: Content text length: {len(content_text)} characters")
         category = parser.determine_document_category(file.filename, content_text)
+        logger.info(f"🔍 [DEBUG] DocumentParser: Determined category: {category}")
         
         # Сохранение как проверяемый документ
+        logger.info(f"🔍 [DEBUG] DocumentParser: Saving checkable document to database...")
         document_id = parser.save_checkable_document(
             file.filename,
             file.filename,
@@ -2489,15 +3128,27 @@ async def upload_checkable_document(
             inspection_result,
             category
         )
+        logger.info(f"🔍 [DEBUG] DocumentParser: Document saved successfully with ID: {document_id}")
         
-        return {
+        # Запуск асинхронной проверки нормоконтроля
+        logger.info(f"🔍 [DEBUG] DocumentParser: Starting async norm control check...")
+        document_content = "\n\n".join([page_result.page_text for page_result in inspection_result.document_pages_results])
+        background_tasks.add_task(
+            process_checkable_document_async,
+            document_id=document_id,
+            document_content=document_content,
+            filename=file.filename
+        )
+        
+        # Подготовка ответа
+        response_data = {
             "document_id": document_id,
             "filename": file.filename,
             "file_type": file_type,
             "file_size": file_size,
             "pages_count": len(inspection_result.document_pages_results),
             "category": category,
-            "status": "completed",
+            "status": "processing",  # Изменено с "completed" на "processing"
             "review_deadline": (datetime.now() + timedelta(days=2)).isoformat(),
             "document_stats": {
                 "total_pages": inspection_result.document_pages,
@@ -2505,13 +3156,22 @@ async def upload_checkable_document(
                 "scanned_pages": inspection_result.document_pages_scanned,
                 "unknown_pages": inspection_result.document_pages_unknown,
                 "a4_sheets_equivalent": inspection_result.document_pages_total_a4_sheets_equivalent
-            }
+            },
+            "message": "Document uploaded successfully. Norm control check started in background."
         }
         
+        logger.info(f"🔍 [DEBUG] DocumentParser: Upload completed successfully")
+        logger.info(f"🔍 [DEBUG] DocumentParser: Response data: {response_data}")
+        
+        return response_data
+        
+    except HTTPException as http_ex:
+        logger.warning(f"🔍 [DEBUG] DocumentParser: HTTPException raised: {http_ex.status_code} - {http_ex.detail}")
+        raise
     except Exception as e:
-        logger.error(f"Upload checkable document error: {e}")
+        logger.error(f"🔍 [DEBUG] DocumentParser: Upload checkable document error: {e}")
         import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
+        logger.error(f"🔍 [DEBUG] DocumentParser: Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/checkable-documents")
@@ -2694,7 +3354,7 @@ async def get_document_tokens(document_id: int):
             # Подсчитываем токены по типам элементов
             token_stats = {
                 "total_tokens": document['token_count'] or 0,
-                "elements_count": len(elements.document_pages_results),
+                "elements_count": len(elements),
                 "by_type": {},
                 "by_page": {}
             }
@@ -2889,9 +3549,8 @@ async def get_checkable_document_report(document_id: int):
             
             # Получаем результаты нормоконтроля
             cursor.execute("""
-                SELECT id, analysis_date, overall_status, confidence,
-                       total_findings, critical_findings, warning_findings, info_findings,
-                       findings_details, summary, compliance_score, recommendations
+                SELECT id, analysis_date, analysis_status,
+                       total_findings, critical_findings, warning_findings, info_findings
                 FROM norm_control_results
                 WHERE checkable_document_id = %s
                 ORDER BY analysis_date DESC
@@ -2901,7 +3560,7 @@ async def get_checkable_document_report(document_id: int):
             
             # Получаем отчеты о проверке
             cursor.execute("""
-                SELECT id, report_date, overall_status, reviewer_notes, report_content
+                SELECT id, report_date, overall_status, reviewer_name, conclusion
                 FROM review_reports
                 WHERE checkable_document_id = %s
                 ORDER BY report_date DESC
@@ -2966,11 +3625,75 @@ async def get_document_format_statistics(document_id: int):
         logger.error(f"Get document format statistics error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/documents/stats")
+async def get_documents_stats():
+    """Получение статистики нормативных документов"""
+    try:
+        with parser.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            # Общая статистика по документам
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_documents,
+                    COUNT(CASE WHEN processing_status = 'completed' THEN 1 END) as completed_documents,
+                    COUNT(CASE WHEN processing_status = 'pending' THEN 1 END) as pending_documents,
+                    COUNT(CASE WHEN processing_status = 'error' THEN 1 END) as error_documents,
+                    COUNT(DISTINCT category) as unique_categories,
+                    SUM(token_count) as total_tokens
+                FROM uploaded_documents
+            """)
+            doc_stats = cursor.fetchone()
+            
+            # Статистика по категориям
+            cursor.execute("""
+                SELECT 
+                    category,
+                    COUNT(*) as count,
+                    SUM(token_count) as total_tokens
+                FROM uploaded_documents
+                WHERE category IS NOT NULL AND category != ''
+                GROUP BY category
+                ORDER BY count DESC
+            """)
+            categories = cursor.fetchall()
+            
+            # Статистика по извлеченным элементам
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_elements,
+                    COUNT(DISTINCT uploaded_document_id) as documents_with_elements
+                FROM extracted_elements
+            """)
+            elements_stats = cursor.fetchone()
+            
+            # Вычисляем прогресс индексации
+            total_docs = doc_stats["total_documents"] or 0
+            completed_docs = doc_stats["completed_documents"] or 0
+            indexing_progress = (completed_docs / total_docs * 100) if total_docs > 0 else 0
+            
+        return {
+            "status": "success",
+            "statistics": {
+                "total_documents": total_docs,
+                "indexed_documents": completed_docs,
+                "indexing_progress_percent": round(indexing_progress, 1),
+                "categories_count": doc_stats["unique_categories"] or 0,
+                "total_tokens": doc_stats["total_tokens"] or 0,
+                "total_elements": elements_stats["total_elements"] or 0,
+                "documents_with_elements": elements_stats["documents_with_elements"] or 0,
+                "categories": [dict(cat) for cat in categories]
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Get documents stats error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/metrics")
 async def get_metrics():
     """Получение метрик сервиса"""
     try:
-        with parser.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+        db_conn = parser.get_db_connection()
+        with db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
             # Статистика по загруженным документам
             cursor.execute("""
                 SELECT 
@@ -3100,12 +3823,505 @@ async def get_metrics():
         logger.error(f"Get metrics error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+def safe_text(text: str) -> str:
+    """Безопасное отображение текста в PDF"""
+    if text is None:
+        return ""
+    # Заменяем проблемные символы на безопасные аналоги
+    replacements = {
+        'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'e',
+        'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+        'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+        'ф': 'f', 'х': 'h', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'sch',
+        'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya',
+        'А': 'A', 'Б': 'B', 'В': 'V', 'Г': 'G', 'Д': 'D', 'Е': 'E', 'Ё': 'E',
+        'Ж': 'ZH', 'З': 'Z', 'И': 'I', 'Й': 'Y', 'К': 'K', 'Л': 'L', 'М': 'M',
+        'Н': 'N', 'О': 'O', 'П': 'P', 'Р': 'R', 'С': 'S', 'Т': 'T', 'У': 'U',
+        'Ф': 'F', 'Х': 'H', 'Ц': 'TS', 'Ч': 'CH', 'Ш': 'SH', 'Щ': 'SCH',
+        'Ъ': '', 'Ы': 'Y', 'Ь': '', 'Э': 'E', 'Ю': 'YU', 'Я': 'YA'
+    }
+    
+    result = ""
+    for char in str(text):
+        result += replacements.get(char, char)
+    return result
+
+def generate_docx_report_from_template(document: Dict, norm_control_result: Dict, page_results: List[Dict], review_report: Dict) -> bytes:
+    """Генерация отчета на основе шаблона DOCX"""
+    try:
+        from docx import Document
+        from docx.shared import Inches
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.oxml.shared import OxmlElement, qn
+        from docx.oxml.ns import nsdecls
+        from docx.oxml import parse_xml
+        
+        # Загружаем шаблон
+        template_path = "/app/report_format/ОТЧЕТ_file_name.docx"
+        doc = Document(template_path)
+        
+        # Заменяем плейсхолдеры в документе
+        for paragraph in doc.paragraphs:
+            # Заменяем плейсхолдеры
+            if "{{DOCUMENT_NAME}}" in paragraph.text:
+                paragraph.text = paragraph.text.replace("{{DOCUMENT_NAME}}", document['original_filename'])
+            if "{{DOCUMENT_TYPE}}" in paragraph.text:
+                paragraph.text = paragraph.text.replace("{{DOCUMENT_TYPE}}", document['file_type'].upper())
+            if "{{FILE_SIZE}}" in paragraph.text:
+                paragraph.text = paragraph.text.replace("{{FILE_SIZE}}", f"{document['file_size'] / 1024:.1f} KB")
+            if "{{UPLOAD_DATE}}" in paragraph.text:
+                paragraph.text = paragraph.text.replace("{{UPLOAD_DATE}}", document['upload_date'].strftime("%d.%m.%Y %H:%M"))
+            if "{{CATEGORY}}" in paragraph.text:
+                paragraph.text = paragraph.text.replace("{{CATEGORY}}", document['category'])
+            if "{{STATUS}}" in paragraph.text:
+                paragraph.text = paragraph.text.replace("{{STATUS}}", document['processing_status'])
+            
+            # Заменяем результаты нормоконтроля
+            if norm_control_result:
+                if "{{TOTAL_FINDINGS}}" in paragraph.text:
+                    paragraph.text = paragraph.text.replace("{{TOTAL_FINDINGS}}", str(norm_control_result['total_findings'] or 0))
+                if "{{CRITICAL_FINDINGS}}" in paragraph.text:
+                    paragraph.text = paragraph.text.replace("{{CRITICAL_FINDINGS}}", str(norm_control_result['critical_findings'] or 0))
+                if "{{WARNING_FINDINGS}}" in paragraph.text:
+                    paragraph.text = paragraph.text.replace("{{WARNING_FINDINGS}}", str(norm_control_result['warning_findings'] or 0))
+                if "{{INFO_FINDINGS}}" in paragraph.text:
+                    paragraph.text = paragraph.text.replace("{{INFO_FINDINGS}}", str(norm_control_result['info_findings'] or 0))
+                if "{{ANALYSIS_DATE}}" in paragraph.text:
+                    analysis_date = norm_control_result['analysis_date'].strftime("%d.%m.%Y %H:%M") if norm_control_result['analysis_date'] else "Не указана"
+                    paragraph.text = paragraph.text.replace("{{ANALYSIS_DATE}}", analysis_date)
+        
+        # Добавляем детальные результаты по страницам
+        if page_results:
+            doc.add_paragraph("ДЕТАЛЬНЫЕ РЕЗУЛЬТАТЫ ПО СТРАНИЦАМ", style='Heading 2')
+            
+            for page_result in page_results:
+                page_num = page_result.get('page_number', 'N/A')
+                status = page_result.get('status', 'N/A')
+                findings_count = len(page_result.get('findings', []))
+                
+                p = doc.add_paragraph()
+                p.add_run(f"Страница {page_num}: ").bold = True
+                p.add_run(f"Статус: {status}, Найдено замечаний: {findings_count}")
+                
+                # Добавляем замечания для страницы
+                findings = page_result.get('findings', [])
+                for finding in findings:
+                    finding_p = doc.add_paragraph()
+                    finding_p.add_run(f"• {finding.get('type', 'Unknown')}: ").bold = True
+                    finding_p.add_run(finding.get('description', 'No description'))
+        
+        # Сохраняем в буфер
+        buffer = io.BytesIO()
+        doc.save(buffer)
+        buffer.seek(0)
+        
+        return buffer.getvalue()
+        
+    except Exception as e:
+        logger.error(f"Error generating DOCX report: {e}")
+        # Fallback к PDF генерации
+        return generate_pdf_report(document, norm_control_result, page_results, review_report)
+
+def extract_project_info_from_filename(filename: str) -> Dict[str, str]:
+    """Извлечение информации о проекте из имени файла"""
+    import re
+    
+    project_info = {
+        'project_name': 'Не определено',
+        'engineering_stage': 'Не определена',
+        'document_mark': 'Не определена',
+        'revision': 'Не определена',
+        'page_count': 'Не определено'
+    }
+    
+    try:
+        # Примеры паттернов для извлечения информации
+        # Е110-0038-УКК_24.848-РД-01-02.12.032-АР_0_0_RU_IFC.pdf
+        
+        # Извлекаем марку документа (КЖ, КМ, АС, ТХ и т.д.)
+        mark_pattern = r'[А-Я]{2}'
+        mark_match = re.search(mark_pattern, filename)
+        if mark_match:
+            project_info['document_mark'] = mark_match.group(0)
+        
+        # Извлекаем номер проекта
+        project_pattern = r'(\d{4}-\d{4})'
+        project_match = re.search(project_pattern, filename)
+        if project_match:
+            project_info['project_name'] = f"Проект {project_match.group(1)}"
+        
+        # Извлекаем ревизию
+        revision_pattern = r'_(\d+)_(\d+)_'
+        revision_match = re.search(revision_pattern, filename)
+        if revision_match:
+            project_info['revision'] = f"{revision_match.group(1)}.{revision_match.group(2)}"
+        
+        # Определяем стадию проектирования по марке
+        if project_info['document_mark'] in ['КЖ', 'КМ']:
+            project_info['engineering_stage'] = 'КЖ/КМ'
+        elif project_info['document_mark'] in ['АС', 'ТХ']:
+            project_info['engineering_stage'] = 'АС/ТХ'
+        elif project_info['document_mark'] in ['КС', 'КП']:
+            project_info['engineering_stage'] = 'КС/КП'
+        
+    except Exception as e:
+        logger.error(f"Error extracting project info: {e}")
+    
+    return project_info
+
+def group_findings_by_pages(page_results: List[Dict]) -> Dict[int, List[Dict]]:
+    """Группировка замечаний по страницам"""
+    page_findings = {}
+    
+    for finding in page_results:
+        # Извлекаем номер страницы из замечания
+        page_num = finding.get('page_number', 1)
+        if page_num not in page_findings:
+            page_findings[page_num] = []
+        page_findings[page_num].append(finding)
+    
+    return page_findings
+
+def get_severity_text(severity_level: int) -> str:
+    """Получение текстового описания важности замечания"""
+    severity_map = {
+        3: "Критическое",
+        2: "Предупреждение", 
+        1: "Информационное"
+    }
+    return severity_map.get(severity_level, "Не определено")
+
+def generate_conclusion(norm_control_result: Dict, page_summary: Dict[int, List[Dict]]) -> str:
+    """Генерация заключения на основе результатов проверки"""
+    if not norm_control_result:
+        return "Анализ не завершен или результаты недоступны."
+    
+    total_findings = norm_control_result.get('total_findings', 0)
+    critical_findings = norm_control_result.get('critical_findings', 0)
+    warning_findings = norm_control_result.get('warning_findings', 0)
+    
+    total_pages = len(page_summary)
+    pages_with_critical = sum(1 for findings in page_summary.values() 
+                             if any(f.get('severity_level') == 3 for f in findings))
+    pages_with_warnings = sum(1 for findings in page_summary.values() 
+                             if any(f.get('severity_level') in [1, 2] for f in findings))
+    
+    conclusion_parts = []
+    
+    if critical_findings > 0:
+        conclusion_parts.append(f"Обнаружено {critical_findings} критических замечаний на {pages_with_critical} страницах.")
+        conclusion_parts.append("Документ требует исправления критических замечаний перед принятием.")
+    elif warning_findings > 0:
+        conclusion_parts.append(f"Обнаружено {warning_findings} замечаний на {pages_with_warnings} страницах.")
+        conclusion_parts.append("Документ может быть принят с учетом устранения замечаний.")
+    else:
+        conclusion_parts.append("Критических замечаний и предупреждений не обнаружено.")
+        conclusion_parts.append("Документ соответствует нормативным требованиям и рекомендуется к принятию.")
+    
+    conclusion_parts.append(f"Проверено страниц: {total_pages}")
+    conclusion_parts.append(f"Общее количество замечаний: {total_findings}")
+    
+    return " ".join(conclusion_parts)
+
+def generate_pdf_report(document: Dict, norm_control_result: Dict, page_results: List[Dict], review_report: Dict) -> bytes:
+    """Генерация PDF отчета по результатам нормоконтроля с улучшенной структурой"""
+    try:
+        # Создаем буфер для PDF
+        buffer = io.BytesIO()
+        
+        # Создаем документ
+        doc = SimpleDocTemplate(buffer, pagesize=A4)
+        story = []
+        
+        # Используем стандартный шрифт
+        font_name = 'Helvetica'
+        
+        # Стили с поддержкой кириллицы
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontName=font_name,
+            fontSize=18,
+            spaceAfter=30,
+            alignment=TA_CENTER,
+            textColor=colors.darkblue
+        )
+        heading_style = ParagraphStyle(
+            'CustomHeading',
+            parent=styles['Heading2'],
+            fontName=font_name,
+            fontSize=14,
+            spaceAfter=20,
+            textColor=colors.darkblue
+        )
+        subheading_style = ParagraphStyle(
+            'CustomSubHeading',
+            parent=styles['Heading3'],
+            fontName=font_name,
+            fontSize=12,
+            spaceAfter=15,
+            textColor=colors.darkblue
+        )
+        normal_style = ParagraphStyle(
+            'CustomNormal',
+            parent=styles['Normal'],
+            fontName=font_name,
+            fontSize=10
+        )
+        small_style = ParagraphStyle(
+            'CustomSmall',
+            parent=styles['Normal'],
+            fontName=font_name,
+            fontSize=8
+        )
+        
+        # 1. Заголовок отчета
+        filename = document.get('original_filename', 'Неизвестный файл')
+        story.append(Paragraph(safe_text("ОТЧЕТ ОБ АВТОМАТИЗИРОВАННОЙ ПРОВЕРКЕ"), title_style))
+        story.append(Paragraph(safe_text(f'"{filename}"'), title_style))
+        story.append(Spacer(1, 30))
+        
+        # 2. Информация о проекте и документе
+        story.append(Paragraph(safe_text("1. ИНФОРМАЦИЯ О ПРОЕКТЕ И ДОКУМЕНТЕ"), heading_style))
+        
+        # Извлекаем информацию о проекте из имени файла
+        project_info = extract_project_info_from_filename(filename)
+        
+        project_data = [
+            [safe_text("Параметр"), safe_text("Значение")],
+            [safe_text("Название проекта"), safe_text(project_info.get('project_name', 'Не определено'))],
+            [safe_text("Стадия проектирования"), safe_text(project_info.get('engineering_stage', 'Не определена'))],
+            [safe_text("Марка комплекта документации"), safe_text(project_info.get('document_mark', 'Не определена'))],
+            [safe_text("Ревизия документации"), safe_text(project_info.get('revision', 'Не определена'))],
+            [safe_text("Количество страниц"), safe_text(str(project_info.get('page_count', 'Не определено')))],
+            [safe_text("Название файла"), safe_text(filename)],
+            [safe_text("Тип файла"), safe_text(document.get('file_type', '').upper())],
+            [safe_text("Размер файла"), safe_text(f"{document.get('file_size', 0) / 1024:.1f} KB")],
+            [safe_text("Дата загрузки"), safe_text(document.get('upload_date', '').strftime("%d.%m.%Y %H:%M") if document.get('upload_date') else "Не указана")],
+            [safe_text("Дата проверки"), safe_text(norm_control_result.get('analysis_date', '').strftime("%d.%m.%Y %H:%M") if norm_control_result and norm_control_result.get('analysis_date') else "Не указана")]
+        ]
+        
+        project_table = Table(project_data, colWidths=[2.5*inch, 3.5*inch])
+        project_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (-1, 0), font_name),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+        ]))
+        story.append(project_table)
+        story.append(Spacer(1, 20))
+        
+        # 3. Сводная таблица по страницам
+        story.append(Paragraph(safe_text("2. СВОДНАЯ ТАБЛИЦА ПО СТРАНИЦАМ"), heading_style))
+        
+        # Группируем результаты по страницам
+        page_summary = group_findings_by_pages(page_results)
+        
+        summary_headers = [
+            safe_text("№ стр."), 
+            safe_text("Проверена"), 
+            safe_text("Критич."), 
+            safe_text("Замечания"), 
+            safe_text("Вывод"), 
+            safe_text("Статус")
+        ]
+        
+        summary_data = [summary_headers]
+        total_critical = 0
+        total_warnings = 0
+        total_pages = len(page_summary)
+        pages_approved = 0
+        pages_rejected = 0
+        
+        for page_num, page_findings in sorted(page_summary.items()):
+            critical_count = sum(1 for f in page_findings if f.get('severity_level') == 3)
+            warning_count = sum(1 for f in page_findings if f.get('severity_level') in [1, 2])
+            total_critical += critical_count
+            total_warnings += warning_count
+            
+            # Определяем статус страницы
+            if critical_count > 0:
+                status = safe_text("Отклонена")
+                page_status = safe_text("На исправление")
+                pages_rejected += 1
+            elif warning_count > 0:
+                status = safe_text("Условно принята")
+                page_status = safe_text("Требует доработки")
+                pages_approved += 1
+            else:
+                status = safe_text("Принята")
+                page_status = safe_text("Одобрена")
+                pages_approved += 1
+            
+            summary_data.append([
+                safe_text(str(page_num)),
+                safe_text("Да"),
+                safe_text(str(critical_count)),
+                safe_text(str(warning_count)),
+                safe_text(status),
+                safe_text(page_status)
+            ])
+        
+        # Добавляем итоговую строку
+        summary_data.append([
+            safe_text("ИТОГО"),
+            safe_text(str(total_pages)),
+            safe_text(str(total_critical)),
+            safe_text(str(total_warnings)),
+            safe_text(f"Принято: {pages_approved}, Отклонено: {pages_rejected}"),
+            safe_text("" if total_critical == 0 else "Требует исправления")
+        ])
+        
+        summary_table = Table(summary_data, colWidths=[0.8*inch, 1*inch, 0.8*inch, 1*inch, 1.5*inch, 1.5*inch])
+        summary_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), font_name),
+            ('FONTSIZE', (0, 0), (-1, 0), 9),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -2), colors.beige),
+            ('BACKGROUND', (0, -1), (-1, -1), colors.lightblue),
+            ('FONTNAME', (0, -1), (-1, -1), font_name),
+            ('FONTSIZE', (0, -1), (-1, -1), 9),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+        ]))
+        story.append(summary_table)
+        story.append(Spacer(1, 20))
+        
+        # 4. Детальная информация по страницам
+        story.append(Paragraph(safe_text("3. ДЕТАЛЬНАЯ ИНФОРМАЦИЯ ПО СТРАНИЦАМ"), heading_style))
+        
+        for page_num, page_findings in sorted(page_summary.items()):
+            if page_findings:  # Показываем только страницы с замечаниями
+                story.append(Paragraph(safe_text(f"Страница {page_num}"), subheading_style))
+                
+                for finding in page_findings:
+                    severity_text = get_severity_text(finding.get('severity_level', 1))
+                    clause_id = finding.get('clause_id', 'Не указан')
+                    location = finding.get('location', 'Не указано')
+                    
+                    finding_text = f"""
+                    <b>Тип:</b> {finding.get('finding_type', 'Не указан')} | 
+                    <b>Важность:</b> {severity_text} | 
+                    <b>Clause ID:</b> {clause_id} | 
+                    <b>Место:</b> {location}
+                    <br/>
+                    <b>Название:</b> {finding.get('title', 'Не указано')}
+                    <br/>
+                    <b>Описание:</b> {finding.get('description', 'Не указано')}
+                    <br/>
+                    <b>Рекомендация:</b> {finding.get('recommendation', 'Не указано')}
+                    """
+                    
+                    story.append(Paragraph(safe_text(finding_text), normal_style))
+                    story.append(Spacer(1, 10))
+        
+        # 5. Общие результаты
+        story.append(Paragraph(safe_text("4. ОБЩИЕ РЕЗУЛЬТАТЫ ПРОВЕРКИ"), heading_style))
+        
+        if norm_control_result:
+            results_data = [
+                [safe_text("Параметр"), safe_text("Значение")],
+                [safe_text("Общее количество замечаний"), safe_text(str(norm_control_result.get('total_findings', 0)))],
+                [safe_text("Критические замечания"), safe_text(str(norm_control_result.get('critical_findings', 0)))],
+                [safe_text("Предупреждения"), safe_text(str(norm_control_result.get('warning_findings', 0)))],
+                [safe_text("Информационные замечания"), safe_text(str(norm_control_result.get('info_findings', 0)))],
+                [safe_text("Статус анализа"), safe_text(norm_control_result.get('analysis_status', 'Не указан'))]
+            ]
+            
+            results_table = Table(results_data, colWidths=[2.5*inch, 3.5*inch])
+            results_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, 0), font_name),
+                ('FONTSIZE', (0, 0), (-1, 0), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black)
+            ]))
+            story.append(results_table)
+            story.append(Spacer(1, 20))
+        
+        # 6. Заключение
+        story.append(Paragraph(safe_text("5. ЗАКЛЮЧЕНИЕ"), heading_style))
+        
+        conclusion = generate_conclusion(norm_control_result, page_summary)
+        story.append(Paragraph(safe_text(conclusion), normal_style))
+        
+        # 7. Подпись и дата
+        story.append(Spacer(1, 30))
+        story.append(Paragraph(safe_text(f"Отчет сгенерирован: {datetime.now().strftime('%d.%m.%Y %H:%M')}"), small_style))
+        story.append(Paragraph(safe_text("Система автоматизированной проверки нормоконтроля"), small_style))
+        
+        # Строим PDF
+        doc.build(story)
+        
+        # Получаем содержимое
+        pdf_content = buffer.getvalue()
+        buffer.close()
+        
+        return pdf_content
+        
+    except Exception as e:
+        logger.error(f"PDF generation error: {e}")
+        raise
+
+@app.get("/checkable-documents/{document_id}/download-report")
+async def download_report_pdf(document_id: int):
+    """Скачивание отчета по проверке нормоконтроля в формате PDF"""
+    try:
+        # Получаем данные документа
+        document = parser.get_checkable_document(document_id)
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        # Получаем результаты нормоконтроля
+        norm_control_result = parser.get_norm_control_result_by_document_id(document_id)
+        if not norm_control_result:
+            raise HTTPException(status_code=404, detail="Norm control results not found")
+        
+        # Получаем результаты по страницам
+        page_results = parser.get_page_results_by_document_id(document_id)
+        
+        # Получаем отчет рецензента
+        review_report = parser.get_review_report_by_norm_control_id(norm_control_result['id'])
+        
+        # Генерируем PDF отчет
+        report_content = generate_pdf_report(document, norm_control_result, page_results, review_report)
+        
+        # Возвращаем PDF файл
+        from fastapi.responses import Response
+        media_type = "application/pdf"
+        filename = f"norm_control_report_{document_id}.pdf"
+        
+        return Response(
+            content=report_content,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating PDF report for document {document_id}: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 @app.get("/health")
 async def health_check():
     """Проверка здоровья сервиса"""
     try:
-        # Проверка PostgreSQL
-        with parser.db_conn.cursor() as cursor:
+        # Проверка PostgreSQL с безопасным соединением
+        db_conn = parser.get_db_connection()
+        with db_conn.cursor() as cursor:
             cursor.execute("SELECT 1")
         
         # Проверка Qdrant
