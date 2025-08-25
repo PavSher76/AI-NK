@@ -920,6 +920,51 @@ async def delete_all_indexes():
         logger.error(f"❌ [DELETE_ALL_INDEXES] Delete all indexes error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/metrics")
+async def get_metrics():
+    """Получение метрик RAG-сервиса"""
+    logger.info("📊 [METRICS] Getting service metrics...")
+    try:
+        # Получаем статистику из RAG сервиса
+        stats = rag_service.get_stats()
+        
+        # Дополнительные метрики
+        metrics = {
+            "status": "success",
+            "timestamp": datetime.now().isoformat(),
+            "service": "rag-service",
+            "version": "2.0.0",
+            "metrics": {
+                "collections": {
+                    "vector_collection": VECTOR_COLLECTION,
+                    "bm25_collection": BM25_COLLECTION
+                },
+                "configuration": {
+                    "chunk_size": CHUNK_SIZE,
+                    "chunk_overlap": CHUNK_OVERLAP,
+                    "max_tokens": MAX_TOKENS
+                },
+                "connections": {
+                    "postgresql": "connected" if rag_service.db_conn else "disconnected",
+                    "qdrant": "connected" if rag_service.qdrant_client else "disconnected",
+                    "embedding_model": "BGE-M3" if rag_service.embedding_model else "simple_hash"
+                },
+                "statistics": stats
+            }
+        }
+        
+        logger.info(f"✅ [METRICS] Service metrics retrieved successfully")
+        return metrics
+        
+    except Exception as e:
+        logger.error(f"❌ [METRICS] Metrics error: {e}")
+        return {
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat(),
+            "service": "rag-service"
+        }
+
 @app.get("/health")
 async def health_check():
     """Проверка здоровья сервиса"""

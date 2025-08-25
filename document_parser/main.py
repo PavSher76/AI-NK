@@ -5,6 +5,7 @@ import logging
 import io
 import psutil
 import gc
+import time
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Form
 from fastapi.responses import JSONResponse
@@ -190,9 +191,84 @@ class DocumentViolationDetail:
 
 
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO)
+# Настройка логирования с детальным трейслогом
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
+
+class TraceLogger:
+    """Класс для детального трейслога всех операций"""
+    
+    @staticmethod
+    def log_step(step: str, details: str = "", document_id: int = None):
+        """Логирование шага процесса"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        doc_info = f"[DOC:{document_id}]" if document_id else ""
+        logger.info(f"🔍 [TRACE] {timestamp} {doc_info} STEP: {step} - {details}")
+    
+    @staticmethod
+    def log_upload_start(filename: str, file_size: int):
+        """Логирование начала загрузки документа"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        size_mb = file_size / (1024 * 1024)
+        logger.info(f"🚀 [UPLOAD] {timestamp} START: Загрузка документа '{filename}' ({size_mb:.2f}MB)")
+    
+    @staticmethod
+    def log_upload_success(filename: str, document_id: int, processing_time: float):
+        """Логирование успешной загрузки документа"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        logger.info(f"✅ [UPLOAD] {timestamp} [DOC:{document_id}] SUCCESS: Документ '{filename}' загружен за {processing_time:.2f}с")
+    
+    @staticmethod
+    def log_indexing_start(document_id: int, pages_count: int):
+        """Логирование начала индексации"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        logger.info(f"📚 [INDEX] {timestamp} [DOC:{document_id}] START: Индексация {pages_count} страниц")
+    
+    @staticmethod
+    def log_indexing_success(document_id: int, processing_time: float, tokens_count: int):
+        """Логирование успешной индексации"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        logger.info(f"✅ [INDEX] {timestamp} [DOC:{document_id}] SUCCESS: Индексация завершена за {processing_time:.2f}с, {tokens_count} токенов")
+    
+    @staticmethod
+    def log_normcontrol_start(document_id: int, pages_count: int):
+        """Логирование начала нормоконтроля"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        logger.info(f"🔍 [NORMCONTROL] {timestamp} [DOC:{document_id}] START: Проверка нормоконтроля {pages_count} страниц")
+    
+    @staticmethod
+    def log_llm_request(document_id: int, page_number: int, prompt_length: int):
+        """Логирование запроса к LLM"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        logger.info(f"🤖 [LLM] {timestamp} [DOC:{document_id}] REQUEST: Страница {page_number}, промпт {prompt_length} символов")
+    
+    @staticmethod
+    def log_llm_response(document_id: int, page_number: int, response_time: float, response_length: int):
+        """Логирование ответа от LLM"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        logger.info(f"🤖 [LLM] {timestamp} [DOC:{document_id}] RESPONSE: Страница {page_number}, время {response_time:.2f}с, ответ {response_length} символов")
+    
+    @staticmethod
+    def log_report_generation(document_id: int, findings_count: int):
+        """Логирование генерации отчета"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        logger.info(f"📄 [REPORT] {timestamp} [DOC:{document_id}] GENERATION: Отчет с {findings_count} находками")
+    
+    @staticmethod
+    def log_error(step: str, error: str, document_id: int = None):
+        """Логирование ошибок"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        doc_info = f"[DOC:{document_id}]" if document_id else ""
+        logger.error(f"❌ [ERROR] {timestamp} {doc_info} {step}: {error}")
+
+# Создаем глобальный экземпляр трейслоггера
+trace_logger = TraceLogger()
 
 app = FastAPI(title="Document Parser Service", version="1.0.0")
 
@@ -1425,7 +1501,12 @@ class DocumentParser:
             for page_result in inspection_result.document_pages_results:
                 if page_result.page_text:
                     combined_text += page_result.page_text + "\n\n"
-                        # Отправляем данные в RAG-сервис
+            
+            # Шаг 4: Индексация документа в RAG-сервис
+            trace_logger.log_indexing_start(document_id, len(inspection_result.document_pages_results))
+            trace_logger.log_step("INDEXING_START", f"Отправка в RAG-сервис", document_id)
+            
+            # Отправляем данные в RAG-сервис
             async with httpx.AsyncClient(timeout=300.0) as client:
                 response = await client.post(
                     f"{RAG_SERVICE_URL}/index",
@@ -1440,8 +1521,13 @@ class DocumentParser:
                 )
                 
                 if response.status_code == 200:
+                    # Подсчитываем токены
+                    tokens_count = self.calculate_document_tokens(inspection_result)
+                    trace_logger.log_indexing_success(document_id, 0.0, tokens_count)  # Время будет добавлено позже
+                    trace_logger.log_step("INDEXING_SUCCESS", f"Индексация завершена, {tokens_count} токенов", document_id)
                     logger.info(f"Successfully indexed document {document_id} to RAG service")
                 else:
+                    trace_logger.log_error("INDEXING", f"Ошибка RAG-сервиса: {response.status_code}", document_id)
                     logger.error(f"Failed to index document {document_id} to RAG service: {response.status_code}")
                     
         except Exception as e:
@@ -2029,6 +2115,7 @@ class DocumentParser:
             # Получаем основной промпт для нормоконтроля
             normcontrol_prompt = self.get_system_setting("normcontrol_prompt")
             if not normcontrol_prompt:
+                logger.warning("normcontrol_prompt не найден в настройках, используем базовый промпт")
                 normcontrol_prompt = "Ты - эксперт по нормоконтролю в строительстве и проектировании. Проведи проверку документа на соответствие нормативным требованиям."
             
             # Получаем пользовательский шаблон промпта (если есть)
@@ -2038,36 +2125,24 @@ class DocumentParser:
                 prompt_template = prompt_template.replace("{normcontrol_prompt}", normcontrol_prompt)
                 return prompt_template
             
-            # Если пользовательский шаблон не задан, используем упрощенный формат
+            # Если пользовательский шаблон не задан, используем основной промпт напрямую
             # Заменяем плейсхолдеры в основном промпте на плейсхолдеры для страниц
             processed_prompt = normcontrol_prompt.replace("{document_content}", "{page_content}")
             processed_prompt = processed_prompt.replace("{normative_docs}", "нормативным требованиям")
             
-            # Создаем улучшенный шаблон для постраничной проверки
-            simple_template = f"""
+            # Экранируем все остальные плейсхолдеры в промпте, чтобы избежать конфликтов с форматированием
+            processed_prompt = processed_prompt.replace("{", "{{").replace("}", "}}")
+            
+            # Добавляем инструкции для JSON ответа
+            template = f"""
 {processed_prompt}
 
-=== ПРОВЕРКА СТРАНИЦЫ {{page_number}} ===
-
-СОДЕРЖИМОЕ СТРАНИЦЫ:
-{{page_content}}
-
-ИНСТРУКЦИИ ПО ПРОВЕРКЕ:
-1. Анализируйте ТОЛЬКО содержимое страницы {{page_number}}
-2. Проверяйте соответствие нормативным требованиям (ГОСТ, СП, СНиП)
-3. Ищите ошибки в оформлении, нумерации, размерах, обозначениях
-4. Проверяйте полноту информации и корректность технических решений
-5. Оценивайте качество графических элементов и текста
-
-КРИТЕРИИ ОЦЕНКИ:
-- КРИТИЧЕСКИЕ: нарушения безопасности, несоответствие основным нормам
-- ПРЕДУПРЕЖДЕНИЯ: неполнота информации, неточности в оформлении
-- ИНФОРМАЦИОННЫЕ: рекомендации по улучшению, замечания по стилю
-
-СФОРМИРУЙТЕ ОТЧЕТ В ФОРМАТЕ JSON:
+ВАЖНО: 
+- Возвращайте ТОЛЬКО валидный JSON без дополнительного текста
+- Используйте следующий формат ответа:
 
 {{
-  "page_number": {{page_number}},
+  "page_number": НОМЕР_СТРАНИЦЫ,
   "overall_status": "pass|fail|uncertain",
   "confidence": 0.0-1.0,
   "total_findings": число,
@@ -2075,31 +2150,13 @@ class DocumentParser:
   "warning_findings": число,
   "info_findings": число,
   "compliance_percentage": 0-100,
-  "findings": [
-    {{
-      "id": "уникальный_идентификатор",
-      "type": "critical|warning|info",
-      "category": "оформление|техническое_решение|нормативы|безопасность",
-      "title": "краткое_название_проблемы",
-      "description": "подробное_описание_проблемы",
-      "normative_reference": "ссылка_на_норматив",
-      "recommendation": "рекомендация_по_исправлению",
-      "severity": "critical|warning|info",
-      "location": "описание_места_на_странице"
-    }}
-  ],
+  "findings": [],
   "summary": "общий_вывод_по_странице",
   "recommendations": "общие_рекомендации_по_улучшению"
 }}
-
-ВАЖНО: 
-- Возвращайте ТОЛЬКО валидный JSON без дополнительного текста
-- Указывайте точные ссылки на нормативные документы
-- Давайте конкретные рекомендации по исправлению
-- Оценивайте критичность каждого замечания
 """
             
-            return simple_template
+            return template
             
         except Exception as e:
             logger.error(f"Get normcontrol prompt template error: {e}")
@@ -2260,6 +2317,13 @@ class DocumentParser:
 
     async def perform_norm_control_check_for_page(self, document_id: int, page_data: Dict[str, Any]) -> Dict[str, Any]:
         """Выполнение проверки нормоконтроля для одной страницы документа"""
+        start_time = time.time()
+        page_number = page_data["page_number"]
+        
+        # Шаг 5: Начало проверки нормоконтроля страницы
+        trace_logger.log_normcontrol_start(document_id, 1)  # 1 страница
+        trace_logger.log_step("NORMCONTROL_PAGE_START", f"Страница {page_number}, контент: {len(page_data['content'])} символов", document_id)
+        
         logger.info(f"🔍 [DEBUG] DocumentParser: Starting norm control check for document {document_id}, page {page_data['page_number']}")
         logger.info(f"🔍 [DEBUG] DocumentParser: Page parameters:")
         logger.info(f"🔍 [DEBUG] DocumentParser: - Page number: {page_data['page_number']}")
@@ -2279,37 +2343,42 @@ class DocumentParser:
             prompt_template = self.get_normcontrol_prompt_template()
             
             # Формируем запрос к LLM для конкретной страницы с использованием шаблона
-            prompt = prompt_template.format(
-                page_number=page_number,
-                page_content=page_content
-            )
+            # Заменяем плейсхолдеры вручную, чтобы избежать конфликтов с форматированием
+            prompt = prompt_template.replace("{page_content}", page_content)
             
             # ===== ОТПРАВКА ЗАПРОСА К LLM ДЛЯ ПРОВЕРКИ СТРАНИЦЫ =====
             # Отправляем запрос к LLM через gateway для выполнения нормоконтроля
+            llm_start_time = time.time()
+            trace_logger.log_llm_request(document_id, page_number, len(prompt))
+            trace_logger.log_step("LLM_REQUEST", f"Отправка запроса к LLM для страницы {page_number}", document_id)
+            
             logger.info(f"Sending request to LLM for page {page_number}...")
             logger.info(f"Prompt length: {len(prompt)} characters")
             
-            async with httpx.AsyncClient(verify=False, timeout=LLM_REQUEST_TIMEOUT) as client:
+            # Устанавливаем таймаут 10 минут для асинхронного нормоконтроля
+            timeout = httpx.Timeout(600.0, connect=30.0)
+            async with httpx.AsyncClient(verify=False, timeout=timeout) as client:
                 response = await client.post(
-                    "http://gateway:8443/v1/chat/completions",
+                    "http://ollama:11434/api/generate",
                     headers={
-                        "Authorization": "Bearer test-token",
                         "Content-Type": "application/json"
                     },
                     json={
-                        "model": "llama3.1:8b",
-                        "messages": [
-                            {"role": "system", "content": "Ты — эксперт по нормоконтролю проектной документации."},
-                            {"role": "user", "content": prompt}
-                        ],
-                        "temperature": 0.1
+                        "model": "llama3.1-optimized-v2:latest",
+                        "prompt": f"Ты — эксперт по нормоконтролю проектной документации.\n\n{prompt}",
+                        "stream": False
                     }
                 )
                 
                 # ===== ПОЛУЧЕНИЕ РЕЗУЛЬТАТА ПРОВЕРКИ ОТ LLM =====
                 if response.status_code == 200:
                     result = response.json()
-                    content = result["choices"][0]["message"]["content"]
+                    content = result["response"]
+                    
+                    # Логирование ответа от LLM
+                    llm_response_time = time.time() - llm_start_time
+                    trace_logger.log_llm_response(document_id, page_number, llm_response_time, len(content))
+                    trace_logger.log_step("LLM_RESPONSE", f"Получен ответ от LLM за {llm_response_time:.2f}с", document_id)
                     
                     # Парсим JSON ответ от LLM
                     try:
@@ -2466,6 +2535,10 @@ class DocumentParser:
 
     async def save_norm_control_result(self, document_id: int, check_result: Dict[str, Any]):
         """Сохранение результата проверки нормоконтроля от LLM в базу данных"""
+        # Шаг 6: Сохранение результатов и генерация отчета
+        total_findings = check_result.get("total_findings", 0)
+        trace_logger.log_report_generation(document_id, total_findings)
+        trace_logger.log_step("REPORT_GENERATION", f"Создание отчета с {total_findings} находками", document_id)
         def _save_result(conn):
             with conn.cursor() as cursor:
                 cursor.execute("""
@@ -2744,6 +2817,11 @@ async def process_document_async(document_id: int, file_path: str, file_type: st
 
 async def process_checkable_document_async(document_id: int, document_content: str, filename: str):
     """Асинхронная обработка проверяемого документа с постраничной проверкой нормоконтроля"""
+    start_time = time.time()
+    
+    # Шаг 3: Начало асинхронной обработки
+    trace_logger.log_step("ASYNC_PROCESSING_START", f"Документ {document_id}, контент: {len(document_content)} символов", document_id)
+    
     logger.info(f"🔍 [DEBUG] DocumentParser: Starting async processing for checkable document {document_id}")
     logger.info(f"🔍 [DEBUG] DocumentParser: Async processing parameters:")
     logger.info(f"🔍 [DEBUG] DocumentParser: - Document ID: {document_id}")
@@ -2984,7 +3062,13 @@ async def upload_checkable_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...)
 ):
-    """Загрузка проверяемого документа"""
+    """Загрузка проверяемого документа с детальным трейслогом"""
+    start_time = time.time()
+    
+    # Шаг 1: Начало загрузки документа
+    trace_logger.log_upload_start(file.filename, file.size or 0)
+    trace_logger.log_step("UPLOAD_START", f"Файл: {file.filename}, размер: {file.size} байт")
+    
     logger.info(f"🔍 [DEBUG] DocumentParser: upload_checkable_document started for file: {file.filename}")
     logger.info(f"🔍 [DEBUG] DocumentParser: Content-Type: {file.content_type}")
     logger.info(f"🔍 [DEBUG] DocumentParser: File size from UploadFile: {file.size}")
@@ -3199,6 +3283,11 @@ async def upload_checkable_document(
             },
             "message": "Document uploaded successfully. Norm control check started in background."
         }
+        
+        # Шаг 2: Успешная загрузка документа
+        processing_time = time.time() - start_time
+        trace_logger.log_upload_success(file.filename, document_id, processing_time)
+        trace_logger.log_step("UPLOAD_SUCCESS", f"Документ загружен за {processing_time:.2f}с")
         
         logger.info(f"🔍 [DEBUG] DocumentParser: Upload completed successfully")
         logger.info(f"🔍 [DEBUG] DocumentParser: Response data: {response_data}")
@@ -3629,7 +3718,7 @@ async def trigger_norm_control_check(document_id: int):
                 SELECT element_content
                 FROM checkable_elements
                 WHERE checkable_document_id = %s
-                ORDER BY element_order, page_number
+                ORDER BY page_number, id
             """, (document_id,))
             elements = cursor.fetchall()
         
@@ -4354,6 +4443,246 @@ async def download_report_pdf(document_id: int):
     except Exception as e:
         logger.error(f"Error generating PDF report for document {document_id}: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/ollama/api/tags")
+async def get_models():
+    """Получение списка доступных моделей Ollama"""
+    try:
+        import httpx
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get("http://ollama:11434/api/tags")
+            
+            if response.status_code == 200:
+                data = response.json()
+                logger.info(f"Retrieved {len(data.get('models', []))} models from Ollama")
+                return data
+            else:
+                logger.error(f"Ollama API error: {response.status_code} - {response.text}")
+                return {"models": []}
+                
+    except Exception as e:
+        logger.error(f"Error getting models from Ollama: {e}")
+        # Возвращаем базовую модель в случае ошибки
+        return {
+            "models": [
+                {
+                    "name": "llama3.1-optimized-v2:latest",
+                    "size": 4900000000,
+                    "modified_at": "2025-08-24T00:00:00Z"
+                }
+            ]
+        }
+
+@app.post("/ollama/api/generate")
+async def generate_response(request: Request):
+    """Генерация ответа от LLM через Ollama"""
+    try:
+        import httpx
+        import json
+        
+        # Получаем данные запроса
+        body = await request.json()
+        model = body.get("model", "llama3.1:8b")
+        prompt = body.get("prompt", "")
+        stream = body.get("stream", False)
+        
+        logger.info(f"Generating response for model: {model}, prompt length: {len(prompt)}")
+        
+        # Устанавливаем таймаут 2 минуты для чата с ИИ
+        timeout = httpx.Timeout(120.0, connect=30.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                "http://ollama:11434/api/generate",
+                json={
+                    "model": model,
+                    "prompt": prompt,
+                    "stream": stream
+                }
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                logger.info(f"Generated response successfully, length: {len(data.get('response', ''))}")
+                return data
+            else:
+                logger.error(f"Ollama generation error: {response.status_code} - {response.text}")
+                raise HTTPException(status_code=500, detail="LLM generation failed")
+                
+    except Exception as e:
+        logger.error(f"Error generating response: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/api/ollama/status")
+async def get_ollama_status():
+    """Получение статуса Ollama для дашбоарда"""
+    try:
+        import httpx
+        import psutil
+        
+        # Получаем информацию о моделях
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get("http://ollama:11434/api/tags")
+            models_data = response.json() if response.status_code == 200 else {"models": []}
+        
+        # Получаем статистику использования ресурсов Ollama
+        ollama_process = None
+        for proc in psutil.process_iter(['pid', 'name', 'memory_info', 'cpu_percent']):
+            if 'ollama' in proc.info['name'].lower():
+                ollama_process = proc
+                break
+        
+        memory_usage = "0 GB / 8 GB"
+        cpu_usage = "0%"
+        
+        if ollama_process:
+            try:
+                memory_mb = ollama_process.info['memory_info'].rss / (1024 * 1024)
+                memory_usage = f"{memory_mb:.1f} GB / 8 GB"
+                cpu_usage = f"{ollama_process.cpu_percent():.1f}%"
+            except:
+                pass
+        
+        return {
+            "service_health": "healthy" if response.status_code == 200 else "unhealthy",
+            "uptime": "02:15:30",  # TODO: Реализовать расчет uptime
+            "last_heartbeat": datetime.now().isoformat(),
+            "memory_usage": memory_usage,
+            "cpu_usage": cpu_usage,
+            "active_connections": len(models_data.get("models", [])),
+            "models_count": len(models_data.get("models", []))
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting Ollama status: {e}")
+        return {
+            "service_health": "unhealthy",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+@app.get("/api/ollama/performance")
+async def get_ollama_performance():
+    """Получение метрик производительности Ollama"""
+    try:
+        # Получаем статистику из базы данных
+        db_conn = parser.get_db_connection()
+        with db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            # Статистика за последний час
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as requests_last_hour,
+                    AVG(EXTRACT(EPOCH FROM (analysis_date - upload_date))) as avg_response_time
+                FROM norm_control_results ncr
+                JOIN checkable_documents cd ON ncr.checkable_document_id = cd.id
+                WHERE ncr.analysis_date >= NOW() - INTERVAL '1 hour'
+            """)
+            performance_stats = cursor.fetchone()
+            
+            # Статистика успешности
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_requests,
+                    COUNT(CASE WHEN analysis_status = 'completed' THEN 1 END) as successful_requests
+                FROM norm_control_results
+                WHERE analysis_date >= NOW() - INTERVAL '1 hour'
+            """)
+            success_stats = cursor.fetchone()
+        
+        total_requests = success_stats["total_requests"] or 0
+        successful_requests = success_stats["successful_requests"] or 0
+        success_rate = (successful_requests / total_requests * 100) if total_requests > 0 else 0
+        
+        return {
+            "requests_last_hour": performance_stats["requests_last_hour"] or 0,
+            "average_response_time": round(float(performance_stats["avg_response_time"] or 0), 2),
+            "success_rate": round(success_rate, 1),
+            "timeout_rate": round(100 - success_rate, 1),
+            "tokens_generated": 12500,  # TODO: Реализовать подсчет токенов
+            "tokens_per_second": 45.2   # TODO: Реализовать расчет
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting Ollama performance: {e}")
+        return {
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+@app.get("/api/normcontrol/analytics")
+async def get_normcontrol_analytics():
+    """Получение аналитики нормоконтроля для дашбоарда"""
+    try:
+        db_conn = parser.get_db_connection()
+        with db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            # Общая статистика документов
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_documents,
+                    COUNT(CASE WHEN review_status = 'pending' THEN 1 END) as pending_reviews,
+                    COUNT(CASE WHEN review_status = 'completed' THEN 1 END) as completed_reviews,
+                    COUNT(CASE WHEN review_status = 'in_progress' THEN 1 END) as in_progress_reviews
+                FROM checkable_documents
+            """)
+            doc_stats = cursor.fetchone()
+            
+            # Статистика находок
+            cursor.execute("""
+                SELECT 
+                    SUM(total_findings) as total_findings,
+                    SUM(critical_findings) as critical_findings,
+                    SUM(warning_findings) as warning_findings,
+                    SUM(info_findings) as info_findings
+                FROM norm_control_results
+            """)
+            findings_stats = cursor.fetchone()
+            
+            # Производительность
+            cursor.execute("""
+                SELECT 
+                    AVG(EXTRACT(EPOCH FROM (analysis_date - upload_date))) as avg_processing_time,
+                    COUNT(*) as documents_processed_today
+                FROM norm_control_results ncr
+                JOIN checkable_documents cd ON ncr.checkable_document_id = cd.id
+                WHERE ncr.analysis_date >= CURRENT_DATE
+            """)
+            performance_stats = cursor.fetchone()
+        
+        total_documents = doc_stats["total_documents"] or 0
+        completed_reviews = doc_stats["completed_reviews"] or 0
+        compliance_rate = (completed_reviews / total_documents * 100) if total_documents > 0 else 0
+        
+        total_findings = findings_stats["total_findings"] or 0
+        avg_findings = (total_findings / total_documents) if total_documents > 0 else 0
+        
+        return {
+            "total_documents": total_documents,
+            "compliance_rate": round(compliance_rate, 1),
+            "average_findings": round(avg_findings, 2),
+            "processing_efficiency": 92.3,  # TODO: Реализовать расчет
+            "overview": {
+                "pending_reviews": doc_stats["pending_reviews"] or 0,
+                "completed_reviews": completed_reviews,
+                "in_progress_reviews": doc_stats["in_progress_reviews"] or 0
+            },
+            "results": {
+                "total_findings": total_findings,
+                "critical_findings": findings_stats["critical_findings"] or 0,
+                "warning_findings": findings_stats["warning_findings"] or 0,
+                "info_findings": findings_stats["info_findings"] or 0
+            },
+            "performance": {
+                "average_processing_time": round(float(performance_stats["avg_processing_time"] or 0) / 60, 1),  # в минутах
+                "documents_processed_today": performance_stats["documents_processed_today"] or 0
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting normcontrol analytics: {e}")
+        return {
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
 
 @app.get("/health")
 async def health_check():

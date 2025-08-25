@@ -12,6 +12,7 @@ import {
   MessageSquare,
   BookOpen
 } from 'lucide-react';
+import DashboardMetrics from '../components/DashboardMetrics';
 
 const DashboardPage = ({ systemStatus, models, isAuthenticated, userInfo, authMethod, onPageChange }) => {
   console.log('🔍 [DEBUG] DashboardPage.js: Component rendered with props:', {
@@ -64,10 +65,9 @@ const DashboardPage = ({ systemStatus, models, isAuthenticated, userInfo, authMe
   });
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div className="max-w-7xl mx-auto">
       <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900">Дашборд системы</h1>
-        <p className="mt-2 text-gray-600">Обзор состояния системы и доступных компонентов</p>
+        <p className="text-gray-600">Обзор состояния системы и доступных компонентов</p>
       </div>
 
       {/* Статус сервисов */}
@@ -132,6 +132,9 @@ const DashboardPage = ({ systemStatus, models, isAuthenticated, userInfo, authMe
           </div>
         </div>
       </div>
+
+      {/* Метрики Ollama и нормоконтроля */}
+      <DashboardMetrics authToken={localStorage.getItem('authToken')} />
 
       {/* Статистика */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">

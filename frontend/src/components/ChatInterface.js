@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, Bot, User, Trash2, Loader2, Paperclip, FileText, X } from 'lucide-react';
+import ModelSelector from './ModelSelector';
 
 const ChatInterface = ({ 
   messages, 
@@ -8,7 +9,11 @@ const ChatInterface = ({
   isLoading, 
   error, 
   onClearChat, 
-  selectedModel 
+  selectedModel,
+  models,
+  onModelSelect,
+  onRefreshModels,
+  isAuthenticated
 }) => {
   console.log('🔍 [DEBUG] ChatInterface.js: Component rendered with model:', selectedModel);
 
@@ -162,11 +167,20 @@ const ChatInterface = ({
     <div className="card h-[600px] flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between pb-4 border-b border-gray-200">
-        <div>
-          <h2 className="text-lg font-semibold text-gray-900">Чат с AI</h2>
-          {selectedModel && (
-            <p className="text-sm text-gray-500">Модель: {selectedModel}</p>
-          )}
+        <div className="flex items-center space-x-4">
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900">Чат с AI</h2>
+            <div className="flex items-center space-x-2 mt-1">
+              <span className="text-sm text-gray-500">Модель:</span>
+              <ModelSelector
+                models={models}
+                selectedModel={selectedModel}
+                onModelChange={onModelSelect}
+                onRefresh={onRefreshModels}
+                isAuthenticated={isAuthenticated}
+              />
+            </div>
+          </div>
         </div>
         <button
           onClick={onClearChat}
