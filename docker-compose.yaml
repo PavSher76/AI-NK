@@ -61,7 +61,7 @@ services:
       timeout: 10s
       retries: 3
 
-  # Ollama для LLM моделей
+  # Ollama для LLM моделей (оптимизированная конфигурация)
   ollama:
     image: ollama/ollama:latest
     ports:
@@ -71,27 +71,35 @@ services:
     environment:
       - OLLAMA_HOST=0.0.0.0
       - OLLAMA_ORIGINS=*
+      # Оптимизация контекста и производительности
+      - OLLAMA_NUM_CTX=16384
+      - OLLAMA_FLASH_ATTN=1
+      - OLLAMA_NUM_BATCH=1024
+      - OLLAMA_NUM_THREAD=8
+      - OLLAMA_TEMPERATURE=0.1
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          memory: 6G
+          memory: 8G
+          cpus: '4.0'
         reservations:
-          memory: 4G
+          memory: 6G
+          cpus: '2.0'
     # healthcheck:
     #   test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
     #   interval: 30s
     #   timeout: 10s
     #   retries: 3
 
-  # vLLM адаптер для Ollama
+  # vLLM адаптер для Ollama (оптимизированная конфигурация)
   vllm:
     build: ./ollama_adapter
     ports:
       - "8000:8000"
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
-      - OLLAMA_CPU_THREADS=4
+      - OLLAMA_CPU_THREADS=2
       - OLLAMA_GPU_LAYERS=0
       - OLLAMA_BATCH_SIZE=1
     depends_on:
@@ -100,9 +108,11 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1.5G
-        reservations:
           memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
     # healthcheck:
     #   test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
     #   interval: 30s
@@ -299,7 +309,7 @@ services:
     #   timeout: 10s
     #   retries: 3
 
-  # Парсер документов
+  # Парсер документов (оптимизированная конфигурация)
   document-parser:
     build: ./document_parser
     ports:
@@ -329,9 +339,11 @@ services:
     deploy:
       resources:
         limits:
-          memory: 3G
-        reservations:
           memory: 2G
+          cpus: '2.0'
+        reservations:
+          memory: 1.5G
+          cpus: '1.0'
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 30s

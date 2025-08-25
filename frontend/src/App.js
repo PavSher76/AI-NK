@@ -18,7 +18,8 @@ import {
 } from 'lucide-react';
 
 // Components
-import Navigation from './components/Navigation';
+import Sidebar from './components/Sidebar';
+import Header from './components/Header';
 import SettingsPanel from './components/SettingsPanel';
 import AuthModal from './components/AuthModal';
 
@@ -47,10 +48,15 @@ function App() {
     keycloak: false
   });
   const [refreshTabs, setRefreshTabs] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   // Отладочные логи для отслеживания изменений состояния
   useEffect(() => {
     console.log('🔍 [DEBUG] App.js: currentPage changed to:', currentPage);
+    // Закрываем боковое меню на мобильных устройствах при смене страницы
+    if (window.innerWidth < 1024) {
+      setIsSidebarOpen(false);
+    }
   }, [currentPage]);
 
   useEffect(() => {
@@ -405,73 +411,94 @@ function App() {
   console.log('🔍 [DEBUG] App.js: Rendering with currentPage:', currentPage, 'isLoading:', isLoading);
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Navigation */}
-      <Navigation
-        currentPage={currentPage}
-        onPageChange={setCurrentPage}
-        isAuthenticated={isAuthenticated}
-        userInfo={userInfo}
-        authMethod={authMethod}
-        systemStatus={systemStatus}
-        onShowSettings={() => setShowSettings(true)}
-        onLogout={handleLogout}
-        onShowAuth={() => setShowAuthModal(true)}
-      />
+    <div className="min-h-screen bg-gray-50 flex">
+      {/* Mobile overlay */}
+      {isSidebarOpen && (
+        <div 
+          className="fixed inset-0 bg-gray-600 bg-opacity-75 z-40 lg:hidden"
+          onClick={() => setIsSidebarOpen(false)}
+        />
+      )}
 
-      {/* Page Content */}
-      {currentPage === 'dashboard' && (
-        <DashboardPage
+      {/* Sidebar */}
+      <div className={`fixed inset-y-0 left-0 z-50 lg:static lg:z-auto ${isSidebarOpen ? 'block' : 'hidden'} lg:block`}>
+        <Sidebar
+          currentPage={currentPage}
+          onPageChange={setCurrentPage}
           systemStatus={systemStatus}
-          models={models}
           isAuthenticated={isAuthenticated}
           userInfo={userInfo}
           authMethod={authMethod}
-          onPageChange={setCurrentPage}
+          onLogout={handleLogout}
+          onClose={() => setIsSidebarOpen(false)}
         />
-      )}
+      </div>
 
-      {currentPage === 'chat' && (
-        <ChatPage
-          models={models}
-          selectedModel={selectedModel}
-          onModelSelect={setSelectedModel}
-          onRefreshModels={loadModels}
-          messages={messages}
-          onSendMessage={sendMessage}
-          onSendMessageWithFile={sendMessageWithFile}
-          isLoading={isLoading}
-          error={error}
-          onClearChat={clearChat}
-          isAuthenticated={isAuthenticated}
-          showSettings={showSettings}
-          SettingsPanel={
-            <SettingsPanel
-              onClose={() => setShowSettings(false)}
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col">
+        {/* Header */}
+        <Header
+          currentPage={currentPage}
+          onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
+          isSidebarOpen={isSidebarOpen}
+        />
+
+        {/* Page Content */}
+        <main className="flex-1 p-6">
+          {currentPage === 'dashboard' && (
+            <DashboardPage
               systemStatus={systemStatus}
-              onRefreshStatus={checkSystemStatus}
+              models={models}
+              isAuthenticated={isAuthenticated}
+              userInfo={userInfo}
+              authMethod={authMethod}
+              onPageChange={setCurrentPage}
             />
-          }
-        />
-      )}
+          )}
 
-      {currentPage === 'normcontrol' && (
-        <NormcontrolPage
-          isAuthenticated={isAuthenticated}
-          authToken={authToken}
-          refreshTrigger={refreshTabs}
-          onRefreshComplete={() => setRefreshTabs(false)}
-        />
-      )}
+          {currentPage === 'chat' && (
+            <ChatPage
+              models={models}
+              selectedModel={selectedModel}
+              onModelSelect={setSelectedModel}
+              onRefreshModels={loadModels}
+              messages={messages}
+              onSendMessage={sendMessage}
+              onSendMessageWithFile={sendMessageWithFile}
+              isLoading={isLoading}
+              error={error}
+              onClearChat={clearChat}
+              isAuthenticated={isAuthenticated}
+              showSettings={showSettings}
+              SettingsPanel={
+                <SettingsPanel
+                  onClose={() => setShowSettings(false)}
+                  systemStatus={systemStatus}
+                  onRefreshStatus={checkSystemStatus}
+                />
+              }
+            />
+          )}
 
-      {currentPage === 'documents' && (
-        <DocumentsPage
-          isAuthenticated={isAuthenticated}
-          authToken={authToken}
-          refreshTrigger={refreshTabs}
-          onRefreshComplete={() => setRefreshTabs(false)}
-        />
-      )}
+          {currentPage === 'normcontrol' && (
+            <NormcontrolPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
+              refreshTrigger={refreshTabs}
+              onRefreshComplete={() => setRefreshTabs(false)}
+            />
+          )}
+
+          {currentPage === 'documents' && (
+            <DocumentsPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
+              refreshTrigger={refreshTabs}
+              onRefreshComplete={() => setRefreshTabs(false)}
+            />
+          )}
+        </main>
+      </div>
 
       {/* Модальное окно авторизации */}
       <AuthModal

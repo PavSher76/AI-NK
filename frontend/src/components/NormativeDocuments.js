@@ -317,7 +317,7 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
             setting_key: settingKey,
             setting_value: newValue,
             setting_type: 'text',
-            setting_description: settingKey === 'normcontrol_prompt' ? 'Промпт для проверки нормоконтроля' : 'Системная настройка'
+            setting_description: settingKey === 'normcontrol_prompt' ? 'Системный промпт для LLM при проведении проверки нормоконтроля документов' : 'Системная настройка'
           })
         });
       }
@@ -337,7 +337,7 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
               setting_key: settingKey,
               setting_value: newValue,
               setting_type: 'text',
-              setting_description: settingKey === 'normcontrol_prompt' ? 'Промпт для проверки нормоконтроля' : 'Системная настройка'
+              setting_description: settingKey === 'normcontrol_prompt' ? 'Системный промпт для LLM при проведении проверки нормоконтроля документов' : 'Системная настройка'
             }];
           }
         });
@@ -1509,7 +1509,7 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
                               setting_key: 'normcontrol_prompt',
                               setting_value: e.target.value,
                               setting_type: 'text',
-                              setting_description: 'Промпт для проверки нормоконтроля'
+                              setting_description: 'Системный промпт для LLM при проведении проверки нормоконтроля документов'
                             });
                           }
                           setSettings(newSettings);
@@ -1551,7 +1551,7 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
                               setting_key: 'normcontrol_prompt',
                               setting_value: defaultPrompt,
                               setting_type: 'text',
-                              setting_description: 'Промпт для проверки нормоконтроля'
+                              setting_description: 'Системный промпт для LLM при проведении проверки нормоконтроля документов'
                             });
                           }
                           setSettings(newSettings);

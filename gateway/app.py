@@ -89,7 +89,8 @@ SERVICES = {
     "document-parser": "http://document-parser:8001",
     "rag-service": "http://rag-service:8003",
     "rule-engine": "http://rule-engine:8004",
-    "ollama": "http://ollama:11434"
+    "ollama": "http://ollama:11434",
+    "vllm": "http://vllm:8000"
 }
 
 print("🔍 [DEBUG] Gateway: Starting with services configuration:", SERVICES)
@@ -167,8 +168,8 @@ async def proxy_request(request: Request, service_url: str, path: str = "") -> J
     print(f"🔍 [DEBUG] Gateway: Target URL: {target_url}")
     
     try:
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            print(f"🔍 [DEBUG] Gateway: Creating httpx client with timeout 300s")
+        async with httpx.AsyncClient(timeout=600.0) as client:
+            print(f"🔍 [DEBUG] Gateway: Creating httpx client with timeout 600s")
             
             # Обработка multipart/form-data
             if "multipart/form-data" in headers.get("content-type", ""):
@@ -269,17 +270,33 @@ async def proxy_api(request: Request, path: str):
     print(f"🔍 [DEBUG] Gateway: Full URL: {request.url}")
     
     # Определяем сервис на основе пути
+    print(f"🔍 [DEBUG] Gateway: Checking path: '{path}'")
+    
+    # Проверяем новые endpoints отдельно
+    if path.startswith("ollama/"):
+        print(f"🔍 [DEBUG] Gateway: Routing ollama endpoint to document-parser with /api prefix")
+        service_url = SERVICES["document-parser"]
+        return await proxy_request(request, service_url, f"/api/{path}")
+    
+    if path.startswith("normcontrol/"):
+        print(f"🔍 [DEBUG] Gateway: Routing normcontrol endpoint to document-parser with /api prefix")
+        service_url = SERVICES["document-parser"]
+        return await proxy_request(request, service_url, f"/api/{path}")
+    
     if path.startswith("upload") or path.startswith("documents") or path.startswith("settings"):
         service_url = SERVICES["document-parser"]
         print(f"🔍 [DEBUG] Gateway: Routing to document-parser: {service_url}")
+        return await proxy_request(request, service_url, f"/{path}")
     elif path.startswith("rag/"):
         service_url = SERVICES["rag-service"]
         # Убираем префикс "rag/" из пути
         path = path[4:]  # Убираем "rag/"
         print(f"🔍 [DEBUG] Gateway: Routing to rag-service: {service_url} with path: {path}")
+        return await proxy_request(request, service_url, f"/{path}")
     elif path.startswith("rules"):
         service_url = SERVICES["rule-engine"]
         print(f"🔍 [DEBUG] Gateway: Routing to rule-engine: {service_url}")
+        return await proxy_request(request, service_url, f"/{path}")
     elif path.startswith("chat") or path.startswith("generate"):
         service_url = SERVICES["ollama"]
         print(f"🔍 [DEBUG] Gateway: Routing to ollama: {service_url} with path: {path}")
@@ -287,16 +304,15 @@ async def proxy_api(request: Request, path: str):
     else:
         print(f"🔍 [DEBUG] Gateway: Unknown path, defaulting to document-parser")
         service_url = SERVICES["document-parser"]
-    
-    return await proxy_request(request, service_url, f"/{path}")
+        return await proxy_request(request, service_url, f"/{path}")
 
-# Проксирование запросов к Ollama
+# Проксирование запросов к VLLM
 @app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def proxy_ollama(request: Request, path: str):
-    """Проксирование запросов к Ollama"""
-    print(f"🔍 [DEBUG] Gateway: Ollama route called with path: {path}")
+async def proxy_vllm(request: Request, path: str):
+    """Проксирование запросов к VLLM"""
+    print(f"🔍 [DEBUG] Gateway: VLLM route called with path: {path}")
     
-    service_url = SERVICES["ollama"]
+    service_url = SERVICES["vllm"]
     return await proxy_request(request, service_url, f"/api/{path}")
 
 # Проксирование запросов к Ollama API

@@ -55,7 +55,7 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
     try {
       const response = await fetch(`${API_BASE}/checkable-documents`, {
         headers: {
-          'Authorization': 'Bearer test-token'
+          'Authorization': `Bearer ${authToken}`
         }
       });
       console.log('🔍 [DEBUG] CheckableDocuments.js: fetchDocuments response status:', response.status);
@@ -85,7 +85,7 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
       // Загружаем список документов
       const response = await fetch(`${API_BASE}/checkable-documents`, {
         headers: {
-          'Authorization': 'Bearer test-token'
+          'Authorization': `Bearer ${authToken}`
         }
       });
       if (response.ok) {
@@ -98,11 +98,11 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
           .filter(doc => doc.processing_status === 'completed')
           .map(async (doc) => {
             try {
-              const reportResponse = await fetch(`${API_BASE}/checkable-documents/${doc.id}/report`, {
-                headers: {
-                  'Authorization': 'Bearer test-token'
-                }
-              });
+                      const reportResponse = await fetch(`${API_BASE}/checkable-documents/${doc.id}/report`, {
+          headers: {
+            'Authorization': `Bearer ${authToken}`
+          }
+        });
               if (reportResponse.ok) {
                 const reportData = await reportResponse.json();
                 return { docId: doc.id, report: reportData };
@@ -148,7 +148,7 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
     try {
       const response = await fetch(`${API_BASE}/checkable-documents/${documentId}/download-report`, {
         headers: {
-          'Authorization': 'Bearer test-token'
+          'Authorization': `Bearer ${authToken}`
         }
       });
       
@@ -208,7 +208,7 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
       const response = await fetch(`${API_BASE}/upload/checkable`, {
         method: 'POST',
         headers: {
-          'Authorization': 'Bearer test-token'
+          'Authorization': `Bearer ${authToken}`
         },
         body: formData,
       });
@@ -242,7 +242,7 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
       setLoadingReports(prev => ({ ...prev, [documentId]: true }));
       const response = await fetch(`${API_BASE}/checkable-documents/${documentId}/report`, {
         headers: {
-          'Authorization': 'Bearer test-token'
+          'Authorization': `Bearer ${authToken}`
         }
       });
       if (response.ok) {
@@ -287,7 +287,7 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
       // Получаем содержимое документа
       const docResponse = await fetch(`${API_BASE}/checkable-documents/${documentId}/content`, {
         headers: {
-          'Authorization': 'Bearer test-token'
+          'Authorization': `Bearer ${authToken}`
         }
       });
       if (!docResponse.ok) {
@@ -298,7 +298,7 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
       // Получаем нормативные документы
       const normsResponse = await fetch('/api/documents', {
         headers: {
-          'Authorization': 'Bearer test-token'
+          'Authorization': `Bearer ${authToken}`
         }
       });
       let normativeDocs = '';
@@ -318,7 +318,7 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
       const checkResponse = await fetch(`${API_BASE}/checkable-documents/${documentId}/check`, {
         method: 'POST',
         headers: {
-          'Authorization': 'Bearer test-token',
+          'Authorization': `Bearer ${authToken}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
@@ -353,7 +353,7 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
       const response = await fetch(`${API_BASE}/checkable-documents/${documentId}`, {
         method: 'DELETE',
         headers: {
-          'Authorization': 'Bearer test-token'
+          'Authorization': `Bearer ${authToken}`
         }
       });
 
@@ -504,7 +504,7 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
             try {
               const response = await fetch(`${API_BASE}/checkable-documents/${doc.id}/report`, {
                 headers: {
-                  'Authorization': 'Bearer test-token'
+                  'Authorization': `Bearer ${authToken}`
                 }
               });
               if (response.ok) {
