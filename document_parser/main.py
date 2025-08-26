@@ -6,6 +6,8 @@ import io
 import psutil
 import gc
 import time
+import signal
+import sys
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Form
 from fastapi.responses import JSONResponse
@@ -34,36 +36,86 @@ except ImportError:
     MAX_NORMATIVE_DOCUMENT_SIZE = int(os.getenv("MAX_NORMATIVE_DOCUMENT_SIZE", "209715200"))  # 200 МБ
     LLM_REQUEST_TIMEOUT = int(os.getenv("LLM_REQUEST_TIMEOUT", "120"))
 
+# Глобальные переменные для graceful shutdown
+shutdown_event = asyncio.Event()
+is_shutting_down = False
+
+def signal_handler(signum, frame):
+    """Обработчик сигналов для graceful shutdown"""
+    global is_shutting_down
+    logger.info(f"🔍 [SHUTDOWN] Received signal {signum}, initiating graceful shutdown...")
+    is_shutting_down = True
+    shutdown_event.set()
+
+# Регистрируем обработчики сигналов
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
+
 def get_memory_usage() -> Dict[str, float]:
     """Получение информации об использовании памяти"""
-    process = psutil.Process()
-    memory_info = process.memory_info()
-    memory_percent = process.memory_percent()
-    
-    return {
-        "rss_mb": memory_info.rss / 1024 / 1024,  # RSS в МБ
-        "vms_mb": memory_info.vms / 1024 / 1024,  # VMS в МБ
-        "percent": memory_percent,  # Процент использования
-        "available_mb": psutil.virtual_memory().available / 1024 / 1024  # Доступная память в МБ
-    }
+    try:
+        process = psutil.Process()
+        memory_info = process.memory_info()
+        memory_percent = process.memory_percent()
+        
+        return {
+            "rss_mb": memory_info.rss / 1024 / 1024,  # RSS в МБ
+            "vms_mb": memory_info.vms / 1024 / 1024,  # VMS в МБ
+            "percent": memory_percent,  # Процент использования
+            "available_mb": psutil.virtual_memory().available / 1024 / 1024  # Доступная память в МБ
+        }
+    except Exception as e:
+        logger.error(f"Error getting memory usage: {e}")
+        return {"error": str(e)}
 
 def get_available_memory() -> float:
     """Получение доступной памяти в МБ"""
-    return psutil.virtual_memory().available / 1024 / 1024
+    try:
+        return psutil.virtual_memory().available / 1024 / 1024
+    except Exception as e:
+        logger.error(f"Error getting available memory: {e}")
+        return 0.0
 
 def log_memory_usage(context: str = ""):
     """Логирование использования памяти"""
-    memory_info = get_memory_usage()
-    logger.info(f"🔍 [DEBUG] DocumentParser: Memory usage {context}: "
-               f"RSS: {memory_info['rss_mb']:.1f}MB, "
-               f"VMS: {memory_info['vms_mb']:.1f}MB, "
-               f"Percent: {memory_info['percent']:.1f}%, "
-               f"Available: {memory_info['available_mb']:.1f}MB")
+    try:
+        memory_info = get_memory_usage()
+        if "error" not in memory_info:
+            logger.info(f"🔍 [DEBUG] DocumentParser: Memory usage {context}: "
+                       f"RSS: {memory_info['rss_mb']:.1f}MB, "
+                       f"VMS: {memory_info['vms_mb']:.1f}MB, "
+                       f"Percent: {memory_info['percent']:.1f}%, "
+                       f"Available: {memory_info['available_mb']:.1f}MB")
+        else:
+            logger.warning(f"🔍 [DEBUG] DocumentParser: Could not get memory usage {context}: {memory_info['error']}")
+    except Exception as e:
+        logger.error(f"Error in log_memory_usage: {e}")
 
 def cleanup_memory():
     """Очистка памяти"""
-    gc.collect()
-    logger.info(f"🔍 [DEBUG] DocumentParser: Memory cleanup completed")
+    try:
+        gc.collect()
+        logger.info(f"🔍 [DEBUG] DocumentParser: Memory cleanup completed")
+    except Exception as e:
+        logger.error(f"Error in cleanup_memory: {e}")
+
+def check_memory_pressure() -> bool:
+    """Проверка давления на память"""
+    try:
+        memory_info = get_memory_usage()
+        if "error" in memory_info:
+            return False
+        
+        # Проверяем, если используется больше 80% памяти или доступно меньше 500MB
+        if memory_info['percent'] > 80 or memory_info['available_mb'] < 500:
+            logger.warning(f"🔍 [MEMORY] High memory pressure detected: "
+                          f"Usage: {memory_info['percent']:.1f}%, "
+                          f"Available: {memory_info['available_mb']:.1f}MB")
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Error checking memory pressure: {e}")
+        return False
 
 # OCR imports
 import pytesseract
@@ -295,7 +347,53 @@ class LargeFileMiddleware(BaseHTTPMiddleware):
             request.scope["max_content_size"] = MAX_CHECKABLE_DOCUMENT_SIZE
         return await call_next(request)
 
+class ErrorHandlingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        start_time = time.time()
+        request_id = f"req_{int(start_time * 1000)}"
+        
+        try:
+            # Логируем начало запроса
+            logger.info(f"🔍 [REQUEST] {request_id}: {request.method} {request.url.path} started")
+            
+            # Проверяем состояние shutdown
+            if is_shutting_down and request.url.path not in ["/health", "/metrics"]:
+                logger.warning(f"🔍 [REQUEST] {request_id}: Service is shutting down, rejecting request")
+                return JSONResponse(
+                    status_code=503,
+                    content={"error": "Service is shutting down", "request_id": request_id}
+                )
+            
+            # Проверяем давление на память
+            if check_memory_pressure():
+                logger.warning(f"🔍 [REQUEST] {request_id}: High memory pressure detected")
+                cleanup_memory()
+            
+            response = await call_next(request)
+            
+            # Логируем успешное завершение
+            duration = time.time() - start_time
+            logger.info(f"🔍 [REQUEST] {request_id}: {request.method} {request.url.path} completed in {duration:.3f}s (status: {response.status_code})")
+            
+            return response
+            
+        except Exception as e:
+            # Логируем ошибку
+            duration = time.time() - start_time
+            logger.error(f"🔍 [REQUEST] {request_id}: {request.method} {request.url.path} failed after {duration:.3f}s: {e}")
+            
+            # Возвращаем ошибку 500
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "error": "Internal server error",
+                    "request_id": request_id,
+                    "timestamp": datetime.now().isoformat()
+                }
+            )
+
 app.add_middleware(LargeFileMiddleware)
+app.add_middleware(ErrorHandlingMiddleware)
 
 # CORS middleware уже добавлен выше
 
@@ -314,12 +412,17 @@ class TransactionContext:
     def __init__(self, connection):
         self.connection = connection
         self.cursor = None
+        self.transaction_id = f"tx_{int(time.time() * 1000)}"
     
     def __enter__(self):
         """Начало транзакции"""
-        self.cursor = self.connection.cursor()
-        logger.debug("Transaction started")
-        return self.connection
+        try:
+            self.cursor = self.connection.cursor()
+            logger.debug(f"🔍 [TRANSACTION] {self.transaction_id}: Transaction started")
+            return self.connection
+        except Exception as e:
+            logger.error(f"🔍 [TRANSACTION] {self.transaction_id}: Error starting transaction: {e}")
+            raise
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Завершение транзакции с автоматическим commit/rollback"""
@@ -327,93 +430,144 @@ class TransactionContext:
             if exc_type is None:
                 # Нет исключений - коммитим транзакцию
                 self.connection.commit()
-                logger.debug("Transaction committed successfully")
+                logger.debug(f"🔍 [TRANSACTION] {self.transaction_id}: Transaction committed successfully")
             else:
                 # Есть исключения - откатываем транзакцию
                 self.connection.rollback()
-                logger.error(f"Transaction rolled back due to error: {exc_type.__name__}: {exc_val}")
+                logger.error(f"🔍 [TRANSACTION] {self.transaction_id}: Transaction rolled back due to error: {exc_type.__name__}: {exc_val}")
         except Exception as e:
-            logger.error(f"Error during transaction cleanup: {e}")
+            logger.error(f"🔍 [TRANSACTION] {self.transaction_id}: Error during transaction cleanup: {e}")
             # Пытаемся откатить транзакцию при ошибке очистки
             try:
-                self.connection.rollback()
-            except:
-                pass
+                if not self.connection.closed:
+                    self.connection.rollback()
+                    logger.debug(f"🔍 [TRANSACTION] {self.transaction_id}: Emergency rollback completed")
+            except Exception as rollback_error:
+                logger.error(f"🔍 [TRANSACTION] {self.transaction_id}: Emergency rollback failed: {rollback_error}")
         finally:
             # Закрываем курсор
             if self.cursor:
                 try:
                     self.cursor.close()
-                except:
-                    pass
+                    logger.debug(f"🔍 [TRANSACTION] {self.transaction_id}: Cursor closed")
+                except Exception as cursor_error:
+                    logger.error(f"🔍 [TRANSACTION] {self.transaction_id}: Error closing cursor: {cursor_error}")
 
 
 class DocumentParser:
     def __init__(self):
         self.db_conn = None
         self.qdrant_client = None
+        self.connection_retry_count = 0
+        self.max_retries = 3
+        self.retry_delay = 5  # секунды
         self.connect_databases()
     
     def connect_databases(self):
-        """Подключение к базам данных"""
-        try:
-            # PostgreSQL
-            self.db_conn = psycopg2.connect(
-                host=POSTGRES_HOST,
-                database=POSTGRES_DB,
-                user=POSTGRES_USER,
-                password=POSTGRES_PASSWORD
-            )
-            logger.info("Connected to PostgreSQL")
-            
-            # Qdrant
-            self.qdrant_client = qdrant_client.QdrantClient(
-                host=QDRANT_HOST,
-                port=QDRANT_PORT
-            )
-            logger.info("Connected to Qdrant")
-            
-        except Exception as e:
-            logger.error(f"Database connection error: {e}")
-            raise
+        """Подключение к базам данных с повторными попытками"""
+        for attempt in range(self.max_retries):
+            try:
+                logger.info(f"🔍 [CONNECTION] Attempt {attempt + 1}/{self.max_retries} to connect to databases")
+                
+                # PostgreSQL
+                self.db_conn = psycopg2.connect(
+                    host=POSTGRES_HOST,
+                    database=POSTGRES_DB,
+                    user=POSTGRES_USER,
+                    password=POSTGRES_PASSWORD,
+                    connect_timeout=10,
+                    application_name="document_parser"
+                )
+                logger.info("🔍 [CONNECTION] Connected to PostgreSQL")
+                
+                # Qdrant
+                self.qdrant_client = qdrant_client.QdrantClient(
+                    host=QDRANT_HOST,
+                    port=QDRANT_PORT,
+                    timeout=10
+                )
+                logger.info("🔍 [CONNECTION] Connected to Qdrant")
+                
+                # Сброс счетчика попыток при успешном подключении
+                self.connection_retry_count = 0
+                return
+                
+            except Exception as e:
+                self.connection_retry_count += 1
+                logger.error(f"🔍 [CONNECTION] Database connection error (attempt {attempt + 1}/{self.max_retries}): {e}")
+                
+                if attempt < self.max_retries - 1:
+                    logger.info(f"🔍 [CONNECTION] Retrying in {self.retry_delay} seconds...")
+                    time.sleep(self.retry_delay)
+                else:
+                    logger.error(f"🔍 [CONNECTION] Failed to connect to databases after {self.max_retries} attempts")
+                    raise
     
     def get_db_connection(self):
         """Безопасное получение соединения с базой данных"""
         try:
             # Проверяем, что соединение существует и активно
             if self.db_conn is None or self.db_conn.closed:
-                logger.info("Reconnecting to PostgreSQL...")
+                logger.info("🔍 [CONNECTION] Reconnecting to PostgreSQL...")
                 self.db_conn = psycopg2.connect(
                     host=POSTGRES_HOST,
                     database=POSTGRES_DB,
                     user=POSTGRES_USER,
-                    password=POSTGRES_PASSWORD
+                    password=POSTGRES_PASSWORD,
+                    connect_timeout=10,
+                    application_name="document_parser"
                 )
-                logger.info("Reconnected to PostgreSQL")
+                logger.info("🔍 [CONNECTION] Reconnected to PostgreSQL")
             
             # Проверяем, что соединение работает
-            with self.db_conn.cursor() as cursor:
-                cursor.execute("SELECT 1")
+            try:
+                with self.db_conn.cursor() as cursor:
+                    cursor.execute("SELECT 1")
+                    cursor.fetchone()
+            except Exception as test_error:
+                logger.warning(f"🔍 [CONNECTION] Database connection test failed: {test_error}")
+                # Переподключаемся при ошибке теста
+                if self.db_conn and not self.db_conn.closed:
+                    try:
+                        self.db_conn.close()
+                    except:
+                        pass
+                
+                self.db_conn = psycopg2.connect(
+                    host=POSTGRES_HOST,
+                    database=POSTGRES_DB,
+                    user=POSTGRES_USER,
+                    password=POSTGRES_PASSWORD,
+                    connect_timeout=10,
+                    application_name="document_parser"
+                )
+                logger.info("🔍 [CONNECTION] Reconnected to PostgreSQL after test failure")
             
             return self.db_conn
             
         except Exception as e:
-            logger.error(f"Database connection check failed: {e}")
+            logger.error(f"🔍 [CONNECTION] Database connection check failed: {e}")
             # Пытаемся переподключиться
             try:
                 if self.db_conn and not self.db_conn.closed:
                     self.db_conn.close()
-            except:
-                pass
+            except Exception as close_error:
+                logger.error(f"🔍 [CONNECTION] Error closing connection: {close_error}")
             
-            self.db_conn = psycopg2.connect(
-                host=POSTGRES_HOST,
-                database=POSTGRES_DB,
-                user=POSTGRES_USER,
-                password=POSTGRES_PASSWORD
-            )
-            logger.info("Reconnected to PostgreSQL after error")
-            return self.db_conn
+            try:
+                self.db_conn = psycopg2.connect(
+                    host=POSTGRES_HOST,
+                    database=POSTGRES_DB,
+                    user=POSTGRES_USER,
+                    password=POSTGRES_PASSWORD,
+                    connect_timeout=10,
+                    application_name="document_parser"
+                )
+                logger.info("🔍 [CONNECTION] Reconnected to PostgreSQL after error")
+                return self.db_conn
+            except Exception as reconnect_error:
+                logger.error(f"🔍 [CONNECTION] Failed to reconnect: {reconnect_error}")
+                raise
     
     def transaction_context(self):
         """Контекстный менеджер для управления транзакциями"""
@@ -1589,21 +1743,34 @@ class DocumentParser:
     def get_checkable_documents(self) -> List[Dict[str, Any]]:
         """Получение списка проверяемых документов"""
         def _get_documents(conn):
-            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                cursor.execute("""
-                    SELECT id, original_filename, file_type, file_size, upload_date, 
-                           processing_status, category, review_deadline, review_status, 
-                           assigned_reviewer
-                    FROM checkable_documents 
-                    ORDER BY upload_date DESC
-                """)
-                documents = cursor.fetchall()
-                return [dict(doc) for doc in documents]
+            try:
+                with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                    cursor.execute("""
+                        SELECT id, original_filename, file_type, file_size, upload_date, 
+                               processing_status, category, review_deadline, review_status, 
+                               assigned_reviewer
+                        FROM checkable_documents 
+                        ORDER BY upload_date DESC
+                    """)
+                    documents = cursor.fetchall()
+                    logger.debug(f"🔍 [DATABASE] Retrieved {len(documents)} checkable documents")
+                    return [dict(doc) for doc in documents]
+            except Exception as db_error:
+                logger.error(f"🔍 [DATABASE] Error in _get_documents: {db_error}")
+                raise
         
         try:
-            return self.execute_in_transaction(_get_documents)
+            # Проверяем давление на память перед выполнением
+            if check_memory_pressure():
+                logger.warning("🔍 [MEMORY] High memory pressure detected, performing cleanup")
+                cleanup_memory()
+            
+            result = self.execute_in_transaction(_get_documents)
+            logger.info(f"🔍 [DATABASE] Successfully retrieved {len(result)} checkable documents")
+            return result
         except Exception as e:
-            logger.error(f"Get checkable documents error: {e}")
+            logger.error(f"🔍 [DATABASE] Get checkable documents error: {e}")
+            # Возвращаем пустой список вместо падения
             return []
 
     def get_checkable_document(self, document_id: int) -> Optional[Dict[str, Any]]:
@@ -3307,12 +3474,27 @@ async def upload_checkable_document(
 async def list_checkable_documents():
     """Список проверяемых документов"""
     try:
+        # Проверяем состояние shutdown
+        if is_shutting_down:
+            logger.warning("🔍 [API] Service is shutting down, rejecting checkable documents request")
+            raise HTTPException(status_code=503, detail="Service is shutting down")
+        
+        # Проверяем давление на память
+        if check_memory_pressure():
+            logger.warning("🔍 [API] High memory pressure detected during checkable documents request")
+            cleanup_memory()
+        
         documents = parser.get_checkable_documents()
+        logger.info(f"🔍 [API] Successfully retrieved {len(documents)} checkable documents")
         return {"documents": documents}
         
+    except HTTPException:
+        # Перебрасываем HTTP исключения как есть
+        raise
     except Exception as e:
-        logger.error(f"List checkable documents error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"🔍 [API] List checkable documents error: {e}")
+        # Возвращаем пустой список вместо ошибки 500
+        return {"documents": [], "warning": "Service temporarily unavailable"}
 
 @app.get("/checkable-documents/{document_id}/elements")
 async def get_checkable_document_elements(document_id: int):
@@ -4687,22 +4869,82 @@ async def get_normcontrol_analytics():
 @app.get("/health")
 async def health_check():
     """Проверка здоровья сервиса"""
+    health_status = {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "checks": {}
+    }
+    
     try:
-        # Проверка PostgreSQL с безопасным соединением
-        db_conn = parser.get_db_connection()
-        with db_conn.cursor() as cursor:
-            cursor.execute("SELECT 1")
+        # Проверка состояния shutdown
+        if is_shutting_down:
+            health_status["status"] = "shutting_down"
+            health_status["checks"]["shutdown"] = "in_progress"
+        
+        # Проверка памяти
+        try:
+            memory_info = get_memory_usage()
+            if "error" not in memory_info:
+                health_status["checks"]["memory"] = {
+                    "rss_mb": round(memory_info['rss_mb'], 1),
+                    "percent": round(memory_info['percent'], 1),
+                    "available_mb": round(memory_info['available_mb'], 1)
+                }
+                if memory_info['percent'] > 90:
+                    health_status["status"] = "degraded"
+                    health_status["checks"]["memory"]["status"] = "high_usage"
+                else:
+                    health_status["checks"]["memory"]["status"] = "ok"
+            else:
+                health_status["checks"]["memory"] = {"status": "error", "error": memory_info["error"]}
+        except Exception as mem_error:
+            health_status["checks"]["memory"] = {"status": "error", "error": str(mem_error)}
+        
+        # Проверка PostgreSQL
+        try:
+            db_conn = parser.get_db_connection()
+            with db_conn.cursor() as cursor:
+                cursor.execute("SELECT 1")
+                cursor.fetchone()
+            health_status["checks"]["postgresql"] = {"status": "ok"}
+        except Exception as pg_error:
+            health_status["checks"]["postgresql"] = {"status": "error", "error": str(pg_error)}
+            health_status["status"] = "unhealthy"
         
         # Проверка Qdrant
-        parser.qdrant_client.get_collections()
+        try:
+            parser.qdrant_client.get_collections()
+            health_status["checks"]["qdrant"] = {"status": "ok"}
+        except Exception as qd_error:
+            health_status["checks"]["qdrant"] = {"status": "error", "error": str(qd_error)}
+            health_status["status"] = "unhealthy"
         
-        return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+        # Определяем общий статус
+        if health_status["status"] == "healthy" and any(check.get("status") == "error" for check in health_status["checks"].values()):
+            health_status["status"] = "degraded"
+        
+        if health_status["status"] == "unhealthy":
+            return JSONResponse(
+                status_code=503,
+                content=health_status
+            )
+        elif health_status["status"] == "degraded":
+            return JSONResponse(
+                status_code=200,
+                content=health_status
+            )
+        else:
+            return health_status
         
     except Exception as e:
-        logger.error(f"Health check error: {e}")
+        logger.error(f"🔍 [HEALTH] Health check error: {e}")
         return JSONResponse(
             status_code=503,
-            content={"status": "unhealthy", "error": str(e)}
+            content={
+                "status": "unhealthy", 
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
         )
 
 # Тестовый endpoint для проверки
@@ -4711,6 +4953,36 @@ async def test_prompt_templates():
     """Тестовый endpoint для проверки промпт-шаблонов"""
     return {"status": "success", "message": "Test endpoint works"}
 
+async def shutdown_event_handler():
+    """Обработчик события завершения работы"""
+    global is_shutting_down
+    logger.info("🔍 [SHUTDOWN] Starting graceful shutdown...")
+    is_shutting_down = True
+    
+    # Ждем завершения текущих запросов
+    await asyncio.sleep(5)
+    
+    # Закрываем соединения с базами данных
+    try:
+        if parser.db_conn and not parser.db_conn.closed:
+            parser.db_conn.close()
+            logger.info("🔍 [SHUTDOWN] PostgreSQL connection closed")
+    except Exception as e:
+        logger.error(f"🔍 [SHUTDOWN] Error closing PostgreSQL connection: {e}")
+    
+    try:
+        if parser.qdrant_client:
+            parser.qdrant_client.close()
+            logger.info("🔍 [SHUTDOWN] Qdrant connection closed")
+    except Exception as e:
+        logger.error(f"🔍 [SHUTDOWN] Error closing Qdrant connection: {e}")
+    
+    logger.info("🔍 [SHUTDOWN] Graceful shutdown completed")
+
+# Регистрируем обработчик shutdown
+app.add_event_handler("shutdown", shutdown_event_handler)
+
 if __name__ == "__main__":
     import uvicorn
+    logger.info("🔍 [STARTUP] Starting Document Parser Service...")
     uvicorn.run(app, host="0.0.0.0", port=8001)
