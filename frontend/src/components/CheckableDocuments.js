@@ -48,8 +48,16 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
   const API_BASE = process.env.REACT_APP_API_BASE || '/api';
 
   // Загрузка списка проверяемых документов
-  const fetchDocuments = async () => {
+  const fetchDocuments = async (retryCount = 0) => {
     console.log('🔍 [DEBUG] CheckableDocuments.js: fetchDocuments started');
+    
+    // Проверка авторизации
+    if (!isAuthenticated || !authToken) {
+      console.log('🔍 [DEBUG] CheckableDocuments.js: fetchDocuments - not authenticated');
+      setError('Требуется авторизация для загрузки документов');
+      return;
+    }
+    
     setLoading(true);
     setError(null);
     try {
@@ -66,11 +74,38 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
         setDocuments(data.documents || []);
       } else {
         console.error('🔍 [DEBUG] CheckableDocuments.js: fetchDocuments failed with status:', response.status);
-        setError('Ошибка загрузки документов');
+        
+        // Более информативные сообщения об ошибках
+        if (response.status === 503) {
+          if (retryCount < 3) {
+            console.log(`🔍 [DEBUG] CheckableDocuments.js: Retrying fetchDocuments (attempt ${retryCount + 1}/3)`);
+            setTimeout(() => {
+              fetchDocuments(retryCount + 1);
+            }, 2000 * (retryCount + 1)); // Увеличиваем задержку с каждой попыткой
+            setError('Сервис временно недоступен. Повторная попытка...');
+            return;
+          } else {
+            setError('Сервис временно недоступен. Попробуйте обновить страницу через несколько секунд.');
+          }
+        } else if (response.status === 401) {
+          setError('Ошибка авторизации. Пожалуйста, войдите в систему заново.');
+        } else if (response.status === 500) {
+          setError('Внутренняя ошибка сервера. Попробуйте позже.');
+        } else {
+          setError(`Ошибка загрузки документов (код ${response.status})`);
+        }
       }
     } catch (error) {
       console.error('🔍 [DEBUG] CheckableDocuments.js: fetchDocuments error:', error);
-      setError('Ошибка загрузки документов');
+      
+      // Более детальная обработка ошибок
+      if (error.name === 'TypeError' && error.message.includes('fetch')) {
+        setError('Ошибка сети. Проверьте подключение к интернету.');
+      } else if (error.message && error.message.includes('Failed to fetch')) {
+        setError('Сервис недоступен. Попробуйте обновить страницу.');
+      } else {
+        setError('Ошибка загрузки документов. Попробуйте позже.');
+      }
     } finally {
       setLoading(false);
     }
@@ -78,6 +113,13 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
 
   // Полное обновление данных (документы + отчеты)
   const refreshAllData = async () => {
+    // Проверка авторизации
+    if (!isAuthenticated || !authToken) {
+      console.log('🔍 [DEBUG] CheckableDocuments.js: refreshAllData - not authenticated');
+      setError('Требуется авторизация для обновления данных');
+      return;
+    }
+    
     try {
       setLoading(true);
       setError(null);
@@ -145,6 +187,14 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
   // Скачивание PDF отчета
   const downloadReport = async (documentId) => {
     console.log('🔍 [DEBUG] CheckableDocuments.js: downloadReport started for document:', documentId);
+    
+    // Проверка авторизации
+    if (!isAuthenticated || !authToken) {
+      console.log('🔍 [DEBUG] CheckableDocuments.js: downloadReport - not authenticated');
+      setError('Требуется авторизация для скачивания отчета');
+      return;
+    }
+    
     try {
       const response = await fetch(`${API_BASE}/checkable-documents/${documentId}/download-report`, {
         headers: {
@@ -196,6 +246,13 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
   const handleUpload = async () => {
     if (!selectedFile) return;
 
+    // Проверка авторизации
+    if (!isAuthenticated || !authToken) {
+      console.log('🔍 [DEBUG] CheckableDocuments.js: handleUpload - not authenticated');
+      setError('Требуется авторизация для загрузки документа');
+      return;
+    }
+
     try {
       setUploading(true);
       setUploadProgress(0);
@@ -238,6 +295,13 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
 
   // Загрузка отчета о проверке
   const fetchReport = async (documentId) => {
+    // Проверка авторизации
+    if (!isAuthenticated || !authToken) {
+      console.log('🔍 [DEBUG] CheckableDocuments.js: fetchReport - not authenticated');
+      setError('Требуется авторизация для загрузки отчета');
+      return;
+    }
+    
     try {
       setLoadingReports(prev => ({ ...prev, [documentId]: true }));
       const response = await fetch(`${API_BASE}/checkable-documents/${documentId}/report`, {
@@ -277,6 +341,13 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
 
   // Запуск проверки нормоконтроля
   const runNormcontrolCheck = async (documentId) => {
+    // Проверка авторизации
+    if (!isAuthenticated || !authToken) {
+      console.log('🔍 [DEBUG] CheckableDocuments.js: runNormcontrolCheck - not authenticated');
+      setError('Требуется авторизация для запуска проверки');
+      return;
+    }
+    
     try {
       setLoadingReports(prev => ({ ...prev, [documentId]: true }));
       setError(null);
@@ -348,6 +419,13 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
   // Удаление документа
   const deleteDocument = async (documentId) => {
     if (!window.confirm('Вы уверены, что хотите удалить этот документ?')) return;
+
+    // Проверка авторизации
+    if (!isAuthenticated || !authToken) {
+      console.log('🔍 [DEBUG] CheckableDocuments.js: deleteDocument - not authenticated');
+      setError('Требуется авторизация для удаления документа');
+      return;
+    }
 
     try {
       const response = await fetch(`${API_BASE}/checkable-documents/${documentId}`, {
@@ -490,7 +568,7 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
         console.log('🔍 [DEBUG] CheckableDocuments.js: Auto-refreshing documents with processing status');
         fetchDocuments();
       }
-    }, 3000); // Обновляем каждые 3 секунды
+    }, 5000); // Увеличиваем интервал до 5 секунд
     
     return () => clearInterval(interval);
   }, [documents]);
@@ -498,6 +576,12 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
   // Автоматическая загрузка отчетов для документов с завершенной обработкой
   useEffect(() => {
     const loadReportsForCompletedDocuments = async () => {
+      // Проверка авторизации
+      if (!isAuthenticated || !authToken) {
+        console.log('🔍 [DEBUG] CheckableDocuments.js: loadReportsForCompletedDocuments - not authenticated');
+        return;
+      }
+      
       if (documents.length > 0) {
         for (const doc of documents) {
           if (doc.processing_status === 'completed' && !reports[doc.id] && !loadingReports[doc.id]) {
@@ -520,18 +604,18 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
     };
 
     loadReportsForCompletedDocuments();
-  }, [documents, reports, loadingReports, API_BASE]);
+  }, [documents, reports, loadingReports, API_BASE, isAuthenticated, authToken]);
 
   // Обработка обновления данных после авторизации
   useEffect(() => {
-    if (refreshTrigger && isAuthenticated) {
-      console.log('Обновление данных проверяемых документов после авторизации...');
+    if (refreshTrigger && isAuthenticated && authToken) {
+      console.log('🔍 [DEBUG] CheckableDocuments.js: Обновление данных проверяемых документов после авторизации...');
       fetchDocuments();
       if (onRefreshComplete) {
         onRefreshComplete();
       }
     }
-  }, [refreshTrigger, isAuthenticated, onRefreshComplete]);
+  }, [refreshTrigger, isAuthenticated, authToken, onRefreshComplete]);
 
   console.log('🔍 [DEBUG] CheckableDocuments.js: Rendering with state:', {
     documentsCount: documents.length,
@@ -540,8 +624,35 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
     showSettings,
     settingsCount: Object.keys(settings).length,
     selectedFile: selectedFile?.name,
-    isUploading: uploading
+    isUploading: uploading,
+    isAuthenticated,
+    hasAuthToken: !!authToken
   });
+
+  // Проверка авторизации при рендеринге
+  if (!isAuthenticated || !authToken) {
+    return (
+      <div className="max-w-6xl mx-auto p-6">
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold text-gray-900 mb-2">
+            Проверка Нормоконтроля
+          </h1>
+          <p className="text-gray-600">
+            Загружайте документы для проверки на соответствие нормативным требованиям.
+          </p>
+        </div>
+        
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6">
+          <div className="flex items-center">
+            <AlertTriangle className="w-5 h-5 text-yellow-500 mr-2" />
+            <span className="text-yellow-700">
+              Требуется авторизация для доступа к функциям нормоконтроля. Пожалуйста, войдите в систему.
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-6xl mx-auto p-6">

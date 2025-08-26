@@ -7,6 +7,10 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    environment:
+      - TZ=Europe/Moscow
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
@@ -21,8 +25,11 @@ services:
       POSTGRES_DB: keycloak
       POSTGRES_USER: keycloak
       POSTGRES_PASSWORD: keycloak
+      TZ: Europe/Moscow
     volumes:
       - keycloak_db_data:/var/lib/postgresql/data
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U keycloak"]
@@ -45,12 +52,15 @@ services:
       KC_HTTPS_PORT: 8443
       KC_HTTP_ENABLED: false
       KC_HTTPS_ENABLED: true
+      TZ: Europe/Moscow
     ports:
       - "${KEYCLOAK_PORT:-8081}:8443"
     volumes:
       - ./keycloak/ai-nk-realm.json:/opt/keycloak/data/import/ai-nk-realm.json:ro
       - ./ssl/keycloak.keystore:/opt/keycloak/ssl/keycloak.keystore:ro
       - ./keycloak/conf/keycloak.conf:/opt/keycloak/conf/keycloak.conf:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     depends_on:
       keycloak-db:
         condition: service_healthy
@@ -68,6 +78,8 @@ services:
       - "${OLLAMA_PORT:-11434}:11434"
     volumes:
       - ollama_data:/root/.ollama
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     environment:
       - OLLAMA_HOST=0.0.0.0
       - OLLAMA_ORIGINS=*
@@ -77,6 +89,7 @@ services:
       - OLLAMA_NUM_BATCH=1024
       - OLLAMA_NUM_THREAD=8
       - OLLAMA_TEMPERATURE=0.1
+      - TZ=Europe/Moscow
     restart: unless-stopped
     deploy:
       resources:
@@ -102,6 +115,10 @@ services:
       - OLLAMA_CPU_THREADS=2
       - OLLAMA_GPU_LAYERS=0
       - OLLAMA_BATCH_SIZE=1
+      - TZ=Europe/Moscow
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     depends_on:
       - ollama
     restart: unless-stopped
@@ -134,8 +151,11 @@ services:
       - "REDIS_URL=redis://:${REDIS_PASSWORD:-redispass}@redis:6379/0"
       - "RATE_LIMIT_DEFAULT_RPM=300"
       - "RATE_LIMIT_RPM_BY_ROLE={\"admin\": 1000, \"user\": 300}"
+      - TZ=Europe/Moscow
     volumes:
       - ./ssl:/app/ssl:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     depends_on:
       - vllm
       - redis
@@ -157,9 +177,13 @@ services:
     build: ./frontend
     ports:
       - "${FRONTEND_PORT:-443}:443"
+    environment:
+      - TZ=Europe/Moscow
     volumes:
       - ./ssl/frontend.crt:/etc/nginx/ssl/frontend.crt:ro
       - ./ssl/frontend.key:/etc/nginx/ssl/frontend.key:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     depends_on:
       - gateway
     restart: unless-stopped
@@ -174,9 +198,13 @@ services:
     image: prom/prometheus:latest
     ports:
       - "${PROMETHEUS_PORT:-9090}:9090"
+    environment:
+      - TZ=Europe/Moscow
     volumes:
       - prometheus_data:/prometheus
       - ./configs/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
@@ -199,13 +227,15 @@ services:
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
       - GF_PLUGINS_PREINSTALL=grafana-clock-panel,grafana-simple-json-datasource
+      - TZ=Europe/Moscow
     volumes:
       - grafana_data:/var/lib/grafana
       - ./configs/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
       - ./configs/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     depends_on:
-      prometheus:
-        condition: service_healthy
+      - prometheus
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
@@ -229,6 +259,7 @@ services:
       POSTGRES_LOG_MIN_DURATION_STATEMENT: 0
       POSTGRES_LOG_CONNECTIONS: "on"
       POSTGRES_LOG_DISCONNECTIONS: "on"
+      TZ: Europe/Moscow
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -236,6 +267,8 @@ services:
       - ./sql/init_norms_db.sql:/docker-entrypoint-initdb.d/01_init_norms_db.sql:ro
       - ./sql/configure_logging.sql:/docker-entrypoint-initdb.d/02_configure_logging.sql:ro
       - ./sql/configure_keycloak_auth.sql:/docker-entrypoint-initdb.d/03_configure_keycloak_auth.sql:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     restart: unless-stopped
     deploy:
       resources:
@@ -275,10 +308,13 @@ services:
       - PGBOUNCER_SERVER_TLS_SSLMODE=disable
       - PGBOUNCER_AUTH_TYPE=md5
       - PGBOUNCER_AUTH_FILE=/etc/pgbouncer/userlist.txt
+      - TZ=Europe/Moscow
     ports:
       - "5433:5433"
     volumes:
       - ./configs/pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     depends_on:
       - norms-db
     restart: unless-stopped
@@ -296,6 +332,10 @@ services:
       - "6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    environment:
+      - TZ=Europe/Moscow
     restart: unless-stopped
     deploy:
       resources:
@@ -328,9 +368,12 @@ services:
       - MAX_NORMATIVE_DOCUMENT_SIZE=${MAX_NORMATIVE_DOCUMENT_SIZE:-209715200}
       - LLM_REQUEST_TIMEOUT=${LLM_REQUEST_TIMEOUT:-120}
       - PAGE_PROCESSING_TIMEOUT=${PAGE_PROCESSING_TIMEOUT:-300}
+      - TZ=Europe/Moscow
     volumes:
       - ./uploads:/app/uploads
       - ./temp:/app/temp
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     depends_on:
       - norms-db
       - qdrant
@@ -365,6 +408,10 @@ services:
       - QDRANT_PORT=6333
       - GATEWAY_URL=https://gateway:8443
       - REDIS_URL=redis://:${REDIS_PASSWORD:-redispass}@redis:6379/0
+      - TZ=Europe/Moscow
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     depends_on:
       - norms-db
       - qdrant
@@ -397,8 +444,11 @@ services:
       - REDIS_URL=redis://:${REDIS_PASSWORD:-redispass}@redis:6379/0
       - TRANSFORMERS_CACHE=/app/models
       - HF_HOME=/app/models
+      - TZ=Europe/Moscow
     volumes:
       - rag_models:/app/models
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     depends_on:
       - norms-db
       - qdrant
