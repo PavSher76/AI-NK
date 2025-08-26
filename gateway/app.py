@@ -89,6 +89,7 @@ SERVICES = {
     "document-parser": "http://document-parser:8001",
     "rag-service": "http://rag-service:8003",
     "rule-engine": "http://rule-engine:8004",
+    "calculation-service": "http://calculation-service:8002",
     "ollama": "http://ollama:11434",
     "vllm": "http://vllm:8000"
 }
@@ -296,6 +297,10 @@ async def proxy_api(request: Request, path: str):
     elif path.startswith("rules"):
         service_url = SERVICES["rule-engine"]
         print(f"🔍 [DEBUG] Gateway: Routing to rule-engine: {service_url}")
+        return await proxy_request(request, service_url, f"/{path}")
+    elif path.startswith("calculations"):
+        service_url = SERVICES["calculation-service"]
+        print(f"🔍 [DEBUG] Gateway: Routing to calculation-service: {service_url}")
         return await proxy_request(request, service_url, f"/{path}")
     elif path.startswith("chat") or path.startswith("generate"):
         service_url = SERVICES["ollama"]
