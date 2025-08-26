@@ -476,6 +476,56 @@ class TransactionContext:
                     logger.error(f"🔍 [TRANSACTION] {self.transaction_id}: Error closing cursor: {cursor_error}")
 
 
+class ReadOnlyTransactionContext:
+    """Контекстный менеджер для операций только для чтения PostgreSQL"""
+    
+    def __init__(self, connection):
+        self.connection = connection
+        self.cursor = None
+        self.transaction_id = f"read_tx_{int(time.time() * 1000)}"
+    
+    def __enter__(self):
+        """Начало транзакции только для чтения"""
+        try:
+            self.cursor = self.connection.cursor()
+            # Устанавливаем транзакцию только для чтения
+            self.cursor.execute("SET TRANSACTION READ ONLY")
+            logger.debug(f"🔍 [READ_TRANSACTION] {self.transaction_id}: Read-only transaction started")
+            return self.connection
+        except Exception as e:
+            logger.error(f"🔍 [READ_TRANSACTION] {self.transaction_id}: Error starting read-only transaction: {e}")
+            raise
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Завершение транзакции только для чтения"""
+        try:
+            if exc_type is None:
+                # Нет исключений - коммитим транзакцию (для чтения это безопасно)
+                self.connection.commit()
+                logger.debug(f"🔍 [READ_TRANSACTION] {self.transaction_id}: Read-only transaction committed successfully")
+            else:
+                # Есть исключения - откатываем транзакцию
+                self.connection.rollback()
+                logger.error(f"🔍 [READ_TRANSACTION] {self.transaction_id}: Read-only transaction rolled back due to error: {exc_type.__name__}: {exc_val}")
+        except Exception as e:
+            logger.error(f"🔍 [READ_TRANSACTION] {self.transaction_id}: Error during read-only transaction cleanup: {e}")
+            # Пытаемся откатить транзакцию при ошибке очистки
+            try:
+                if not self.connection.closed:
+                    self.connection.rollback()
+                    logger.debug(f"🔍 [READ_TRANSACTION] {self.transaction_id}: Emergency rollback completed")
+            except Exception as rollback_error:
+                logger.error(f"🔍 [READ_TRANSACTION] {self.transaction_id}: Emergency rollback failed: {rollback_error}")
+        finally:
+            # Закрываем курсор
+            if self.cursor:
+                try:
+                    self.cursor.close()
+                    logger.debug(f"🔍 [READ_TRANSACTION] {self.transaction_id}: Cursor closed")
+                except Exception as cursor_error:
+                    logger.error(f"🔍 [READ_TRANSACTION] {self.transaction_id}: Error closing cursor: {cursor_error}")
+
+
 class DocumentParser:
     def __init__(self):
         self.db_conn = None
@@ -610,9 +660,18 @@ class DocumentParser:
         """Контекстный менеджер для управления транзакциями"""
         return TransactionContext(self.get_db_connection())
     
+    def read_only_transaction_context(self):
+        """Контекстный менеджер для операций только для чтения"""
+        return ReadOnlyTransactionContext(self.get_db_connection())
+    
     def execute_in_transaction(self, operation, *args, **kwargs):
         """Выполнение операции в транзакции с автоматическим управлением"""
         with self.transaction_context() as conn:
+            return operation(conn, *args, **kwargs)
+    
+    def execute_in_read_only_transaction(self, operation, *args, **kwargs):
+        """Выполнение операции в транзакции только для чтения"""
+        with self.read_only_transaction_context() as conn:
             return operation(conn, *args, **kwargs)
     def calculate_file_hash(self, file_content: bytes) -> str:
         """Вычисление SHA-256 хеша файла"""
@@ -1803,8 +1862,10 @@ class DocumentParser:
                 logger.warning("🔍 [MEMORY] High memory pressure detected, performing cleanup")
                 cleanup_memory()
             
-            result = self.execute_in_transaction(_get_documents)
-            logger.info(f"🔍 [DATABASE] Successfully retrieved {len(result)} checkable documents")
+            # Используем транзакцию только для чтения для оптимизации производительности
+            logger.info(f"🔍 [DATABASE] Starting read-only transaction for get_checkable_documents")
+            result = self.execute_in_read_only_transaction(_get_documents)
+            logger.info(f"🔍 [DATABASE] Successfully retrieved {len(result)} checkable documents using read-only transaction")
             return result
         except Exception as e:
             logger.error(f"🔍 [DATABASE] Get checkable documents error: {e}")
@@ -1813,61 +1874,91 @@ class DocumentParser:
 
     def get_checkable_document(self, document_id: int) -> Optional[Dict[str, Any]]:
         """Получение информации о проверяемом документе"""
+        def _get_document(conn):
+            try:
+                with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                    cursor.execute("""
+                        SELECT id, original_filename, file_type, file_size, upload_date, 
+                               processing_status, category, review_deadline, review_status, 
+                               assigned_reviewer
+                        FROM checkable_documents 
+                        WHERE id = %s
+                    """, (document_id,))
+                    document = cursor.fetchone()
+                    return dict(document) if document else None
+            except Exception as db_error:
+                logger.error(f"🔍 [DATABASE] Error in _get_document: {db_error}")
+                raise
+        
         try:
-            with self.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                cursor.execute("""
-                    SELECT id, original_filename, file_type, file_size, upload_date, 
-                           processing_status, category, review_deadline, review_status, 
-                           assigned_reviewer
-                    FROM checkable_documents 
-                    WHERE id = %s
-                """, (document_id,))
-                document = cursor.fetchone()
-                return dict(document) if document else None
+            logger.debug(f"🔍 [DATABASE] Starting read-only transaction for get_checkable_document {document_id}")
+            result = self.execute_in_read_only_transaction(_get_document)
+            logger.debug(f"🔍 [DATABASE] Successfully retrieved checkable document {document_id} using read-only transaction")
+            return result
         except Exception as e:
             logger.error(f"Get checkable document error: {e}")
             return None
 
     def get_norm_control_result_by_document_id(self, document_id: int) -> Optional[Dict[str, Any]]:
         """Получение результатов нормоконтроля по ID документа"""
+        def _get_norm_control_result(conn):
+            try:
+                with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                    cursor.execute("""
+                        SELECT id, analysis_status, total_findings, critical_findings, warning_findings, 
+                               info_findings, analysis_date
+                        FROM norm_control_results
+                        WHERE checkable_document_id = %s
+                        ORDER BY analysis_date DESC
+                        LIMIT 1
+                    """, (document_id,))
+                    result = cursor.fetchone()
+                    return dict(result) if result else None
+            except Exception as db_error:
+                logger.error(f"🔍 [DATABASE] Error in _get_norm_control_result: {db_error}")
+                raise
+        
         try:
-            with self.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                cursor.execute("""
-                    SELECT id, analysis_status, total_findings, critical_findings, warning_findings, 
-                           info_findings, analysis_date
-                    FROM norm_control_results
-                    WHERE checkable_document_id = %s
-                    ORDER BY analysis_date DESC
-                    LIMIT 1
-                """, (document_id,))
-                result = cursor.fetchone()
-                return dict(result) if result else None
+            logger.debug(f"🔍 [DATABASE] Starting read-only transaction for get_norm_control_result_by_document_id {document_id}")
+            result = self.execute_in_read_only_transaction(_get_norm_control_result)
+            logger.debug(f"🔍 [DATABASE] Successfully retrieved norm control result for document {document_id} using read-only transaction")
+            return result
         except Exception as e:
             logger.error(f"Get norm control result error: {e}")
             return None
 
     def get_page_results_by_document_id(self, document_id: int) -> List[Dict[str, Any]]:
         """Получение результатов по страницам документа"""
+        def _get_page_results(conn):
+            try:
+                with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                    cursor.execute("""
+                        SELECT 
+                            f.id,
+                            f.finding_type,
+                            f.severity_level,
+                            f.category,
+                            f.title,
+                            f.description,
+                            f.recommendation,
+                            f.confidence_score,
+                            f.created_at
+                        FROM findings f
+                        JOIN norm_control_results ncr ON f.norm_control_result_id = ncr.id
+                        WHERE ncr.checkable_document_id = %s
+                        ORDER BY f.severity_level DESC, f.created_at
+                    """, (document_id,))
+                    results = cursor.fetchall()
+                    return [dict(result) for result in results]
+            except Exception as db_error:
+                logger.error(f"🔍 [DATABASE] Error in _get_page_results: {db_error}")
+                raise
+        
         try:
-            with self.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                cursor.execute("""
-                    SELECT 
-                        f.id,
-                        f.finding_type,
-                        f.severity_level,
-                        f.category,
-                        f.title,
-                        f.description,
-                        f.recommendation,
-                        f.confidence_score,
-                        f.created_at
-                    FROM findings f
-                    JOIN norm_control_results ncr ON f.norm_control_result_id = ncr.id
-                    WHERE ncr.checkable_document_id = %s
-                    ORDER BY f.severity_level DESC, f.created_at
-                """, (document_id,))
-                results = cursor.fetchall()
-                return [dict(result) for result in results]
+            logger.debug(f"🔍 [DATABASE] Starting read-only transaction for get_page_results_by_document_id {document_id}")
+            result = self.execute_in_read_only_transaction(_get_page_results)
+            logger.debug(f"🔍 [DATABASE] Successfully retrieved page results for document {document_id} using read-only transaction")
+            return result
         except Exception as e:
             logger.error(f"Get page results error: {e}")
             return []
