@@ -39,11 +39,30 @@ except ImportError:
 # Глобальные переменные для graceful shutdown
 shutdown_event = asyncio.Event()
 is_shutting_down = False
+startup_time = None  # Будет установлено после импорта datetime
 
 def signal_handler(signum, frame):
     """Обработчик сигналов для graceful shutdown"""
     global is_shutting_down
-    logger.info(f"🔍 [SHUTDOWN] Received signal {signum}, initiating graceful shutdown...")
+    signal_name = {
+        signal.SIGTERM: "SIGTERM",
+        signal.SIGINT: "SIGINT",
+        signal.SIGHUP: "SIGHUP",
+        signal.SIGUSR1: "SIGUSR1",
+        signal.SIGUSR2: "SIGUSR2"
+    }.get(signum, f"Signal {signum}")
+    
+    logger.info(f"🔍 [SHUTDOWN] Received {signal_name} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}, initiating graceful shutdown...")
+    logger.info(f"🔍 [SHUTDOWN] Process ID: {os.getpid()}, Parent PID: {os.getppid()}")
+    
+    # Логируем информацию о памяти перед shutdown
+    try:
+        memory_info = get_memory_usage()
+        if "error" not in memory_info:
+            logger.info(f"🔍 [SHUTDOWN] Memory usage before shutdown: RSS: {memory_info['rss_mb']:.1f}MB, VMS: {memory_info['vms_mb']:.1f}MB, Percent: {memory_info['percent']:.1f}%")
+    except Exception as e:
+        logger.warning(f"🔍 [SHUTDOWN] Could not get memory info: {e}")
+    
     is_shutting_down = True
     shutdown_event.set()
 
@@ -127,6 +146,9 @@ import tempfile
 import math
 
 from datetime import datetime, timedelta
+
+# Инициализируем startup_time после импорта datetime
+startup_time = datetime.now()
 
 # PDF generation imports
 from reportlab.lib.pagesizes import letter, A4
@@ -245,7 +267,7 @@ class DocumentViolationDetail:
 
 # Настройка логирования с детальным трейслогом
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler()
@@ -465,11 +487,15 @@ class DocumentParser:
     
     def connect_databases(self):
         """Подключение к базам данных с повторными попытками"""
+        connection_start_time = datetime.now()
+        logger.info(f"🔍 [CONNECTION] Starting database connections at {connection_start_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}")
+        
         for attempt in range(self.max_retries):
             try:
                 logger.info(f"🔍 [CONNECTION] Attempt {attempt + 1}/{self.max_retries} to connect to databases")
                 
                 # PostgreSQL
+                postgres_start_time = datetime.now()
                 self.db_conn = psycopg2.connect(
                     host=POSTGRES_HOST,
                     database=POSTGRES_DB,
@@ -478,29 +504,40 @@ class DocumentParser:
                     connect_timeout=10,
                     application_name="document_parser"
                 )
-                logger.info("🔍 [CONNECTION] Connected to PostgreSQL")
+                postgres_end_time = datetime.now()
+                postgres_duration = (postgres_end_time - postgres_start_time).total_seconds()
+                logger.info(f"🔍 [CONNECTION] Connected to PostgreSQL in {postgres_duration:.3f}s")
                 
                 # Qdrant
+                qdrant_start_time = datetime.now()
                 self.qdrant_client = qdrant_client.QdrantClient(
                     host=QDRANT_HOST,
                     port=QDRANT_PORT,
                     timeout=10
                 )
-                logger.info("🔍 [CONNECTION] Connected to Qdrant")
+                qdrant_end_time = datetime.now()
+                qdrant_duration = (qdrant_end_time - qdrant_start_time).total_seconds()
+                logger.info(f"🔍 [CONNECTION] Connected to Qdrant in {qdrant_duration:.3f}s")
                 
                 # Сброс счетчика попыток при успешном подключении
                 self.connection_retry_count = 0
+                connection_end_time = datetime.now()
+                total_duration = (connection_end_time - connection_start_time).total_seconds()
+                logger.info(f"🔍 [CONNECTION] All database connections established successfully in {total_duration:.3f}s")
                 return
                 
             except Exception as e:
                 self.connection_retry_count += 1
                 logger.error(f"🔍 [CONNECTION] Database connection error (attempt {attempt + 1}/{self.max_retries}): {e}")
+                logger.error(f"🔍 [CONNECTION] Error type: {type(e).__name__}")
                 
                 if attempt < self.max_retries - 1:
                     logger.info(f"🔍 [CONNECTION] Retrying in {self.retry_delay} seconds...")
                     time.sleep(self.retry_delay)
                 else:
-                    logger.error(f"🔍 [CONNECTION] Failed to connect to databases after {self.max_retries} attempts")
+                    connection_end_time = datetime.now()
+                    total_duration = (connection_end_time - connection_start_time).total_seconds()
+                    logger.error(f"🔍 [CONNECTION] Failed to connect to databases after {self.max_retries} attempts in {total_duration:.3f}s")
                     raise
     
     def get_db_connection(self):
@@ -1741,8 +1778,9 @@ class DocumentParser:
             return 0
 
     def get_checkable_documents(self) -> List[Dict[str, Any]]:
-        """Получение списка проверяемых документов"""
+        """Получение списка документов подлежащих нормоконтролю"""
         def _get_documents(conn):
+            logger.debug(f"🔍 [DATABASE] _get_documents called")
             try:
                 with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                     cursor.execute("""
@@ -3473,6 +3511,7 @@ async def upload_checkable_document(
 @app.get("/checkable-documents")
 async def list_checkable_documents():
     """Список проверяемых документов"""
+    logger.info(f"🔍 [API] List checkable documents called")
     try:
         # Проверяем состояние shutdown
         if is_shutting_down:
@@ -3484,12 +3523,14 @@ async def list_checkable_documents():
             logger.warning("🔍 [API] High memory pressure detected during checkable documents request")
             cleanup_memory()
         
+        logger.info(f"🔍 [API] Request list of checked documents via document parser.")
         documents = parser.get_checkable_documents()
         logger.info(f"🔍 [API] Successfully retrieved {len(documents)} checkable documents")
         return {"documents": documents}
         
-    except HTTPException:
+    except HTTPException as e:
         # Перебрасываем HTTP исключения как есть
+        logger.info(f"🔍 [API] HTTP excaption: {e.status_code} - {e.detail}")
         raise
     except Exception as e:
         logger.error(f"🔍 [API] List checkable documents error: {e}")
@@ -3500,6 +3541,7 @@ async def list_checkable_documents():
 async def get_checkable_document_elements(document_id: int):
     """Получение элементов проверяемого документа"""
     try:
+        logger.info(f"🔍 [API] Get checkable document elements called")
         with parser.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute("""
                 SELECT id, element_type, element_content, page_number, confidence_score, created_at
@@ -3522,6 +3564,8 @@ async def update_checkable_document_status(
 ):
     """Обновление статуса проверяемого документа"""
     try:
+        logger.info(f"🔍 [API] Update checkable document {document_id} status {request.status}")
+
         success = parser.update_review_status(document_id, request.status, request.reviewer, request.notes)
         if success:
             return {"status": "success", "message": f"Document {document_id} status updated"}
@@ -4869,10 +4913,13 @@ async def get_normcontrol_analytics():
 @app.get("/health")
 async def health_check():
     """Проверка здоровья сервиса"""
+    health_start_time = datetime.now()
     health_status = {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "checks": {}
+        "checks": {},
+        "uptime": str(datetime.now() - startup_time),
+        "process_id": os.getpid()
     }
     
     try:
@@ -4880,6 +4927,7 @@ async def health_check():
         if is_shutting_down:
             health_status["status"] = "shutting_down"
             health_status["checks"]["shutdown"] = "in_progress"
+            logger.warning(f"🔍 [HEALTH] Service is shutting down, health check at {health_start_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}")
         
         # Проверка памяти
         try:
@@ -4893,12 +4941,15 @@ async def health_check():
                 if memory_info['percent'] > 90:
                     health_status["status"] = "degraded"
                     health_status["checks"]["memory"]["status"] = "high_usage"
+                    logger.warning(f"🔍 [HEALTH] High memory usage detected: {memory_info['percent']:.1f}%")
                 else:
                     health_status["checks"]["memory"]["status"] = "ok"
             else:
                 health_status["checks"]["memory"] = {"status": "error", "error": memory_info["error"]}
+                logger.error(f"🔍 [HEALTH] Memory check error: {memory_info['error']}")
         except Exception as mem_error:
             health_status["checks"]["memory"] = {"status": "error", "error": str(mem_error)}
+            logger.error(f"🔍 [HEALTH] Memory check exception: {mem_error}")
         
         # Проверка PostgreSQL
         try:
@@ -4910,6 +4961,7 @@ async def health_check():
         except Exception as pg_error:
             health_status["checks"]["postgresql"] = {"status": "error", "error": str(pg_error)}
             health_status["status"] = "unhealthy"
+            logger.error(f"🔍 [HEALTH] PostgreSQL check failed: {pg_error}")
         
         # Проверка Qdrant
         try:
@@ -4918,10 +4970,24 @@ async def health_check():
         except Exception as qd_error:
             health_status["checks"]["qdrant"] = {"status": "error", "error": str(qd_error)}
             health_status["status"] = "unhealthy"
+            logger.error(f"🔍 [HEALTH] Qdrant check failed: {qd_error}")
         
         # Определяем общий статус
         if health_status["status"] == "healthy" and any(check.get("status") == "error" for check in health_status["checks"].values()):
             health_status["status"] = "degraded"
+            logger.warning(f"🔍 [HEALTH] Service status degraded due to component errors")
+        
+        health_end_time = datetime.now()
+        health_duration = (health_end_time - health_start_time).total_seconds()
+        health_status["check_duration_ms"] = round(health_duration * 1000, 2)
+        
+        # Логируем результат health check
+        if health_status["status"] == "healthy":
+            logger.debug(f"🔍 [HEALTH] Health check passed in {health_duration:.3f}s")
+        elif health_status["status"] == "degraded":
+            logger.warning(f"🔍 [HEALTH] Health check degraded in {health_duration:.3f}s")
+        else:
+            logger.error(f"🔍 [HEALTH] Health check failed in {health_duration:.3f}s")
         
         if health_status["status"] == "unhealthy":
             return JSONResponse(
@@ -4937,13 +5003,16 @@ async def health_check():
             return health_status
         
     except Exception as e:
-        logger.error(f"🔍 [HEALTH] Health check error: {e}")
+        health_end_time = datetime.now()
+        health_duration = (health_end_time - health_start_time).total_seconds()
+        logger.error(f"🔍 [HEALTH] Health check error after {health_duration:.3f}s: {e}")
         return JSONResponse(
             status_code=503,
             content={
                 "status": "unhealthy", 
                 "error": str(e),
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "check_duration_ms": round(health_duration * 1000, 2)
             }
         )
 
@@ -4956,33 +5025,73 @@ async def test_prompt_templates():
 async def shutdown_event_handler():
     """Обработчик события завершения работы"""
     global is_shutting_down
-    logger.info("🔍 [SHUTDOWN] Starting graceful shutdown...")
+    shutdown_start_time = datetime.now()
+    logger.info(f"🔍 [SHUTDOWN] Starting graceful shutdown at {shutdown_start_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}")
+    logger.info(f"🔍 [SHUTDOWN] Process ID: {os.getpid()}, Uptime: {shutdown_start_time - startup_time}")
     is_shutting_down = True
     
+    # Логируем информацию о памяти перед shutdown
+    try:
+        memory_info = get_memory_usage()
+        if "error" not in memory_info:
+            logger.info(f"🔍 [SHUTDOWN] Memory usage before shutdown: RSS: {memory_info['rss_mb']:.1f}MB, VMS: {memory_info['vms_mb']:.1f}MB, Percent: {memory_info['percent']:.1f}%")
+    except Exception as e:
+        logger.warning(f"🔍 [SHUTDOWN] Could not get memory info: {e}")
+    
     # Ждем завершения текущих запросов
+    logger.info("🔍 [SHUTDOWN] Waiting 5 seconds for current requests to complete...")
     await asyncio.sleep(5)
     
     # Закрываем соединения с базами данных
     try:
         if parser.db_conn and not parser.db_conn.closed:
             parser.db_conn.close()
-            logger.info("🔍 [SHUTDOWN] PostgreSQL connection closed")
+            logger.info("🔍 [SHUTDOWN] PostgreSQL connection closed successfully")
+        else:
+            logger.info("🔍 [SHUTDOWN] PostgreSQL connection was already closed")
     except Exception as e:
         logger.error(f"🔍 [SHUTDOWN] Error closing PostgreSQL connection: {e}")
     
     try:
         if parser.qdrant_client:
             parser.qdrant_client.close()
-            logger.info("🔍 [SHUTDOWN] Qdrant connection closed")
+            logger.info("🔍 [SHUTDOWN] Qdrant connection closed successfully")
+        else:
+            logger.info("🔍 [SHUTDOWN] Qdrant connection was already closed")
     except Exception as e:
         logger.error(f"🔍 [SHUTDOWN] Error closing Qdrant connection: {e}")
     
-    logger.info("🔍 [SHUTDOWN] Graceful shutdown completed")
+    shutdown_end_time = datetime.now()
+    shutdown_duration = shutdown_end_time - shutdown_start_time
+    logger.info(f"🔍 [SHUTDOWN] Graceful shutdown completed at {shutdown_end_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}")
+    logger.info(f"🔍 [SHUTDOWN] Total shutdown duration: {shutdown_duration.total_seconds():.3f} seconds")
 
 # Регистрируем обработчик shutdown
 app.add_event_handler("shutdown", shutdown_event_handler)
 
 if __name__ == "__main__":
     import uvicorn
-    logger.info("🔍 [STARTUP] Starting Document Parser Service...")
+    startup_time = datetime.now()
+    logger.info(f"🔍 [STARTUP] Starting Document Parser Service at {startup_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}")
+    logger.info(f"🔍 [STARTUP] Process ID: {os.getpid()}, Parent PID: {os.getppid()}")
+    logger.info(f"🔍 [STARTUP] Working directory: {os.getcwd()}")
+    logger.info(f"🔍 [STARTUP] Python version: {sys.version}")
+    
+    # Логируем информацию о системе
+    try:
+        import platform
+        logger.info(f"🔍 [STARTUP] Platform: {platform.platform()}")
+        logger.info(f"🔍 [STARTUP] Architecture: {platform.architecture()}")
+        logger.info(f"🔍 [STARTUP] Machine: {platform.machine()}")
+    except Exception as e:
+        logger.warning(f"🔍 [STARTUP] Could not get platform info: {e}")
+    
+    # Логируем информацию о памяти при запуске
+    try:
+        memory_info = get_memory_usage()
+        if "error" not in memory_info:
+            logger.info(f"🔍 [STARTUP] Initial memory usage: RSS: {memory_info['rss_mb']:.1f}MB, VMS: {memory_info['vms_mb']:.1f}MB, Percent: {memory_info['percent']:.1f}%")
+    except Exception as e:
+        logger.warning(f"🔍 [STARTUP] Could not get initial memory info: {e}")
+    
     uvicorn.run(app, host="0.0.0.0", port=8001)
