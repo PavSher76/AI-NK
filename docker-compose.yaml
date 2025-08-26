@@ -95,10 +95,10 @@ services:
       resources:
         limits:
           memory: 8G
-          cpus: '4.0'
+          cpus: '6.0'
         reservations:
           memory: 6G
-          cpus: '2.0'
+          cpus: '3.0'
     # healthcheck:
     #   test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
     #   interval: 30s
@@ -383,10 +383,10 @@ services:
       resources:
         limits:
           memory: 2G
-          cpus: '2.0'
+          cpus: '5.0'
         reservations:
           memory: 1.5G
-          cpus: '1.0'
+          cpus: '2.0'
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 30s
