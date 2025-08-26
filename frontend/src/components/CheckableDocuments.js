@@ -47,9 +47,9 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
 
   const API_BASE = process.env.REACT_APP_API_BASE || '/api';
 
-  // Загрузка списка проверяемых документов
+  // Загрузка списка проверяемых документов "как есть" без ожидания отчетов
   const fetchDocuments = async (retryCount = 0) => {
-    console.log('🔍 [DEBUG] CheckableDocuments.js: fetchDocuments started');
+    console.log('🔍 [DEBUG] CheckableDocuments.js: fetchDocuments started - loading documents as-is');
     
     // Проверка авторизации
     if (!isAuthenticated || !authToken) {
@@ -60,6 +60,7 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
     
     setLoading(true);
     setError(null);
+    console.log('🔍 [DEBUG] CheckableDocuments.js: fetchDocuments API_BASE:', API_BASE, ', authToken:', authToken);
     try {
       const response = await fetch(`${API_BASE}/checkable-documents`, {
         headers: {
@@ -70,8 +71,16 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
       
       if (response.ok) {
         const data = await response.json();
-        console.log('🔍 [DEBUG] CheckableDocuments.js: fetchDocuments success, documents count:', data.length);
+        console.log('🔍 [DEBUG] CheckableDocuments.js: fetchDocuments success, documents count:', data.documents?.length || 0);
+        
+        // Загружаем документы "как есть" без ожидания отчетов
         setDocuments(data.documents || []);
+        
+        // Отдельно запускаем загрузку отчетов для завершенных документов
+        if (data.documents && data.documents.length > 0) {
+          console.log('🔍 [DEBUG] CheckableDocuments.js: Starting background report loading for completed documents');
+          loadReportsForCompletedDocuments(data.documents);
+        }
       } else {
         console.error('🔍 [DEBUG] CheckableDocuments.js: fetchDocuments failed with status:', response.status);
         
@@ -124,7 +133,9 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
       setLoading(true);
       setError(null);
       
-      // Загружаем список документов
+      console.log('🔍 [DEBUG] CheckableDocuments.js: refreshAllData - starting full refresh');
+      
+      // Загружаем список документов "как есть"
       const response = await fetch(`${API_BASE}/checkable-documents`, {
         headers: {
           'Authorization': `Bearer ${authToken}`
@@ -133,39 +144,16 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
       if (response.ok) {
         const data = await response.json();
         const newDocuments = data.documents || [];
+        console.log('🔍 [DEBUG] CheckableDocuments.js: refreshAllData - loaded', newDocuments.length, 'documents');
+        
+        // Сначала обновляем документы
         setDocuments(newDocuments);
         
-        // Обновляем отчеты для документов с завершенной обработкой
-        const reportPromises = newDocuments
-          .filter(doc => doc.processing_status === 'completed')
-          .map(async (doc) => {
-            try {
-                      const reportResponse = await fetch(`${API_BASE}/checkable-documents/${doc.id}/report`, {
-          headers: {
-            'Authorization': `Bearer ${authToken}`
-          }
-        });
-              if (reportResponse.ok) {
-                const reportData = await reportResponse.json();
-                return { docId: doc.id, report: reportData };
-              }
-            } catch (error) {
-              console.error(`Ошибка загрузки отчета для документа ${doc.id}:`, error);
-            }
-            return null;
-          });
-        
-        // Ждем загрузки всех отчетов
-        const reportResults = await Promise.all(reportPromises);
-        
-        // Обновляем состояние отчетов
-        const newReports = { ...reports };
-        reportResults.forEach(result => {
-          if (result) {
-            newReports[result.docId] = result.report;
-          }
-        });
-        setReports(newReports);
+        // Затем асинхронно загружаем отчеты для завершенных документов
+        if (newDocuments.length > 0) {
+          console.log('🔍 [DEBUG] CheckableDocuments.js: refreshAllData - starting background report loading');
+          loadReportsForCompletedDocuments(newDocuments);
+        }
         
         setSuccess('Данные успешно обновлены');
         
@@ -559,6 +547,7 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
 
   // Загрузка данных при монтировании компонента
   useEffect(() => {
+    // Первичная загрузка документов "как есть" без ожидания отчетов
     fetchDocuments();
     
     // Автоматическое обновление статуса документов в процессе обработки
@@ -571,40 +560,53 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
     }, 5000); // Увеличиваем интервал до 5 секунд
     
     return () => clearInterval(interval);
-  }, [documents]);
+  }, [isAuthenticated, authToken]); // Убираем documents из зависимостей, чтобы избежать бесконечного цикла
 
-  // Автоматическая загрузка отчетов для документов с завершенной обработкой
-  useEffect(() => {
-    const loadReportsForCompletedDocuments = async () => {
-      // Проверка авторизации
-      if (!isAuthenticated || !authToken) {
-        console.log('🔍 [DEBUG] CheckableDocuments.js: loadReportsForCompletedDocuments - not authenticated');
-        return;
-      }
+  // Функция для загрузки отчетов для завершенных документов
+  const loadReportsForCompletedDocuments = async (documentsToProcess = documents) => {
+    // Проверка авторизации
+    if (!isAuthenticated || !authToken) {
+      console.log('🔍 [DEBUG] CheckableDocuments.js: loadReportsForCompletedDocuments - not authenticated');
+      return;
+    }
+    
+    if (documentsToProcess.length > 0) {
+      console.log('🔍 [DEBUG] CheckableDocuments.js: loadReportsForCompletedDocuments - processing', documentsToProcess.length, 'documents');
       
-      if (documents.length > 0) {
-        for (const doc of documents) {
-          if (doc.processing_status === 'completed' && !reports[doc.id] && !loadingReports[doc.id]) {
-            try {
-              const response = await fetch(`${API_BASE}/checkable-documents/${doc.id}/report`, {
-                headers: {
-                  'Authorization': `Bearer ${authToken}`
-                }
-              });
-              if (response.ok) {
-                const data = await response.json();
-                setReports(prev => ({ ...prev, [doc.id]: data }));
+      for (const doc of documentsToProcess) {
+        if (doc.processing_status === 'completed' && !reports[doc.id] && !loadingReports[doc.id]) {
+          console.log('🔍 [DEBUG] CheckableDocuments.js: Loading report for document', doc.id);
+          setLoadingReports(prev => ({ ...prev, [doc.id]: true }));
+          
+          try {
+            const response = await fetch(`${API_BASE}/checkable-documents/${doc.id}/report`, {
+              headers: {
+                'Authorization': `Bearer ${authToken}`
               }
-            } catch (error) {
-              console.error(`Ошибка загрузки отчета для документа ${doc.id}:`, error);
+            });
+            if (response.ok) {
+              const data = await response.json();
+              setReports(prev => ({ ...prev, [doc.id]: data }));
+              console.log('🔍 [DEBUG] CheckableDocuments.js: Report loaded successfully for document', doc.id);
+            } else {
+              console.warn('🔍 [DEBUG] CheckableDocuments.js: Failed to load report for document', doc.id, 'status:', response.status);
             }
+          } catch (error) {
+            console.error(`Ошибка загрузки отчета для документа ${doc.id}:`, error);
+          } finally {
+            setLoadingReports(prev => ({ ...prev, [doc.id]: false }));
           }
         }
       }
-    };
+    }
+  };
 
-    loadReportsForCompletedDocuments();
-  }, [documents, reports, loadingReports, API_BASE, isAuthenticated, authToken]);
+  // Автоматическая загрузка отчетов при изменении документов
+  useEffect(() => {
+    if (documents.length > 0 && isAuthenticated && authToken) {
+      loadReportsForCompletedDocuments();
+    }
+  }, [documents, isAuthenticated, authToken]); // Убираем reports и loadingReports из зависимостей
 
   // Обработка обновления данных после авторизации
   useEffect(() => {
