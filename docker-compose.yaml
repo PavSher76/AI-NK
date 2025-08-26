@@ -430,6 +430,39 @@ services:
       timeout: 10s
       retries: 3
 
+  # Calculation Service для инженерных расчетов
+  calculation-service:
+    build: ./calculation_service
+    ports:
+      - "8004:8002"
+    environment:
+      - POSTGRES_HOST=norms-db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-norms_db}
+      - POSTGRES_USER=${POSTGRES_USER:-norms_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-norms_password}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - TZ=Europe/Moscow
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    depends_on:
+      - norms-db
+      - qdrant
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   # RAG Service для поиска по нормам
   rag-service:
     build: 

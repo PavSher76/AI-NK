@@ -4,6 +4,7 @@ import {
   MessageSquare, 
   FileText, 
   BookOpen, 
+  Calculator,
   User, 
   LogOut,
   CheckCircle,
@@ -55,6 +56,12 @@ const Sidebar = ({
       label: 'Чат с ИИ',
       icon: MessageSquare,
       onClick: () => handlePageClick('chat')
+    },
+    {
+      id: 'calculations',
+      label: 'Расчеты',
+      icon: Calculator,
+      onClick: () => handlePageClick('calculations')
     },
     {
       id: 'normcontrol',

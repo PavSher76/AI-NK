@@ -27,6 +27,7 @@ import AuthModal from './components/AuthModal';
 import DashboardPage from './pages/DashboardPage';
 import ChatPage from './pages/ChatPage';
 import NormcontrolPage from './pages/NormcontrolPage';
+import CalculationsPage from './pages/CalculationsPage';
 import DocumentsPage from './pages/DocumentsPage';
 
 function App() {
@@ -486,6 +487,13 @@ function App() {
               authToken={authToken}
               refreshTrigger={refreshTabs}
               onRefreshComplete={() => setRefreshTabs(false)}
+            />
+          )}
+
+          {currentPage === 'calculations' && (
+            <CalculationsPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
             />
           )}
 
