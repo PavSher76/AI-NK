@@ -1980,6 +1980,46 @@ class DocumentParser:
             logger.error(f"Get review report error: {e}")
             return None
 
+    def get_findings_by_norm_control_id(self, norm_control_result_id: int) -> List[Dict[str, Any]]:
+        """Получение детальных findings по ID результата нормоконтроля"""
+        try:
+            with self.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute("""
+                    SELECT f.*, 
+                           dc.clause_title as normative_document_title,
+                           dc.clause_number as normative_clause_number
+                    FROM findings f
+                    LEFT JOIN document_clauses dc ON f.related_clause_id = dc.id
+                    WHERE f.norm_control_result_id = %s
+                    ORDER BY f.severity_level DESC, f.id ASC
+                """, (norm_control_result_id,))
+                results = cursor.fetchall()
+                return [dict(result) for result in results]
+        except Exception as e:
+            logger.error(f"Get findings error: {e}")
+            return []
+
+    def get_findings_by_document_id(self, document_id: int) -> List[Dict[str, Any]]:
+        """Получение всех findings для документа"""
+        try:
+            with self.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute("""
+                    SELECT f.*, 
+                           dc.clause_title as normative_document_title,
+                           dc.clause_number as normative_clause_number,
+                           ncr.analysis_date
+                    FROM findings f
+                    JOIN norm_control_results ncr ON f.norm_control_result_id = ncr.id
+                    LEFT JOIN document_clauses dc ON f.related_clause_id = dc.id
+                    WHERE ncr.checkable_document_id = %s
+                    ORDER BY f.severity_level DESC, f.id ASC
+                """, (document_id,))
+                results = cursor.fetchall()
+                return [dict(result) for result in results]
+        except Exception as e:
+            logger.error(f"Get findings by document error: {e}")
+            return []
+
     def get_document_info(self, pdf_reader) -> Dict[str, Any]:
         """Извлечение информации о документе из PDF метаданных"""
         try:
@@ -2433,10 +2473,15 @@ class DocumentParser:
             template = f"""
 {processed_prompt}
 
-ВАЖНО: 
-- Возвращайте ТОЛЬКО валидный JSON без дополнительного текста
-- Используйте следующий формат ответа:
+СОДЕРЖИМОЕ СТРАНИЦЫ:
+{{page_content}}
 
+ИНСТРУКЦИИ:
+1. Проанализируйте содержимое страницы на соответствие нормативным требованиям
+2. ВАЖНО: Ответьте ТОЛЬКО валидным JSON без дополнительного текста
+3. Не добавляйте никаких комментариев или пояснений вне JSON
+
+ТРЕБУЕМЫЙ ФОРМАТ JSON:
 {{
   "page_number": НОМЕР_СТРАНИЦЫ,
   "overall_status": "pass|fail|uncertain",
@@ -2449,6 +2494,21 @@ class DocumentParser:
   "findings": [],
   "summary": "общий_вывод_по_странице",
   "recommendations": "общие_рекомендации_по_улучшению"
+}}
+
+ПРИМЕР ОТВЕТА:
+{{
+  "page_number": 1,
+  "overall_status": "pass",
+  "confidence": 0.85,
+  "total_findings": 0,
+  "critical_findings": 0,
+  "warning_findings": 0,
+  "info_findings": 0,
+  "compliance_percentage": 95,
+  "findings": [],
+  "summary": "Страница соответствует нормативным требованиям",
+  "recommendations": "Документ оформлен корректно"
 }}
 """
             
@@ -2681,26 +2741,72 @@ class DocumentParser:
                         import json
                         import re
                         
+                        logger.info(f"🔍 [DEBUG] DocumentParser: Raw LLM response length: {len(content)}")
+                        logger.info(f"🔍 [DEBUG] DocumentParser: Raw LLM response preview: {content[:200]}...")
+                        
+                        # Очищаем ответ от лишних символов
+                        cleaned_content = content.strip()
+                        
                         # Ищем JSON в ответе (между фигурными скобками)
-                        json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                        json_match = re.search(r'\{.*\}', cleaned_content, re.DOTALL)
                         if json_match:
                             json_str = json_match.group(0)
+                            logger.info(f"🔍 [DEBUG] DocumentParser: Found JSON match: {json_str[:100]}...")
                             check_result = json.loads(json_str)
                         else:
                             # Если JSON не найден, пробуем парсить весь ответ
-                            check_result = json.loads(content)
+                            logger.info(f"🔍 [DEBUG] DocumentParser: No JSON match found, trying to parse entire response")
+                            check_result = json.loads(cleaned_content)
                         
+                        # Проверяем, что результат содержит необходимые поля
+                        required_fields = ["page_number", "overall_status", "confidence", "total_findings"]
+                        missing_fields = [field for field in required_fields if field not in check_result]
+                        
+                        if missing_fields:
+                            logger.warning(f"🔍 [DEBUG] DocumentParser: Missing required fields: {missing_fields}")
+                            # Создаем дефолтный результат
+                            check_result = {
+                                "page_number": page_number,
+                                "overall_status": "uncertain",
+                                "confidence": 0.5,
+                                "total_findings": 0,
+                                "critical_findings": 0,
+                                "warning_findings": 0,
+                                "info_findings": 0,
+                                "compliance_percentage": 50,
+                                "findings": [],
+                                "summary": "Обработка завершена с предупреждениями",
+                                "recommendations": "Требуется дополнительная проверка"
+                            }
+                        
+                        logger.info(f"🔍 [DEBUG] DocumentParser: Successfully parsed JSON result")
                         return {
                             "status": "success",
                             "result": check_result,
                             "raw_response": content
                         }
                     except json.JSONDecodeError as e:
-                        logger.error(f"JSON parsing error: {e}")
-                        logger.error(f"Raw response: {content}")
+                        logger.error(f"🔍 [DEBUG] DocumentParser: JSON parsing error: {e}")
+                        logger.error(f"🔍 [DEBUG] DocumentParser: Raw response: {content}")
+                        
+                        # Создаем дефолтный результат в случае ошибки парсинга
+                        default_result = {
+                            "page_number": page_number,
+                            "overall_status": "uncertain",
+                            "confidence": 0.3,
+                            "total_findings": 0,
+                            "critical_findings": 0,
+                            "warning_findings": 0,
+                            "info_findings": 0,
+                            "compliance_percentage": 30,
+                            "findings": [],
+                            "summary": "Ошибка обработки ответа от LLM",
+                            "recommendations": "Требуется повторная проверка"
+                        }
+                        
                         return {
-                            "status": "error",
-                            "error": "Invalid JSON response from LLM",
+                            "status": "success",
+                            "result": default_result,
                             "raw_response": content
                         }
                 else:
@@ -2861,6 +2967,13 @@ class DocumentParser:
         try:
             result_id = self.execute_in_transaction(_save_result)
             
+            # ===== СОХРАНЕНИЕ ДЕТАЛЬНЫХ FINDINGS =====
+            # Сохраняем детальную информацию о каждом нарушении
+            findings = check_result.get("findings", [])
+            if findings:
+                await self.save_findings_detailed(result_id, findings, document_id)
+                logger.info(f"Saved {len(findings)} detailed findings for result {result_id}")
+            
             # ===== СОЗДАНИЕ ОТЧЕТА О ПРОВЕРКЕ LLM =====
             # Создаем отчет о проверке на основе результатов LLM
             await self.create_review_report(document_id, result_id, check_result)
@@ -2870,6 +2983,146 @@ class DocumentParser:
         except Exception as e:
             logger.error(f"Save norm control result error: {e}")
             raise
+
+    async def save_findings_detailed(self, result_id: int, findings: List[Dict[str, Any]], document_id: int):
+        """Сохранение детальной информации о каждом нарушении с привязкой к нормативным документам"""
+        import json
+        
+        def _save_findings(conn):
+            with conn.cursor() as cursor:
+                for finding in findings:
+                    # Определяем тип нарушения
+                    finding_type = finding.get('type', 'violation')
+                    if finding_type == 'critical':
+                        finding_type = 'violation'
+                        severity_level = 5
+                    elif finding_type == 'warning':
+                        finding_type = 'warning'
+                        severity_level = 3
+                    elif finding_type == 'info':
+                        finding_type = 'info'
+                        severity_level = 1
+                    else:
+                        severity_level = 2
+                    
+                    # Определяем категорию на основе кода
+                    code = finding.get('code', '')
+                    category = self.determine_finding_category(code, finding.get('description', ''))
+                    
+                    # Ищем связанный нормативный документ (clause_id)
+                    clause_id = self.find_related_clause_id(finding, cursor)
+                    
+                    # Формируем ссылку на место в документе
+                    element_reference = {
+                        "page_number": finding.get('page_number', 1),
+                        "finding_code": code,
+                        "location": finding.get('location', 'Не указано'),
+                        "element_type": finding.get('element_type', 'text'),
+                        "bounding_box": finding.get('bounding_box', None)
+                    }
+                    
+                    cursor.execute("""
+                        INSERT INTO findings 
+                        (norm_control_result_id, finding_type, severity_level, category,
+                         title, description, recommendation, related_clause_id,
+                         related_clause_text, element_reference, rule_applied, confidence_score)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        result_id,
+                        finding_type,
+                        severity_level,
+                        category,
+                        finding.get('title', finding.get('description', 'Нарушение требований'))[:200],  # Ограничиваем длину
+                        finding.get('description', ''),
+                        finding.get('recommendation', ''),
+                        clause_id,
+                        finding.get('clause_text', ''),
+                        json.dumps(element_reference),
+                        code,  # Используем код как правило
+                        finding.get('confidence_score', 1.0)
+                    ))
+                    
+                    logger.debug(f"Saved finding: {code} - {finding.get('description', '')[:50]}...")
+        
+        try:
+            return self.execute_in_transaction(_save_findings)
+        except Exception as e:
+            logger.error(f"Save findings detailed error: {e}")
+            raise
+
+    def determine_finding_category(self, code: str, description: str) -> str:
+        """Определение категории нарушения на основе кода и описания"""
+        code_upper = code.upper()
+        description_lower = description.lower()
+        
+        # Категории на основе кодов
+        if 'NC-' in code_upper:
+            return 'compliance'
+        elif 'FIRE' in code_upper or 'пожар' in description_lower:
+            return 'safety'
+        elif 'ENERGY' in code_upper or 'энерг' in description_lower:
+            return 'energy_efficiency'
+        elif 'STRUCTURE' in code_upper or 'конструк' in description_lower:
+            return 'structural'
+        elif 'FORMAT' in code_upper or 'формат' in description_lower:
+            return 'formatting'
+        elif 'TECH' in code_upper or 'технич' in description_lower:
+            return 'technical'
+        else:
+            return 'compliance'
+
+    def find_related_clause_id(self, finding: Dict[str, Any], cursor) -> Optional[int]:
+        """Поиск связанного нормативного документа по коду и описанию"""
+        try:
+            code = finding.get('code', '')
+            description = finding.get('description', '')
+            
+            # Ищем по коду
+            if code:
+                cursor.execute("""
+                    SELECT id FROM document_clauses 
+                    WHERE clause_id ILIKE %s OR clause_number ILIKE %s
+                    LIMIT 1
+                """, (f'%{code}%', f'%{code}%'))
+                result = cursor.fetchone()
+                if result:
+                    return result[0]
+            
+            # Ищем по ключевым словам в описании
+            if description:
+                # Извлекаем ключевые слова
+                keywords = self.extract_keywords(description)
+                if keywords:
+                    # Ищем в названиях и текстах нормативных документов
+                    for keyword in keywords[:3]:  # Берем первые 3 ключевых слова
+                        cursor.execute("""
+                            SELECT id FROM document_clauses 
+                            WHERE clause_title ILIKE %s OR clause_text ILIKE %s
+                            LIMIT 1
+                        """, (f'%{keyword}%', f'%{keyword}%'))
+                        result = cursor.fetchone()
+                        if result:
+                            return result[0]
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error finding related clause: {e}")
+            return None
+
+    def extract_keywords(self, text: str) -> List[str]:
+        """Извлечение ключевых слов из текста"""
+        import re
+        
+        # Убираем стоп-слова и извлекаем существительные
+        stop_words = {'требования', 'нарушение', 'соответствие', 'документ', 'проект', 'строительство'}
+        
+        # Извлекаем слова на русском языке
+        words = re.findall(r'\b[а-яё]{4,}\b', text.lower())
+        
+        # Фильтруем стоп-слова и возвращаем уникальные
+        keywords = [word for word in words if word not in stop_words]
+        return list(set(keywords))[:5]  # Возвращаем до 5 ключевых слов
 
     async def create_review_report(self, document_id: int, result_id: int, check_result: Dict[str, Any]):
         """Создание отчета о проверке на основе результатов LLM"""
@@ -4004,6 +4257,9 @@ async def get_checkable_document_report(document_id: int):
             """, (document_id,))
             norm_result = cursor.fetchone()
             
+            # Получаем детальные findings
+            findings = parser.get_findings_by_document_id(document_id)
+            
             # Получаем отчеты о проверке
             cursor.execute("""
                 SELECT id, report_date, overall_status, reviewer_name, conclusion
@@ -4016,6 +4272,7 @@ async def get_checkable_document_report(document_id: int):
             return {
                 "document": dict(document),
                 "norm_control_result": dict(norm_result) if norm_result else None,
+                "findings": findings,
                 "review_reports": [dict(report) for report in reports]
             }
             
@@ -4023,6 +4280,38 @@ async def get_checkable_document_report(document_id: int):
         raise
     except Exception as e:
         logger.error(f"Get document report error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/checkable-documents/{document_id}/findings")
+async def get_document_findings(document_id: int):
+    """Получение детальных findings для документа"""
+    try:
+        # Проверяем существование документа
+        document = parser.get_checkable_document(document_id)
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        # Получаем детальные findings
+        findings = parser.get_findings_by_document_id(document_id)
+        
+        return {
+            "document_id": document_id,
+            "findings": findings,
+            "total_findings": len(findings),
+            "findings_by_category": {
+                category: len([f for f in findings if f.get('category') == category])
+                for category in set(f.get('category', 'compliance') for f in findings)
+            },
+            "findings_by_severity": {
+                severity: len([f for f in findings if f.get('severity_level') == severity])
+                for severity in set(f.get('severity_level', 1) for f in findings)
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get document findings error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/checkable-documents/{document_id}/check")
@@ -4136,7 +4425,7 @@ async def get_documents_stats():
 
 @app.get("/metrics")
 async def get_metrics():
-    """Получение метрик сервиса"""
+    """Получение метрик сервиса в формате Prometheus"""
     try:
         db_conn = parser.get_db_connection()
         with db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -4212,85 +4501,210 @@ async def get_metrics():
                 WHERE upload_date >= NOW() - INTERVAL '24 hours'
             """)
             time_stats = cursor.fetchone()
-            
-        return {
-            "status": "success",
-            "timestamp": datetime.now().isoformat(),
-            "metrics": {
-                "documents": {
-                    "total": doc_stats["total_documents"] or 0,
-                    "completed": doc_stats["completed_documents"] or 0,
-                    "pending": doc_stats["pending_documents"] or 0,
-                    "error": doc_stats["error_documents"] or 0,
-                    "by_type": {
-                        "pdf": doc_stats["pdf_documents"] or 0,
-                        "docx": doc_stats["docx_documents"] or 0,
-                        "dwg": doc_stats["dwg_documents"] or 0,
-                        "txt": doc_stats["txt_documents"] or 0
-                    },
-                    "total_size_bytes": doc_stats["total_size_bytes"] or 0,
-                    "avg_file_size_bytes": float(doc_stats["avg_file_size_bytes"] or 0),
-                    "total_tokens": doc_stats["total_tokens"] or 0
-                },
-                "checkable_documents": {
-                    "total": checkable_stats["total_checkable_documents"] or 0,
-                    "pending_reviews": checkable_stats["pending_reviews"] or 0,
-                    "completed_reviews": checkable_stats["completed_reviews"] or 0,
-                    "in_progress_reviews": checkable_stats["in_progress_reviews"] or 0,
-                    "overdue_reviews": checkable_stats["overdue_reviews"] or 0
-                },
-                "elements": {
-                    "total": elements_stats["total_elements"] or 0,
-                    "text": elements_stats["text_elements"] or 0,
-                    "table": elements_stats["table_elements"] or 0,
-                    "figure": elements_stats["figure_elements"] or 0,
-                    "stamp": elements_stats["stamp_elements"] or 0
-                },
-                "norm_control": {
-                    "total_results": norm_control_stats["total_norm_control_results"] or 0,
-                    "completed_checks": norm_control_stats["completed_checks"] or 0,
-                    "pending_checks": norm_control_stats["pending_checks"] or 0,
-                    "error_checks": norm_control_stats["error_checks"] or 0,
-                    "total_findings": norm_control_stats["total_findings"] or 0,
-                    "critical_findings": norm_control_stats["critical_findings"] or 0,
-                    "warning_findings": norm_control_stats["warning_findings"] or 0,
-                    "info_findings": norm_control_stats["info_findings"] or 0
-                },
-                "reports": {
-                    "total": reports_stats["total_review_reports"] or 0
-                },
-                "performance": {
-                    "documents_last_24h": time_stats["documents_last_24h"] or 0
-                }
-            }
-        }
+        
+        # Формируем метрики в формате Prometheus
+        metrics_lines = []
+        
+        # Метрики документов
+        metrics_lines.append(f"# HELP document_parser_documents_total Total number of documents")
+        metrics_lines.append(f"# TYPE document_parser_documents_total counter")
+        metrics_lines.append(f"document_parser_documents_total {doc_stats['total_documents'] or 0}")
+        
+        metrics_lines.append(f"# HELP document_parser_documents_completed Total number of completed documents")
+        metrics_lines.append(f"# TYPE document_parser_documents_completed counter")
+        metrics_lines.append(f"document_parser_documents_completed {doc_stats['completed_documents'] or 0}")
+        
+        metrics_lines.append(f"# HELP document_parser_documents_pending Total number of pending documents")
+        metrics_lines.append(f"# TYPE document_parser_documents_pending counter")
+        metrics_lines.append(f"document_parser_documents_pending {doc_stats['pending_documents'] or 0}")
+        
+        metrics_lines.append(f"# HELP document_parser_documents_error Total number of error documents")
+        metrics_lines.append(f"# TYPE document_parser_documents_error counter")
+        metrics_lines.append(f"document_parser_documents_error {doc_stats['error_documents'] or 0}")
+        
+        # Метрики по типам документов
+        metrics_lines.append(f"# HELP document_parser_documents_by_type Documents by file type")
+        metrics_lines.append(f"# TYPE document_parser_documents_by_type counter")
+        metrics_lines.append(f'document_parser_documents_by_type{{type="pdf"}} {doc_stats["pdf_documents"] or 0}')
+        metrics_lines.append(f'document_parser_documents_by_type{{type="docx"}} {doc_stats["docx_documents"] or 0}')
+        metrics_lines.append(f'document_parser_documents_by_type{{type="dwg"}} {doc_stats["dwg_documents"] or 0}')
+        metrics_lines.append(f'document_parser_documents_by_type{{type="txt"}} {doc_stats["txt_documents"] or 0}')
+        
+        # Метрики размера
+        metrics_lines.append(f"# HELP document_parser_total_size_bytes Total size of all documents in bytes")
+        metrics_lines.append(f"# TYPE document_parser_total_size_bytes gauge")
+        metrics_lines.append(f"document_parser_total_size_bytes {doc_stats['total_size_bytes'] or 0}")
+        
+        metrics_lines.append(f"# HELP document_parser_avg_file_size_bytes Average file size in bytes")
+        metrics_lines.append(f"# TYPE document_parser_avg_file_size_bytes gauge")
+        metrics_lines.append(f"document_parser_avg_file_size_bytes {float(doc_stats['avg_file_size_bytes'] or 0)}")
+        
+        # Метрики токенов
+        metrics_lines.append(f"# HELP document_parser_total_tokens Total number of tokens")
+        metrics_lines.append(f"# TYPE document_parser_total_tokens counter")
+        metrics_lines.append(f"document_parser_total_tokens {doc_stats['total_tokens'] or 0}")
+        
+        # Метрики проверяемых документов
+        metrics_lines.append(f"# HELP document_parser_checkable_documents_total Total number of checkable documents")
+        metrics_lines.append(f"# TYPE document_parser_checkable_documents_total counter")
+        metrics_lines.append(f"document_parser_checkable_documents_total {checkable_stats['total_checkable_documents'] or 0}")
+        
+        metrics_lines.append(f"# HELP document_parser_checkable_documents_pending_reviews Pending reviews")
+        metrics_lines.append(f"# TYPE document_parser_checkable_documents_pending_reviews counter")
+        metrics_lines.append(f"document_parser_checkable_documents_pending_reviews {checkable_stats['pending_reviews'] or 0}")
+        
+        metrics_lines.append(f"# HELP document_parser_checkable_documents_completed_reviews Completed reviews")
+        metrics_lines.append(f"# TYPE document_parser_checkable_documents_completed_reviews counter")
+        metrics_lines.append(f"document_parser_checkable_documents_completed_reviews {checkable_stats['completed_reviews'] or 0}")
+        
+        # Метрики элементов
+        metrics_lines.append(f"# HELP document_parser_elements_total Total number of extracted elements")
+        metrics_lines.append(f"# TYPE document_parser_elements_total counter")
+        metrics_lines.append(f"document_parser_elements_total {elements_stats['total_elements'] or 0}")
+        
+        metrics_lines.append(f"# HELP document_parser_elements_by_type Elements by type")
+        metrics_lines.append(f"# TYPE document_parser_elements_by_type counter")
+        metrics_lines.append(f'document_parser_elements_by_type{{type="text"}} {elements_stats["text_elements"] or 0}')
+        metrics_lines.append(f'document_parser_elements_by_type{{type="table"}} {elements_stats["table_elements"] or 0}')
+        metrics_lines.append(f'document_parser_elements_by_type{{type="figure"}} {elements_stats["figure_elements"] or 0}')
+        metrics_lines.append(f'document_parser_elements_by_type{{type="stamp"}} {elements_stats["stamp_elements"] or 0}')
+        
+        # Метрики нормоконтроля
+        metrics_lines.append(f"# HELP document_parser_norm_control_results_total Total norm control results")
+        metrics_lines.append(f"# TYPE document_parser_norm_control_results_total counter")
+        metrics_lines.append(f"document_parser_norm_control_results_total {norm_control_stats['total_norm_control_results'] or 0}")
+        
+        metrics_lines.append(f"# HELP document_parser_norm_control_findings_total Total findings")
+        metrics_lines.append(f"# TYPE document_parser_norm_control_findings_total counter")
+        metrics_lines.append(f"document_parser_norm_control_findings_total {norm_control_stats['total_findings'] or 0}")
+        
+        metrics_lines.append(f"# HELP document_parser_norm_control_findings_critical Critical findings")
+        metrics_lines.append(f"# TYPE document_parser_norm_control_findings_critical counter")
+        metrics_lines.append(f"document_parser_norm_control_findings_critical {norm_control_stats['critical_findings'] or 0}")
+        
+        metrics_lines.append(f"# HELP document_parser_norm_control_findings_warning Warning findings")
+        metrics_lines.append(f"# TYPE document_parser_norm_control_findings_warning counter")
+        metrics_lines.append(f"document_parser_norm_control_findings_warning {norm_control_stats['warning_findings'] or 0}")
+        
+        metrics_lines.append(f"# HELP document_parser_norm_control_findings_info Info findings")
+        metrics_lines.append(f"# TYPE document_parser_norm_control_findings_info counter")
+        metrics_lines.append(f"document_parser_norm_control_findings_info {norm_control_stats['info_findings'] or 0}")
+        
+        # Метрики отчетов
+        metrics_lines.append(f"# HELP document_parser_reports_total Total number of reports")
+        metrics_lines.append(f"# TYPE document_parser_reports_total counter")
+        metrics_lines.append(f"document_parser_reports_total {reports_stats['total_review_reports'] or 0}")
+        
+        # Метрики производительности
+        metrics_lines.append(f"# HELP document_parser_documents_last_24h Documents processed in last 24 hours")
+        metrics_lines.append(f"# TYPE document_parser_documents_last_24h counter")
+        metrics_lines.append(f"document_parser_documents_last_24h {time_stats['documents_last_24h'] or 0}")
+        
+        # Возвращаем метрики в формате Prometheus
+        from fastapi.responses import Response
+        return Response(
+            content="\n".join(metrics_lines),
+            media_type="text/plain; version=0.0.4; charset=utf-8"
+        )
         
     except Exception as e:
         logger.error(f"Get metrics error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 def safe_text(text: str) -> str:
-    """Безопасное отображение текста в PDF"""
+    """Безопасное отображение текста в PDF с поддержкой кириллицы"""
     if text is None:
         return ""
-    # Заменяем проблемные символы на безопасные аналоги
-    replacements = {
-        'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'e',
-        'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
-        'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
-        'ф': 'f', 'х': 'h', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'sch',
-        'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya',
-        'А': 'A', 'Б': 'B', 'В': 'V', 'Г': 'G', 'Д': 'D', 'Е': 'E', 'Ё': 'E',
-        'Ж': 'ZH', 'З': 'Z', 'И': 'I', 'Й': 'Y', 'К': 'K', 'Л': 'L', 'М': 'M',
-        'Н': 'N', 'О': 'O', 'П': 'P', 'Р': 'R', 'С': 'S', 'Т': 'T', 'У': 'U',
-        'Ф': 'F', 'Х': 'H', 'Ц': 'TS', 'Ч': 'CH', 'Ш': 'SH', 'Щ': 'SCH',
-        'Ъ': '', 'Ы': 'Y', 'Ь': '', 'Э': 'E', 'Ю': 'YU', 'Я': 'YA'
-    }
     
-    result = ""
-    for char in str(text):
-        result += replacements.get(char, char)
-    return result
+    # Просто возвращаем текст как есть - кириллица будет поддерживаться
+    # через использование шрифтов с поддержкой Unicode
+    return str(text)
+
+def format_long_filename(filename: str, max_chars_per_line: int = 50) -> str:
+    """Форматирование длинного имени файла с переносом строк без обрезания"""
+    if len(filename) <= max_chars_per_line:
+        return filename
+    
+    # Разделяем имя файла и расширение
+    name, ext = os.path.splitext(filename)
+    
+    # Если расширение слишком длинное, включаем его в перенос
+    if len(ext) > 10:
+        name = filename
+        ext = ""
+    
+    # Разбиваем имя файла на части по max_chars_per_line символов
+    lines = []
+    current_line = ""
+    
+    for char in name:
+        current_line += char
+        if len(current_line) >= max_chars_per_line:
+            lines.append(current_line)
+            current_line = ""
+    
+    # Добавляем оставшуюся часть
+    if current_line:
+        lines.append(current_line)
+    
+    # Добавляем расширение к последней строке
+    if lines and ext:
+        lines[-1] += ext
+    
+    # Объединяем строки с переносом
+    return "<br/>".join(lines)
+
+def get_russian_font():
+    """Получение шрифта с поддержкой кириллицы"""
+    try:
+        # Пытаемся использовать встроенные шрифты с поддержкой кириллицы
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+        import os
+        
+        # Список возможных путей к шрифтам
+        font_paths = [
+            '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+            '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+            '/usr/share/fonts/TTF/DejaVuSans.ttf',
+            '/usr/share/fonts/TTF/LiberationSans-Regular.ttf',
+            '/usr/share/fonts/dejavu/DejaVuSans.ttf',
+            '/usr/share/fonts/liberation/LiberationSans-Regular.ttf'
+        ]
+        
+        # Пытаемся найти и зарегистрировать шрифт
+        for font_path in font_paths:
+            if os.path.exists(font_path):
+                try:
+                    if 'DejaVu' in font_path:
+                        pdfmetrics.registerFont(TTFont('DejaVuSans', font_path))
+                        logger.info(f"Registered DejaVuSans font from {font_path}")
+                        return 'DejaVuSans'
+                    elif 'Liberation' in font_path:
+                        pdfmetrics.registerFont(TTFont('LiberationSans', font_path))
+                        logger.info(f"Registered LiberationSans font from {font_path}")
+                        return 'LiberationSans'
+                except Exception as e:
+                    logger.warning(f"Failed to register font {font_path}: {e}")
+                    continue
+        
+        # Пытаемся использовать встроенные Unicode шрифты ReportLab
+        try:
+            # Регистрируем встроенный Unicode шрифт
+            pdfmetrics.registerFont(UnicodeCIDFont('STSong-Light'))
+            logger.info("Registered STSong-Light Unicode font")
+            return 'STSong-Light'
+        except Exception as e:
+            logger.warning(f"Failed to register Unicode font: {e}")
+        
+        # Если не удалось найти системные шрифты, используем встроенный
+        logger.info("Using built-in Helvetica font")
+        return 'Helvetica'
+        
+    except Exception as e:
+        logger.error(f"Error in get_russian_font: {e}")
+        return 'Helvetica'
 
 def generate_docx_report_from_template(document: Dict, norm_control_result: Dict, page_results: List[Dict], review_report: Dict) -> bytes:
     """Генерация отчета на основе шаблона DOCX"""
@@ -4437,6 +4851,54 @@ def get_severity_text(severity_level: int) -> str:
     }
     return severity_map.get(severity_level, "Не определено")
 
+def generate_conclusion_from_findings(norm_control_result: Dict, findings: List[Dict]) -> str:
+    """Генерация заключения на основе детальных findings"""
+    conclusion_parts = []
+    
+    total_findings = len(findings)
+    critical_findings = sum(1 for f in findings if f.get('severity_level', 1) >= 4)
+    warning_findings = sum(1 for f in findings if f.get('severity_level', 1) in [2, 3])
+    info_findings = sum(1 for f in findings if f.get('severity_level', 1) == 1)
+    
+    if total_findings == 0:
+        conclusion_parts.append("Документ полностью соответствует нормативным требованиям.")
+        conclusion_parts.append("Рекомендуется к принятию без замечаний.")
+    else:
+        if critical_findings > 0:
+            conclusion_parts.append(f"Обнаружено {critical_findings} критических нарушений, требующих обязательного исправления.")
+            conclusion_parts.append("Документ не может быть принят в текущем виде.")
+        
+        if warning_findings > 0:
+            conclusion_parts.append(f"Выявлено {warning_findings} предупреждений, которые рекомендуется устранить.")
+        
+        if info_findings > 0:
+            conclusion_parts.append(f"Найдено {info_findings} информационных замечаний для улучшения качества документа.")
+        
+        # Анализ по категориям
+        categories = {}
+        for finding in findings:
+            category = finding.get('category', 'compliance')
+            if category not in categories:
+                categories[category] = 0
+            categories[category] += 1
+        
+        if categories:
+            conclusion_parts.append("Основные области нарушений:")
+            for category, count in sorted(categories.items(), key=lambda x: x[1], reverse=True):
+                category_name = {
+                    'compliance': 'соответствие нормам',
+                    'safety': 'безопасность',
+                    'energy_efficiency': 'энергоэффективность',
+                    'structural': 'конструктивные решения',
+                    'formatting': 'оформление',
+                    'technical': 'технические требования'
+                }.get(category, category)
+                conclusion_parts.append(f"- {category_name}: {count} нарушений")
+        
+        conclusion_parts.append("Необходимо внести соответствующие исправления и провести повторную проверку.")
+    
+    return " ".join(conclusion_parts)
+
 def generate_conclusion(norm_control_result: Dict, page_summary: Dict[int, List[Dict]]) -> str:
     """Генерация заключения на основе результатов проверки"""
     if not norm_control_result:
@@ -4469,8 +4931,8 @@ def generate_conclusion(norm_control_result: Dict, page_summary: Dict[int, List[
     
     return " ".join(conclusion_parts)
 
-def generate_pdf_report(document: Dict, norm_control_result: Dict, page_results: List[Dict], review_report: Dict) -> bytes:
-    """Генерация PDF отчета по результатам нормоконтроля с улучшенной структурой"""
+def generate_pdf_report_with_findings(document: Dict, norm_control_result: Dict, findings: List[Dict], review_report: Dict) -> bytes:
+    """Генерация PDF отчета по результатам нормоконтроля с использованием сохраненных findings"""
     try:
         # Создаем буфер для PDF
         buffer = io.BytesIO()
@@ -4479,8 +4941,8 @@ def generate_pdf_report(document: Dict, norm_control_result: Dict, page_results:
         doc = SimpleDocTemplate(buffer, pagesize=A4)
         story = []
         
-        # Используем стандартный шрифт
-        font_name = 'Helvetica'
+        # Получаем шрифт с поддержкой кириллицы
+        font_name = get_russian_font()
         
         # Стили с поддержкой кириллицы
         styles = getSampleStyleSheet()
@@ -4541,7 +5003,7 @@ def generate_pdf_report(document: Dict, norm_control_result: Dict, page_results:
             [safe_text("Марка комплекта документации"), safe_text(project_info.get('document_mark', 'Не определена'))],
             [safe_text("Ревизия документации"), safe_text(project_info.get('revision', 'Не определена'))],
             [safe_text("Количество страниц"), safe_text(str(project_info.get('page_count', 'Не определено')))],
-            [safe_text("Название файла"), safe_text(filename)],
+            [safe_text("Название файла"), safe_text(format_long_filename(filename))],
             [safe_text("Тип файла"), safe_text(document.get('file_type', '').upper())],
             [safe_text("Размер файла"), safe_text(f"{document.get('file_size', 0) / 1024:.1f} KB")],
             [safe_text("Дата загрузки"), safe_text(document.get('upload_date', '').strftime("%d.%m.%Y %H:%M") if document.get('upload_date') else "Не указана")],
@@ -4553,8 +5015,285 @@ def generate_pdf_report(document: Dict, norm_control_result: Dict, page_results:
             ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('FONTNAME', (0, 0), (-1, 0), font_name),
-            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('FONTNAME', (0, 0), (-1, -1), font_name),  # Применяем шрифт ко всем ячейкам
+            ('FONTSIZE', (0, 0), (-1, -1), 10),  # Применяем размер шрифта ко всем ячейкам
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+        ]))
+        story.append(project_table)
+        story.append(Spacer(1, 20))
+        
+        # 3. Сводная таблица по findings
+        story.append(Paragraph(safe_text("2. СВОДНАЯ ТАБЛИЦА НАРУШЕНИЙ"), heading_style))
+        
+        # Группируем findings по категориям
+        findings_by_category = {}
+        for finding in findings:
+            category = finding.get('category', 'compliance')
+            if category not in findings_by_category:
+                findings_by_category[category] = []
+            findings_by_category[category].append(finding)
+        
+        summary_headers = [
+            safe_text("Категория"), 
+            safe_text("Критич."), 
+            safe_text("Предупреждения"), 
+            safe_text("Инфо"), 
+            safe_text("Всего")
+        ]
+        
+        summary_data = [summary_headers]
+        total_critical = 0
+        total_warnings = 0
+        total_info = 0
+        
+        for category, category_findings in findings_by_category.items():
+            critical_count = sum(1 for f in category_findings if f.get('severity_level') >= 4)
+            warning_count = sum(1 for f in category_findings if f.get('severity_level') in [2, 3])
+            info_count = sum(1 for f in category_findings if f.get('severity_level') == 1)
+            total_count = len(category_findings)
+            
+            total_critical += critical_count
+            total_warnings += warning_count
+            total_info += info_count
+            
+            category_name = {
+                'compliance': 'Соответствие нормам',
+                'safety': 'Безопасность',
+                'energy_efficiency': 'Энергоэффективность',
+                'structural': 'Конструктивные решения',
+                'formatting': 'Оформление',
+                'technical': 'Технические требования'
+            }.get(category, category)
+            
+            summary_data.append([
+                safe_text(category_name),
+                safe_text(str(critical_count)),
+                safe_text(str(warning_count)),
+                safe_text(str(info_count)),
+                safe_text(str(total_count))
+            ])
+        
+        # Добавляем итоговую строку
+        summary_data.append([
+            safe_text("ИТОГО"),
+            safe_text(str(total_critical)),
+            safe_text(str(total_warnings)),
+            safe_text(str(total_info)),
+            safe_text(str(len(findings)))
+        ])
+        
+        summary_table = Table(summary_data, colWidths=[2*inch, 1*inch, 1.5*inch, 1*inch, 1*inch])
+        summary_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, -1), font_name),  # Применяем шрифт ко всем ячейкам
+            ('FONTSIZE', (0, 0), (-1, -1), 9),  # Применяем размер шрифта ко всем ячейкам
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -2), colors.beige),
+            ('BACKGROUND', (0, -1), (-1, -1), colors.lightblue),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+        ]))
+        story.append(summary_table)
+        story.append(Spacer(1, 20))
+        
+        # 4. Детальная информация по findings
+        story.append(Paragraph(safe_text("3. ДЕТАЛЬНАЯ ИНФОРМАЦИЯ ПО НАРУШЕНИЯМ"), heading_style))
+        
+        # Группируем findings по страницам
+        findings_by_page = {}
+        for finding in findings:
+            element_ref = finding.get('element_reference', {})
+            if isinstance(element_ref, str):
+                import json
+                try:
+                    element_ref = json.loads(element_ref)
+                except:
+                    element_ref = {}
+            
+            page_number = element_ref.get('page_number', 1)
+            if page_number not in findings_by_page:
+                findings_by_page[page_number] = []
+            findings_by_page[page_number].append(finding)
+        
+        for page_num, page_findings in sorted(findings_by_page.items()):
+            if page_findings:  # Показываем только страницы с нарушениями
+                story.append(Paragraph(safe_text(f"Страница {page_num}"), subheading_style))
+                
+                for finding in page_findings:
+                    severity_text = get_severity_text(finding.get('severity_level', 1))
+                    normative_doc = finding.get('normative_document_title', 'Не указан')
+                    normative_clause = finding.get('normative_clause_number', 'Не указан')
+                    
+                    # Извлекаем информацию о месте в документе
+                    element_ref = finding.get('element_reference', {})
+                    if isinstance(element_ref, str):
+                        import json
+                        try:
+                            element_ref = json.loads(element_ref)
+                        except:
+                            element_ref = {}
+                    
+                    location = element_ref.get('location', 'Не указано')
+                    
+                    finding_text = f"""
+                    <b>Код:</b> {finding.get('rule_applied', 'Не указан')} | 
+                    <b>Важность:</b> {severity_text} | 
+                    <b>Категория:</b> {finding.get('category', 'Не указана')}
+                    <br/>
+                    <b>Нормативный документ:</b> {normative_doc} (пункт {normative_clause})
+                    <br/>
+                    <b>Место в документе:</b> {location}
+                    <br/>
+                    <b>Название:</b> {finding.get('title', 'Не указано')}
+                    <br/>
+                    <b>Описание:</b> {finding.get('description', 'Не указано')}
+                    <br/>
+                    <b>Рекомендация:</b> {finding.get('recommendation', 'Не указано')}
+                    """
+                    
+                    story.append(Paragraph(safe_text(finding_text), normal_style))
+                    story.append(Spacer(1, 10))
+        
+        # 5. Общие результаты
+        story.append(Paragraph(safe_text("4. ОБЩИЕ РЕЗУЛЬТАТЫ ПРОВЕРКИ"), heading_style))
+        
+        if norm_control_result:
+            results_data = [
+                [safe_text("Параметр"), safe_text("Значение")],
+                [safe_text("Общее количество нарушений"), safe_text(str(norm_control_result.get('total_findings', 0)))],
+                [safe_text("Критические нарушения"), safe_text(str(norm_control_result.get('critical_findings', 0)))],
+                [safe_text("Предупреждения"), safe_text(str(norm_control_result.get('warning_findings', 0)))],
+                [safe_text("Информационные замечания"), safe_text(str(norm_control_result.get('info_findings', 0)))],
+                [safe_text("Статус анализа"), safe_text(norm_control_result.get('analysis_status', 'Не указан'))]
+            ]
+            
+            results_table = Table(results_data, colWidths=[2.5*inch, 3.5*inch])
+            results_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, -1), font_name),  # Применяем шрифт ко всем ячейкам
+                ('FONTSIZE', (0, 0), (-1, -1), 10),  # Применяем размер шрифта ко всем ячейкам
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black)
+            ]))
+            story.append(results_table)
+            story.append(Spacer(1, 20))
+        
+        # 6. Заключение
+        story.append(Paragraph(safe_text("5. ЗАКЛЮЧЕНИЕ"), heading_style))
+        
+        conclusion = generate_conclusion_from_findings(norm_control_result, findings)
+        story.append(Paragraph(safe_text(conclusion), normal_style))
+        
+        # 7. Подпись и дата
+        story.append(Spacer(1, 30))
+        story.append(Paragraph(safe_text(f"Отчет сгенерирован: {datetime.now().strftime('%d.%m.%Y %H:%M')}"), small_style))
+        story.append(Paragraph(safe_text("Система автоматизированной проверки нормоконтроля"), small_style))
+        
+        # Строим PDF
+        doc.build(story)
+        
+        # Получаем содержимое
+        pdf_content = buffer.getvalue()
+        buffer.close()
+        
+        return pdf_content
+        
+    except Exception as e:
+        logger.error(f"PDF generation error: {e}")
+        raise
+
+def generate_pdf_report(document: Dict, norm_control_result: Dict, page_results: List[Dict], review_report: Dict) -> bytes:
+    """Генерация PDF отчета по результатам нормоконтроля с улучшенной структурой (устаревшая версия)"""
+    try:
+        # Создаем буфер для PDF
+        buffer = io.BytesIO()
+        
+        # Создаем документ
+        doc = SimpleDocTemplate(buffer, pagesize=A4)
+        story = []
+        
+        # Получаем шрифт с поддержкой кириллицы
+        font_name = get_russian_font()
+        
+        # Стили с поддержкой кириллицы
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontName=font_name,
+            fontSize=18,
+            spaceAfter=30,
+            alignment=TA_CENTER,
+            textColor=colors.darkblue
+        )
+        heading_style = ParagraphStyle(
+            'CustomHeading',
+            parent=styles['Heading2'],
+            fontName=font_name,
+            fontSize=14,
+            spaceAfter=20,
+            textColor=colors.darkblue
+        )
+        subheading_style = ParagraphStyle(
+            'CustomSubHeading',
+            parent=styles['Heading3'],
+            fontName=font_name,
+            fontSize=12,
+            spaceAfter=15,
+            textColor=colors.darkblue
+        )
+        normal_style = ParagraphStyle(
+            'CustomNormal',
+            parent=styles['Normal'],
+            fontName=font_name,
+            fontSize=10
+        )
+        small_style = ParagraphStyle(
+            'CustomSmall',
+            parent=styles['Normal'],
+            fontName=font_name,
+            fontSize=8
+        )
+        
+        # 1. Заголовок отчета
+        filename = document.get('original_filename', 'Неизвестный файл')
+        story.append(Paragraph(safe_text("ОТЧЕТ ОБ АВТОМАТИЗИРОВАННОЙ ПРОВЕРКЕ"), title_style))
+        story.append(Paragraph(safe_text(f'"{filename}"'), title_style))
+        story.append(Spacer(1, 30))
+        
+        # 2. Информация о проекте и документе
+        story.append(Paragraph(safe_text("1. ИНФОРМАЦИЯ О ПРОЕКТЕ И ДОКУМЕНТЕ"), heading_style))
+        
+        # Извлекаем информацию о проекте из имени файла
+        project_info = extract_project_info_from_filename(filename)
+        
+        project_data = [
+            [safe_text("Параметр"), safe_text("Значение")],
+            [safe_text("Название проекта"), safe_text(project_info.get('project_name', 'Не определено'))],
+            [safe_text("Стадия проектирования"), safe_text(project_info.get('engineering_stage', 'Не определена'))],
+            [safe_text("Марка комплекта документации"), safe_text(project_info.get('document_mark', 'Не определена'))],
+            [safe_text("Ревизия документации"), safe_text(project_info.get('revision', 'Не определена'))],
+            [safe_text("Количество страниц"), safe_text(str(project_info.get('page_count', 'Не определено')))],
+            [safe_text("Название файла"), safe_text(format_long_filename(filename))],
+            [safe_text("Тип файла"), safe_text(document.get('file_type', '').upper())],
+            [safe_text("Размер файла"), safe_text(f"{document.get('file_size', 0) / 1024:.1f} KB")],
+            [safe_text("Дата загрузки"), safe_text(document.get('upload_date', '').strftime("%d.%m.%Y %H:%M") if document.get('upload_date') else "Не указана")],
+            [safe_text("Дата проверки"), safe_text(norm_control_result.get('analysis_date', '').strftime("%d.%m.%Y %H:%M") if norm_control_result and norm_control_result.get('analysis_date') else "Не указана")]
+        ]
+        
+        project_table = Table(project_data, colWidths=[2.5*inch, 3.5*inch])
+        project_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (-1, -1), font_name),  # Применяем шрифт ко всем ячейкам
+            ('FONTSIZE', (0, 0), (-1, -1), 10),  # Применяем размер шрифта ко всем ячейкам
             ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
             ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
             ('GRID', (0, 0), (-1, -1), 1, colors.black)
@@ -4628,8 +5367,8 @@ def generate_pdf_report(document: Dict, norm_control_result: Dict, page_results:
             ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), font_name),
-            ('FONTSIZE', (0, 0), (-1, 0), 9),
+            ('FONTNAME', (0, 0), (-1, -1), font_name),  # Применяем шрифт ко всем ячейкам
+            ('FONTSIZE', (0, 0), (-1, -1), 9),  # Применяем размер шрифта ко всем ячейкам
             ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
             ('BACKGROUND', (0, 1), (-1, -2), colors.beige),
             ('BACKGROUND', (0, -1), (-1, -1), colors.lightblue),
@@ -4686,8 +5425,8 @@ def generate_pdf_report(document: Dict, norm_control_result: Dict, page_results:
                 ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('FONTNAME', (0, 0), (-1, 0), font_name),
-                ('FONTSIZE', (0, 0), (-1, 0), 10),
+                ('FONTNAME', (0, 0), (-1, -1), font_name),  # Применяем шрифт ко всем ячейкам
+                ('FONTSIZE', (0, 0), (-1, -1), 10),  # Применяем размер шрифта ко всем ячейкам
                 ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black)
@@ -4733,14 +5472,17 @@ async def download_report_pdf(document_id: int):
         if not norm_control_result:
             raise HTTPException(status_code=404, detail="Norm control results not found")
         
+        # Получаем детальные findings из БД
+        findings = parser.get_findings_by_norm_control_id(norm_control_result['id'])
+        
         # Получаем результаты по страницам
         page_results = parser.get_page_results_by_document_id(document_id)
         
         # Получаем отчет рецензента
         review_report = parser.get_review_report_by_norm_control_id(norm_control_result['id'])
         
-        # Генерируем PDF отчет
-        report_content = generate_pdf_report(document, norm_control_result, page_results, review_report)
+        # Генерируем PDF отчет с использованием сохраненных findings
+        report_content = generate_pdf_report_with_findings(document, norm_control_result, findings, review_report)
         
         # Возвращаем PDF файл
         from fastapi.responses import Response
