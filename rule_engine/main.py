@@ -548,73 +548,72 @@ async def get_metrics():
             """)
             model_stats = cursor.fetchall()
             
-        return {
-            "status": "success",
-            "timestamp": datetime.now().isoformat(),
-            "metrics": {
-                "analysis": {
-                    "total_results": analysis_stats["total_results"] or 0,
-                    "completed_analyses": analysis_stats["completed_analyses"] or 0,
-                    "pending_analyses": analysis_stats["pending_analyses"] or 0,
-                    "error_analyses": analysis_stats["error_analyses"] or 0,
-                    "by_type": {
-                        "full_analyses": analysis_stats["full_analyses"] or 0,
-                        "quick_analyses": analysis_stats["quick_analyses"] or 0
-                    },
-                    "unique_models": analysis_stats["unique_models"] or 0,
-                    "total_findings": analysis_stats["total_findings"] or 0,
-                    "critical_findings": analysis_stats["critical_findings"] or 0,
-                    "warning_findings": analysis_stats["warning_findings"] or 0,
-                    "info_findings": analysis_stats["info_findings"] or 0,
-                    "averages": {
-                        "findings_per_analysis": float(analysis_stats["avg_findings_per_analysis"] or 0),
-                        "critical_per_analysis": float(analysis_stats["avg_critical_per_analysis"] or 0),
-                        "warning_per_analysis": float(analysis_stats["avg_warning_per_analysis"] or 0),
-                        "info_per_analysis": float(analysis_stats["avg_info_per_analysis"] or 0)
-                    }
-                },
-                "findings": {
-                    "total": findings_stats["total_findings"] or 0,
-                    "critical": findings_stats["critical_findings"] or 0,
-                    "warning": findings_stats["warning_findings"] or 0,
-                    "info": findings_stats["info_findings"] or 0,
-                    "unique_categories": findings_stats["unique_categories"] or 0,
-                    "unique_rules": findings_stats["unique_rules"] or 0,
-                    "unique_finding_types": findings_stats["unique_finding_types"] or 0,
-                    "avg_severity_level": float(findings_stats["avg_severity_level"] or 0),
-                    "avg_confidence_score": float(findings_stats["avg_confidence_score"] or 0)
-                },
-                "categories": [
-                    {
-                        "category": cat["category"],
-                        "count": cat["count"],
-                        "avg_severity": float(cat["avg_severity"] or 0),
-                        "critical_count": cat["critical_count"]
-                    } for cat in category_stats
-                ],
-                "rules": [
-                    {
-                        "rule": rule["rule_applied"],
-                        "count": rule["count"],
-                        "avg_severity": float(rule["avg_severity"] or 0),
-                        "critical_count": rule["critical_count"]
-                    } for rule in rule_stats
-                ],
-                "models": [
-                    {
-                        "model": model["model_used"],
-                        "usage_count": model["usage_count"],
-                        "avg_findings": float(model["avg_findings"] or 0),
-                        "avg_critical": float(model["avg_critical"] or 0)
-                    } for model in model_stats
-                ],
-                "performance": {
-                    "analyses_last_24h": time_stats["analyses_last_24h"] or 0,
-                    "completed_last_24h": time_stats["completed_last_24h"] or 0,
-                    "avg_findings_last_24h": float(time_stats["avg_findings_last_24h"] or 0)
-                }
-            }
-        }
+        # Формируем метрики в формате Prometheus
+        metrics_lines = []
+        
+        # Метрики анализа
+        metrics_lines.append(f"# HELP rule_engine_analysis_total Total number of analyses")
+        metrics_lines.append(f"# TYPE rule_engine_analysis_total counter")
+        metrics_lines.append(f"rule_engine_analysis_total {analysis_stats['total_results'] or 0}")
+        
+        metrics_lines.append(f"# HELP rule_engine_analysis_completed Completed analyses")
+        metrics_lines.append(f"# TYPE rule_engine_analysis_completed counter")
+        metrics_lines.append(f"rule_engine_analysis_completed {analysis_stats['completed_analyses'] or 0}")
+        
+        metrics_lines.append(f"# HELP rule_engine_analysis_pending Pending analyses")
+        metrics_lines.append(f"# TYPE rule_engine_analysis_pending counter")
+        metrics_lines.append(f"rule_engine_analysis_pending {analysis_stats['pending_analyses'] or 0}")
+        
+        metrics_lines.append(f"# HELP rule_engine_analysis_error Error analyses")
+        metrics_lines.append(f"# TYPE rule_engine_analysis_error counter")
+        metrics_lines.append(f"rule_engine_analysis_error {analysis_stats['error_analyses'] or 0}")
+        
+        # Метрики по типам анализа
+        metrics_lines.append(f"# HELP rule_engine_analysis_by_type Analyses by type")
+        metrics_lines.append(f"# TYPE rule_engine_analysis_by_type counter")
+        metrics_lines.append(f'rule_engine_analysis_by_type{{type="full"}} {analysis_stats["full_analyses"] or 0}')
+        metrics_lines.append(f'rule_engine_analysis_by_type{{type="quick"}} {analysis_stats["quick_analyses"] or 0}')
+        
+        # Метрики findings
+        metrics_lines.append(f"# HELP rule_engine_findings_total Total findings")
+        metrics_lines.append(f"# TYPE rule_engine_findings_total counter")
+        metrics_lines.append(f"rule_engine_findings_total {findings_stats['total_findings'] or 0}")
+        
+        metrics_lines.append(f"# HELP rule_engine_findings_critical Critical findings")
+        metrics_lines.append(f"# TYPE rule_engine_findings_critical counter")
+        metrics_lines.append(f"rule_engine_findings_critical {findings_stats['critical_findings'] or 0}")
+        
+        metrics_lines.append(f"# HELP rule_engine_findings_warning Warning findings")
+        metrics_lines.append(f"# TYPE rule_engine_findings_warning counter")
+        metrics_lines.append(f"rule_engine_findings_warning {findings_stats['warning_findings'] or 0}")
+        
+        metrics_lines.append(f"# HELP rule_engine_findings_info Info findings")
+        metrics_lines.append(f"# TYPE rule_engine_findings_info counter")
+        metrics_lines.append(f"rule_engine_findings_info {findings_stats['info_findings'] or 0}")
+        
+        # Метрики по категориям
+        for cat in category_stats:
+            metrics_lines.append(f'rule_engine_findings_by_category{{category="{cat["category"]}"}} {cat["count"]}')
+        
+        # Метрики по правилам
+        for rule in rule_stats:
+            metrics_lines.append(f'rule_engine_findings_by_rule{{rule="{rule["rule_applied"]}"}} {rule["count"]}')
+        
+        # Метрики по моделям
+        for model in model_stats:
+            metrics_lines.append(f'rule_engine_model_usage{{model="{model["model_used"]}"}} {model["usage_count"]}')
+        
+        # Метрики производительности
+        metrics_lines.append(f"# HELP rule_engine_analyses_last_24h Analyses in last 24 hours")
+        metrics_lines.append(f"# TYPE rule_engine_analyses_last_24h counter")
+        metrics_lines.append(f"rule_engine_analyses_last_24h {time_stats['analyses_last_24h'] or 0}")
+        
+        # Возвращаем метрики в формате Prometheus
+        from fastapi.responses import Response
+        return Response(
+            content="\n".join(metrics_lines),
+            media_type="text/plain; version=0.0.4; charset=utf-8"
+        )
         
     except Exception as e:
         logger.error(f"Get metrics error: {e}")

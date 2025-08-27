@@ -31,6 +31,8 @@ RUN apt-get update && apt-get install -y \
     libgomp1 \
     gcc \
     python3-dev \
+    fonts-dejavu \
+    fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
 # Копируем requirements для всех сервисов
@@ -61,6 +63,8 @@ RUN apt-get update && apt-get install -y \
     libgomp1 \
     nginx \
     curl \
+    fonts-dejavu \
+    fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
 # Создаем пользователя для безопасности

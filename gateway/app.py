@@ -347,17 +347,33 @@ async def health_check():
 # Metrics endpoint
 @app.get("/metrics")
 async def metrics():
-    """Метрики gateway"""
+    """Метрики gateway в формате Prometheus"""
     print("🔍 [DEBUG] Gateway: Metrics requested")
     
-    metrics_data = {
-        "service": "gateway",
-        "uptime": time.time(),
-        "requests_processed": 0  # Можно добавить счетчик запросов
-    }
+    # Формируем метрики в формате Prometheus
+    metrics_lines = []
     
-    print(f"🔍 [DEBUG] Gateway: Metrics response: {metrics_data}")
-    return metrics_data
+    # Базовые метрики gateway
+    metrics_lines.append(f"# HELP gateway_up Gateway service is up")
+    metrics_lines.append(f"# TYPE gateway_up gauge")
+    metrics_lines.append(f"gateway_up 1")
+    
+    metrics_lines.append(f"# HELP gateway_uptime_seconds Gateway uptime in seconds")
+    metrics_lines.append(f"# TYPE gateway_uptime_seconds gauge")
+    metrics_lines.append(f"gateway_uptime_seconds {time.time()}")
+    
+    metrics_lines.append(f"# HELP gateway_requests_processed_total Total requests processed")
+    metrics_lines.append(f"# TYPE gateway_requests_processed_total counter")
+    metrics_lines.append(f"gateway_requests_processed_total 0")
+    
+    print(f"🔍 [DEBUG] Gateway: Metrics response generated")
+    
+    # Возвращаем метрики в формате Prometheus
+    from fastapi.responses import Response
+    return Response(
+        content="\n".join(metrics_lines),
+        media_type="text/plain; version=0.0.4; charset=utf-8"
+    )
 
 if __name__ == "__main__":
     print("🔍 [DEBUG] Gateway: Starting FastAPI application")

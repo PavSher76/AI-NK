@@ -14,6 +14,8 @@ RUN apt-get update && apt-get install -y \
     libgomp1 \
     gcc \
     python3-dev \
+    fonts-dejavu \
+    fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка Python пакетов через pip

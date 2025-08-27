@@ -21,6 +21,9 @@ from rank_bm25 import BM25Okapi
 import tiktoken
 import re
 
+# Импорт оптимизированного индексатора (временно отключен)
+# from optimized_indexer import OptimizedNormativeIndexer, DocumentType, DocumentStage, DocumentMark, ContentTag
+
 # Настройка логирования с подробной отладкой
 logging.basicConfig(
     level=logging.DEBUG,
@@ -100,8 +103,10 @@ class NormRAGService:
         self.embedding_model = None
         self.tokenizer = None
         self.text_splitter = None
+        self.optimized_indexer = None  # Оптимизированный индексатор
         self.connect_services()
         self.initialize_models()
+        self.initialize_optimized_indexer()
         logger.info("✅ [INIT] NormRAGService initialized successfully")
     
     def connect_services(self):
@@ -145,6 +150,11 @@ class NormRAGService:
         except Exception as e:
             logger.error(f"❌ [MODELS] Model initialization error: {e}")
             raise
+    
+    def initialize_optimized_indexer(self):
+        """Инициализация оптимизированного индексатора (временно отключена)"""
+        logger.info("🔧 [OPTIMIZED_INDEXER] Optimized indexer temporarily disabled")
+        self.optimized_indexer = None
     
     def count_tokens(self, text: str) -> int:
         """Подсчет токенов в тексте"""
@@ -922,48 +932,84 @@ async def delete_all_indexes():
 
 @app.get("/metrics")
 async def get_metrics():
-    """Получение метрик RAG-сервиса"""
+    """Получение метрик RAG-сервиса в формате Prometheus"""
     logger.info("📊 [METRICS] Getting service metrics...")
     try:
         # Получаем статистику из RAG сервиса
         stats = rag_service.get_stats()
         
-        # Дополнительные метрики
-        metrics = {
-            "status": "success",
-            "timestamp": datetime.now().isoformat(),
-            "service": "rag-service",
-            "version": "2.0.0",
-            "metrics": {
-                "collections": {
-                    "vector_collection": VECTOR_COLLECTION,
-                    "bm25_collection": BM25_COLLECTION
-                },
-                "configuration": {
-                    "chunk_size": CHUNK_SIZE,
-                    "chunk_overlap": CHUNK_OVERLAP,
-                    "max_tokens": MAX_TOKENS
-                },
-                "connections": {
-                    "postgresql": "connected" if rag_service.db_conn else "disconnected",
-                    "qdrant": "connected" if rag_service.qdrant_client else "disconnected",
-                    "embedding_model": "BGE-M3" if rag_service.embedding_model else "simple_hash"
-                },
-                "statistics": stats
-            }
-        }
+        # Формируем метрики в формате Prometheus
+        metrics_lines = []
+        
+        # Метрики коллекций
+        metrics_lines.append(f"# HELP rag_service_collections_total Total number of collections")
+        metrics_lines.append(f"# TYPE rag_service_collections_total gauge")
+        metrics_lines.append(f"rag_service_collections_total 2")
+        
+        # Метрики конфигурации
+        metrics_lines.append(f"# HELP rag_service_chunk_size Chunk size for text processing")
+        metrics_lines.append(f"# TYPE rag_service_chunk_size gauge")
+        metrics_lines.append(f"rag_service_chunk_size {CHUNK_SIZE}")
+        
+        metrics_lines.append(f"# HELP rag_service_chunk_overlap Chunk overlap for text processing")
+        metrics_lines.append(f"# TYPE rag_service_chunk_overlap gauge")
+        metrics_lines.append(f"rag_service_chunk_overlap {CHUNK_OVERLAP}")
+        
+        metrics_lines.append(f"# HELP rag_service_max_tokens Maximum tokens for processing")
+        metrics_lines.append(f"# TYPE rag_service_max_tokens gauge")
+        metrics_lines.append(f"rag_service_max_tokens {MAX_TOKENS}")
+        
+        # Метрики подключений
+        metrics_lines.append(f"# HELP rag_service_connections_status Connection status")
+        metrics_lines.append(f"# TYPE rag_service_connections_status gauge")
+        metrics_lines.append(f'rag_service_connections_status{{service="postgresql"}} {1 if rag_service.db_conn else 0}')
+        metrics_lines.append(f'rag_service_connections_status{{service="qdrant"}} {1 if rag_service.qdrant_client else 0}')
+        
+        # Метрики статистики
+        if stats:
+            metrics_lines.append(f"# HELP rag_service_total_chunks Total number of chunks")
+            metrics_lines.append(f"# TYPE rag_service_total_chunks counter")
+            metrics_lines.append(f"rag_service_total_chunks {stats.get('total_chunks', 0)}")
+            
+            metrics_lines.append(f"# HELP rag_service_total_documents Total number of documents")
+            metrics_lines.append(f"# TYPE rag_service_total_documents counter")
+            metrics_lines.append(f"rag_service_total_documents {stats.get('total_documents', 0)}")
+            
+            metrics_lines.append(f"# HELP rag_service_total_clauses Total number of clauses")
+            metrics_lines.append(f"# TYPE rag_service_total_clauses counter")
+            metrics_lines.append(f"rag_service_total_clauses {stats.get('total_clauses', 0)}")
+            
+            metrics_lines.append(f"# HELP rag_service_vector_indexed Total vector indexed")
+            metrics_lines.append(f"# TYPE rag_service_vector_indexed counter")
+            metrics_lines.append(f"rag_service_vector_indexed {stats.get('vector_indexed', 0)}")
+            
+            # Метрики по типам чанков
+            chunk_types = stats.get('chunk_types', {})
+            for chunk_type, count in chunk_types.items():
+                metrics_lines.append(f'rag_service_chunks_by_type{{type="{chunk_type}"}} {count}')
         
         logger.info(f"✅ [METRICS] Service metrics retrieved successfully")
-        return metrics
+        
+        # Возвращаем метрики в формате Prometheus
+        from fastapi.responses import Response
+        return Response(
+            content="\n".join(metrics_lines),
+            media_type="text/plain; version=0.0.4; charset=utf-8"
+        )
         
     except Exception as e:
         logger.error(f"❌ [METRICS] Metrics error: {e}")
-        return {
-            "status": "error",
-            "error": str(e),
-            "timestamp": datetime.now().isoformat(),
-            "service": "rag-service"
-        }
+        # Возвращаем базовые метрики в случае ошибки
+        error_metrics = [
+            "# HELP rag_service_up Service is up",
+            "# TYPE rag_service_up gauge",
+            "rag_service_up 0"
+        ]
+        from fastapi.responses import Response
+        return Response(
+            content="\n".join(error_metrics),
+            media_type="text/plain; version=0.0.4; charset=utf-8"
+        )
 
 @app.get("/health")
 async def health_check():
@@ -982,6 +1028,7 @@ async def health_check():
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
             "embedding_model": "BGE-M3" if rag_service.embedding_model else "simple_hash",
+            "optimized_indexer": "not_available",  # Временно отключен
             "services": {
                 "postgresql": "connected",
                 "qdrant": "connected"
@@ -994,6 +1041,99 @@ async def health_check():
             "error": str(e),
             "timestamp": datetime.now().isoformat()
         }
+
+# @app.post("/optimized/index")
+# async def optimized_index_document(
+#     document_info: Dict[str, Any],
+#     content: str = Form(...)
+# ):
+#     """Оптимизированная индексация документа с унифицированной структурой"""
+#     logger.info("📄 [OPTIMIZED_INDEX] Optimized indexing requested")
+#     
+#     try:
+#         if not rag_service.optimized_indexer:
+#             raise HTTPException(status_code=503, detail="Optimized indexer not available")
+#         
+#         # Индексация документа
+#         success = rag_service.optimized_indexer.index_document(document_info, content)
+#         
+#         if success:
+#             logger.info("✅ [OPTIMIZED_INDEX] Document indexed successfully")
+#             return {
+#                 "status": "success",
+#                 "message": "Document indexed with optimized structure",
+#                 "timestamp": datetime.now().isoformat()
+#             }
+#         else:
+#             raise HTTPException(status_code=500, detail="Failed to index document")
+#             
+#     except Exception as e:
+#         logger.error(f"❌ [OPTIMIZED_INDEX] Error: {e}")
+#         raise HTTPException(status_code=500, detail=str(e))
+
+# @app.post("/optimized/search")
+# async def optimized_search_with_context(
+#     query: str = Form(...),
+#     document_mark: Optional[str] = Form(None),
+#     document_stage: Optional[str] = Form(None),
+#     content_tags: Optional[List[str]] = Form(None),
+#     limit: int = Form(10)
+# ):
+#     """Поиск с контекстуальной фильтрацией"""
+#     logger.info(f"🔍 [OPTIMIZED_SEARCH] Contextual search requested: {query}")
+#     
+#     try:
+#         if not rag_service.optimized_indexer:
+#             raise HTTPException(status_code=503, detail="Optimized indexer not available")
+#         
+#         # Выполняем поиск с фильтрами
+#         results = rag_service.optimized_indexer.search_with_context_filter(
+#             query=query,
+#             document_mark=document_mark,
+#             document_stage=document_stage,
+#             content_tags=content_tags,
+#             limit=limit
+#         )
+#         
+#         logger.info(f"✅ [OPTIMIZED_SEARCH] Found {len(results)} results")
+#         return {
+#             "status": "success",
+#             "query": query,
+#             "filters": {
+#                 "document_mark": document_mark,
+#                 "document_stage": document_stage,
+#                 "content_tags": content_tags
+#             },
+#             "results": results,
+#             "total_results": len(results),
+#             "timestamp": datetime.now().isoformat()
+#         }
+#         
+#     except Exception as e:
+#         logger.error(f"❌ [OPTIMIZED_SEARCH] Error: {e}")
+#         raise HTTPException(status_code=500, detail=str(e))
+
+# @app.get("/optimized/statistics")
+# async def get_optimized_statistics():
+#     """Получение статистики оптимизированной индексации"""
+#     logger.info("📊 [OPTIMIZED_STATS] Statistics requested")
+#     
+#     try:
+#         if not rag_service.optimized_indexer:
+#             raise HTTPException(status_code=503, detail="Optimized indexer not available")
+#         
+#         stats = rag_service.optimized_indexer.get_statistics()
+#         
+#         logger.info("✅ [OPTIMIZED_STATS] Statistics retrieved successfully")
+#         return {
+#             "status": "success",
+#             "statistics": stats,
+#             "timestamp": datetime.now().isoformat()
+#         }
+#         
+#     except Exception as e:
+#         logger.error(f"❌ [OPTIMIZED_STATS] Error: {e}")
+#         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
