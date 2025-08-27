@@ -1,7 +1,5 @@
 FROM python:3.11-slim
 
-WORKDIR /app
-
 # Установка системных зависимостей
 RUN apt-get update && apt-get install -y \
     libmagic1 \
@@ -18,22 +16,37 @@ RUN apt-get update && apt-get install -y \
     fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
-# Установка Python пакетов через pip
+# Установка рабочей директории
+WORKDIR /app
+
+# Копирование файлов зависимостей
 COPY requirements.txt .
+
+# Установка Python зависимостей
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копирование кода
+# Копирование исходного кода
 COPY . .
 
-# Копирование конфигурации проекта
-COPY config.py /app/config.py
+# Копирование конфигурации
+# config.py теперь находится в core/config.py
 
-# Создание директорий
-RUN mkdir -p /app/uploads /app/temp /app/report_format
+# Создание необходимых директорий
+RUN mkdir -p /app/uploads /app/temp /app/report_format /app/models
 
-# Копирование шаблона отчета
+# Копирование шаблонов отчетов
 COPY report_format/ОТЧЕТ_file_name.docx /app/report_format/
 
+# Создание __init__.py файлов для пакетов
+RUN touch /app/__init__.py
+
+# Установка переменных окружения
+ENV PYTHONPATH=/app
+ENV TRANSFORMERS_CACHE=/app/models
+ENV HF_HOME=/app/models
+
+# Открытие порта
 EXPOSE 8001
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001", "--timeout-keep-alive", "600", "--limit-max-requests", "500", "--limit-concurrency", "5", "--timeout-graceful-shutdown", "60"]
+# Команда запуска
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8001"]

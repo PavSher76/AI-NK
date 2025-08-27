@@ -340,61 +340,35 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
       setLoadingReports(prev => ({ ...prev, [documentId]: true }));
       setError(null);
       
-      // Получаем сохраненный промпт
-      const savedPrompt = await getNormcontrolPrompt();
-      
-      // Получаем содержимое документа
-      const docResponse = await fetch(`${API_BASE}/checkable-documents/${documentId}/content`, {
-        headers: {
-          'Authorization': `Bearer ${authToken}`
-        }
-      });
-      if (!docResponse.ok) {
-        throw new Error('Не удалось получить содержимое документа');
-      }
-      const docData = await docResponse.json();
-      
-      // Получаем нормативные документы
-      const normsResponse = await fetch('/api/documents', {
-        headers: {
-          'Authorization': `Bearer ${authToken}`
-        }
-      });
-      let normativeDocs = '';
-      if (normsResponse.ok) {
-        const normsData = await normsResponse.json();
-        normativeDocs = normsData.documents?.map(doc => `${doc.title} (${doc.category})`).join(', ') || '';
-      }
-      
-      // Формируем промпт с подстановкой переменных
-      const formattedPrompt = formatNormcontrolPrompt(
-        savedPrompt,
-        docData.content,
-        normativeDocs
-      );
-      
-      // Отправляем запрос на проверку
+      // Отправляем запрос на асинхронную проверку
       const checkResponse = await fetch(`${API_BASE}/checkable-documents/${documentId}/check`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${authToken}`,
           'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          prompt: formattedPrompt
-        })
+        }
       });
       
       if (checkResponse.ok) {
         const result = await checkResponse.json();
-        setSuccess(`Проверка нормоконтроля для документа "${docData.title}" запущена`);
         
-        // Обновляем отчет
-        setTimeout(() => {
-          fetchReport(documentId);
-        }, 2000);
+        if (result.status === 'started') {
+          setSuccess(`Проверка нормоконтроля запущена асинхронно`);
+          
+          // Запускаем периодическую проверку статуса
+          startStatusPolling(documentId);
+        } else if (result.status === 'already_processing') {
+          setError('Документ уже обрабатывается');
+        } else {
+          setSuccess(`Проверка нормоконтроля завершена`);
+          // Обновляем отчет
+          setTimeout(() => {
+            fetchReport(documentId);
+          }, 1000);
+        }
       } else {
-        throw new Error('Ошибка запуска проверки');
+        const errorData = await checkResponse.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Ошибка запуска проверки');
       }
     } catch (error) {
       console.error('Ошибка проверки нормоконтроля:', error);
@@ -402,6 +376,46 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
     } finally {
       setLoadingReports(prev => ({ ...prev, [documentId]: false }));
     }
+  };
+
+  // Периодическая проверка статуса документа
+  const startStatusPolling = (documentId) => {
+    const pollInterval = setInterval(async () => {
+      try {
+        const response = await fetch(`${API_BASE}/checkable-documents`, {
+          headers: {
+            'Authorization': `Bearer ${authToken}`
+          }
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          const document = data.documents?.find(doc => doc.id === documentId);
+          
+          if (document) {
+            if (document.processing_status === 'completed') {
+              clearInterval(pollInterval);
+              setSuccess(`Проверка нормоконтроля завершена`);
+              // Обновляем отчет
+              fetchReport(documentId);
+              // Обновляем список документов
+              fetchDocuments();
+            } else if (document.processing_status === 'error') {
+              clearInterval(pollInterval);
+              setError('Ошибка при выполнении проверки нормоконтроля');
+            }
+            // Если статус 'processing', продолжаем опрос
+          }
+        }
+      } catch (error) {
+        console.error('Ошибка при проверке статуса:', error);
+      }
+    }, 3000); // Проверяем каждые 3 секунды
+    
+    // Останавливаем опрос через 10 минут
+    setTimeout(() => {
+      clearInterval(pollInterval);
+    }, 600000);
   };
 
   // Удаление документа
@@ -543,6 +557,25 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
       'schemes': 'Схемы'
     };
     return categories[category] || category;
+  };
+
+  const getProcessingStatusText = (doc) => {
+    if (loadingReports[doc.id]) {
+      return 'Запуск проверки...';
+    }
+    
+    switch (doc.processing_status) {
+      case 'completed':
+        return 'Проверка завершена';
+      case 'processing':
+        return 'Выполняется проверка...';
+      case 'error':
+        return 'Ошибка проверки';
+      case 'pending':
+        return 'Готов к проверке';
+      default:
+        return 'Статус неизвестен';
+    }
   };
 
   // Загрузка данных при монтировании компонента
@@ -821,15 +854,15 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
                   <div className="flex items-center space-x-2">
                     <button
                       onClick={() => runNormcontrolCheck(doc.id)}
-                      disabled={loadingReports[doc.id]}
+                      disabled={loadingReports[doc.id] || doc.processing_status === 'processing'}
                       className={`p-2 transition-colors ${
-                        loadingReports[doc.id] 
+                        loadingReports[doc.id] || doc.processing_status === 'processing'
                           ? 'text-gray-300 cursor-not-allowed' 
                           : 'text-gray-400 hover:text-green-600'
                       }`}
-                      title="Запустить проверку нормоконтроля"
+                      title={getProcessingStatusText(doc)}
                     >
-                      {loadingReports[doc.id] ? (
+                      {loadingReports[doc.id] || doc.processing_status === 'processing' ? (
                         <Loader2 className="w-4 h-4 animate-spin" />
                       ) : (
                         <Play className="w-4 h-4" />
