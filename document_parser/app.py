@@ -13,6 +13,7 @@ import uvicorn
 from core.config import LOG_LEVEL, LOG_FORMAT
 from database.connection import DatabaseConnection
 from services.norm_control_service import NormControlService
+from services.hierarchical_check_service import HierarchicalCheckService
 from utils.memory_utils import log_memory_usage
 
 # Настройка логирования
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 # Глобальные переменные
 db_connection = None
 norm_control_service = None
+hierarchical_check_service = None
 startup_time = None
 
 def signal_handler(signum, frame):
@@ -59,6 +61,7 @@ async def lifespan(app: FastAPI):
         # Инициализация сервисов
         logger.info("🔍 [STARTUP] Initializing services...")
         norm_control_service = NormControlService(db_connection)
+        hierarchical_check_service = HierarchicalCheckService(db_connection)
         
         # Логирование использования памяти
         log_memory_usage("startup")
@@ -93,11 +96,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Dependency для получения сервиса
+# Dependency для получения сервисов
 def get_norm_control_service() -> NormControlService:
     if norm_control_service is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
     return norm_control_service
+
+def get_hierarchical_check_service() -> HierarchicalCheckService:
+    if hierarchical_check_service is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    return hierarchical_check_service
 
 # Health check endpoint
 @app.get("/health")
@@ -257,6 +265,74 @@ async def trigger_norm_control_check(
         except Exception:
             pass
         raise HTTPException(status_code=500, detail=str(e))
+
+# Иерархическая проверка документа
+@app.post("/checkable-documents/{document_id}/hierarchical-check")
+async def trigger_hierarchical_check(
+    document_id: int,
+    hierarchical_check_service: HierarchicalCheckService = Depends(get_hierarchical_check_service)
+):
+    """Запуск иерархической проверки документа"""
+    try:
+        # Проверяем существование документа
+        document = get_checkable_document(document_id)
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        # Проверяем текущий статус документа
+        if document.get("processing_status") == "processing":
+            return {
+                "status": "already_processing",
+                "message": "Document is already being processed"
+            }
+        
+        # Обновляем статус на "processing"
+        update_checkable_document_status(document_id, "processing")
+        
+        # Запускаем асинхронную иерархическую проверку
+        asyncio.create_task(
+            perform_async_hierarchical_check(document_id, hierarchical_check_service)
+        )
+        
+        return {
+            "status": "started",
+            "message": "Hierarchical check started asynchronously",
+            "document_id": document_id,
+            "check_type": "hierarchical"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Trigger hierarchical check error: {e}")
+        # Обновляем статус на "error" в случае ошибки
+        try:
+            update_checkable_document_status(document_id, "error")
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Асинхронная функция для выполнения иерархической проверки
+async def perform_async_hierarchical_check(document_id: int, hierarchical_check_service: HierarchicalCheckService):
+    """Асинхронное выполнение иерархической проверки"""
+    try:
+        logger.info(f"🚀 [ASYNC_HIERARCHICAL] Starting async hierarchical check for document {document_id}")
+        
+        # Выполняем иерархическую проверку документа
+        result = await hierarchical_check_service.perform_hierarchical_check(document_id)
+        
+        # Обновляем статус на "completed"
+        update_checkable_document_status(document_id, "completed")
+        
+        logger.info(f"✅ [ASYNC_HIERARCHICAL] Async hierarchical check completed for document {document_id}")
+        
+    except Exception as e:
+        logger.error(f"❌ [ASYNC_HIERARCHICAL] Async hierarchical check failed for document {document_id}: {e}")
+        # Обновляем статус на "error"
+        try:
+            update_checkable_document_status(document_id, "error")
+        except Exception:
+            pass
 
 def get_checkable_document(document_id: int):
     """Получение информации о проверяемом документе"""
