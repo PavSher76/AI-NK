@@ -77,6 +77,26 @@ const Sidebar = ({
     }
   ];
 
+  const renderNavigationItem = (item) => {
+    const Icon = item.icon;
+    const isActive = currentPage === item.id;
+
+    return (
+      <button
+        key={item.id}
+        onClick={item.onClick}
+        className={`w-full flex items-center px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
+          isActive
+            ? 'bg-blue-100 text-blue-700'
+            : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+        }`}
+      >
+        <Icon className="w-5 h-5 mr-3" />
+        {item.label}
+      </button>
+    );
+  };
+
   return (
     <div className="w-64 bg-white shadow-lg h-screen flex flex-col">
       {/* Логотип и название */}
@@ -102,25 +122,9 @@ const Sidebar = ({
       </div>
 
       {/* Навигационные ссылки */}
-      <div className="flex-1 p-4">
+      <div className="flex-1 p-4 overflow-y-auto">
         <nav className="space-y-2">
-          {navigationItems.map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                key={item.id}
-                onClick={item.onClick}
-                className={`w-full flex items-center px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
-                  currentPage === item.id
-                    ? 'bg-blue-100 text-blue-700'
-                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
-                }`}
-              >
-                <Icon className="w-5 h-5 mr-3" />
-                {item.label}
-              </button>
-            );
-          })}
+          {navigationItems.map(renderNavigationItem)}
         </nav>
       </div>
 

@@ -18,8 +18,19 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
 # Настройка логирования
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('/app/rule_engine.log')
+    ]
+)
 logger = logging.getLogger(__name__)
+
+# Создаем отдельный логгер для запросов к моделям
+model_logger = logging.getLogger('model_requests')
+model_logger.setLevel(logging.INFO)
 
 app = FastAPI(title="Rule Engine Service", version="1.0.0")
 
@@ -260,8 +271,12 @@ class RuleEngine:
     
     async def analyze_document(self, document_id: int, auth_token: str) -> Dict[str, Any]:
         """Полный анализ документа"""
+        start_time = datetime.now()
+        logger.info(f"🚀 [FORCE_START] Начало принудительного анализа документа ID: {document_id}")
+        
         try:
             # Получение элементов документа
+            logger.info(f"📋 [FORCE_START] Получение элементов документа ID: {document_id}")
             with self.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute("""
                     SELECT id, element_type, element_content, page_number, confidence_score
@@ -272,14 +287,20 @@ class RuleEngine:
                 elements = cursor.fetchall()
             
             if not elements:
+                logger.error(f"❌ [FORCE_START] Документ ID: {document_id} - элементы не найдены")
                 raise HTTPException(status_code=404, detail="Document elements not found")
+            
+            logger.info(f"✅ [FORCE_START] Получено {len(elements)} элементов для документа ID: {document_id}")
             
             # Применение правил
             all_findings = []
+            logger.info(f"🔍 [FORCE_START] Начало применения правил для документа ID: {document_id}")
             
-            for element in elements:
+            for i, element in enumerate(elements):
                 text = element["element_content"]
                 element_type = element["element_type"]
+                
+                logger.debug(f"📄 [FORCE_START] Обработка элемента {i+1}/{len(elements)}: тип={element_type}, страница={element['page_number']}")
                 
                 # Детерминированные проверки
                 findings = []
@@ -295,34 +316,63 @@ class RuleEngine:
                     finding["element_type"] = element_type
                 
                 all_findings.extend(findings)
+                logger.debug(f"📊 [FORCE_START] Элемент {i+1}: найдено {len(findings)} проблем")
+            
+            logger.info(f"✅ [FORCE_START] Детерминированные проверки завершены: {len(all_findings)} проблем")
             
             # LLM анализ для дополнительных проверок
+            logger.info(f"🤖 [FORCE_START] Начало LLM анализа для документа ID: {document_id}")
             llm_findings = await self.llm_analysis(elements, auth_token)
             all_findings.extend(llm_findings)
+            logger.info(f"✅ [FORCE_START] LLM анализ завершен: добавлено {len(llm_findings)} проблем")
             
             # Сохранение результатов
+            logger.info(f"💾 [FORCE_START] Сохранение результатов анализа для документа ID: {document_id}")
             result_id = self.save_analysis_results(document_id, all_findings, auth_token)
+            
+            # Подсчет статистики
+            critical_count = len([f for f in all_findings if f["severity"] >= 4])
+            warning_count = len([f for f in all_findings if f["severity"] == 3])
+            info_count = len([f for f in all_findings if f["severity"] <= 2])
+            
+            execution_time = (datetime.now() - start_time).total_seconds()
+            
+            logger.info(f"🎉 [FORCE_START] Анализ документа ID: {document_id} завершен успешно")
+            logger.info(f"📈 [FORCE_START] Статистика: всего={len(all_findings)}, критических={critical_count}, предупреждений={warning_count}, информационных={info_count}")
+            logger.info(f"⏱️ [FORCE_START] Время выполнения: {execution_time:.2f} секунд")
             
             return {
                 "analysis_id": result_id,
                 "total_findings": len(all_findings),
-                "critical_findings": len([f for f in all_findings if f["severity"] >= 4]),
-                "warning_findings": len([f for f in all_findings if f["severity"] == 3]),
-                "info_findings": len([f for f in all_findings if f["severity"] <= 2]),
+                "critical_findings": critical_count,
+                "warning_findings": warning_count,
+                "info_findings": info_count,
+                "execution_time": execution_time,
                 "findings": all_findings
             }
             
+        except HTTPException:
+            logger.error(f"❌ [FORCE_START] HTTP ошибка при анализе документа ID: {document_id}")
+            raise
         except Exception as e:
-            logger.error(f"Analysis error: {e}")
+            execution_time = (datetime.now() - start_time).total_seconds()
+            logger.error(f"❌ [FORCE_START] Критическая ошибка при анализе документа ID: {document_id}")
+            logger.error(f"❌ [FORCE_START] Тип ошибки: {type(e).__name__}")
+            logger.error(f"❌ [FORCE_START] Сообщение ошибки: {str(e)}")
+            logger.error(f"❌ [FORCE_START] Время выполнения до ошибки: {execution_time:.2f} секунд")
             raise HTTPException(status_code=500, detail=str(e))
     
     async def llm_analysis(self, elements: List[Dict], auth_token: str) -> List[Dict[str, Any]]:
         """LLM анализ для дополнительных проверок"""
         findings = []
+        start_time = datetime.now()
         
         try:
             # Объединяем текст всех элементов
             full_text = "\n".join([elem["element_content"] for elem in elements])
+            text_length = len(full_text)
+            
+            model_logger.info(f"🤖 [LLM_REQUEST] Начало LLM анализа: {len(elements)} элементов, {text_length} символов")
             
             # Формируем промпт для LLM
             prompt = f"""Проведите детальный анализ следующего документа на соответствие нормативным требованиям:
@@ -347,6 +397,10 @@ class RuleEngine:
 
 Формат ответа: JSON массив объектов с полями: type, severity, category, title, description, recommendation, norm_reference"""
 
+            # Логируем запрос к модели
+            model_logger.info(f"📤 [LLM_REQUEST] Отправка запроса к модели llama3:8b")
+            model_logger.debug(f"📤 [LLM_REQUEST] Промпт (первые 500 символов): {prompt[:500]}...")
+            
             # Отправляем запрос к LLM
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -369,9 +423,14 @@ class RuleEngine:
                     }
                 )
                 
+                response_time = (datetime.now() - start_time).total_seconds()
+                
                 if response.status_code == 200:
                     data = response.json()
                     llm_response = data["choices"][0]["message"]["content"]
+                    
+                    model_logger.info(f"✅ [LLM_RESPONSE] Получен ответ от модели за {response_time:.2f} секунд")
+                    model_logger.debug(f"📥 [LLM_RESPONSE] Ответ (первые 500 символов): {llm_response[:500]}...")
                     
                     # Парсим JSON ответ
                     try:
@@ -382,10 +441,19 @@ class RuleEngine:
                             finding["page_number"] = None
                             finding["element_type"] = "llm"
                         findings.extend(llm_findings)
-                    except json.JSONDecodeError:
+                        
+                        model_logger.info(f"✅ [LLM_RESPONSE] Успешно обработан ответ: {len(llm_findings)} findings")
+                        
+                    except json.JSONDecodeError as e:
+                        model_logger.error(f"❌ [LLM_RESPONSE] Ошибка парсинга JSON: {e}")
+                        model_logger.error(f"❌ [LLM_RESPONSE] Полный ответ: {llm_response}")
                         logger.warning("Failed to parse LLM response as JSON")
+                else:
+                    model_logger.error(f"❌ [LLM_RESPONSE] HTTP ошибка {response.status_code}: {response.text}")
                 
         except Exception as e:
+            response_time = (datetime.now() - start_time).total_seconds()
+            model_logger.error(f"❌ [LLM_ERROR] Ошибка LLM анализа за {response_time:.2f} секунд: {type(e).__name__}: {str(e)}")
             logger.error(f"LLM analysis error: {e}")
         
         return findings
