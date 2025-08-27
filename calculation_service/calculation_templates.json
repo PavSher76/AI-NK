@@ -1,0 +1,462 @@
+{
+  "structural_Обзор расчетов_0": {
+    "id": "structural_Обзор расчетов_0",
+    "name": "Коэффициент запаса, напряжения",
+    "category": "construction",
+    "subcategory": "Обзор расчетов",
+    "description": "Расчет Коэффициент запаса, напряжения",
+    "norms": [
+      "СП 20.13330.2016",
+      "СП 16.13330.2017",
+      "СП 63.13330.2018"
+    ],
+    "icon": "🏗️",
+    "input_fields": [
+      {
+        "name": "material_strength",
+        "label": "Расчетное сопротивление материала, МПа",
+        "type": "number",
+        "required": true,
+        "default": 235,
+        "unit": "МПа"
+      },
+      {
+        "name": "section_area",
+        "label": "Площадь сечения, см²",
+        "type": "number",
+        "required": true,
+        "default": 100,
+        "unit": "см²"
+      },
+      {
+        "name": "load_value",
+        "label": "Расчетная нагрузка, кН",
+        "type": "number",
+        "required": true,
+        "default": 100,
+        "unit": "кН"
+      },
+      {
+        "name": "safety_factor",
+        "label": "Коэффициент надежности",
+        "type": "number",
+        "required": false,
+        "default": 1.1,
+        "unit": ""
+      }
+    ],
+    "output_fields": [
+      {
+        "name": "stress",
+        "label": "Напряжение",
+        "unit": "МПа",
+        "formula": "load_value * 1000 / section_area"
+      },
+      {
+        "name": "utilization_ratio",
+        "label": "Коэффициент использования",
+        "unit": "%",
+        "formula": "(stress / material_strength) * 100"
+      },
+      {
+        "name": "safety_margin",
+        "label": "Запас прочности",
+        "unit": "",
+        "formula": "material_strength / stress"
+      }
+    ],
+    "formulas": {
+      "stress": "load_value * 1000 / section_area",
+      "utilization_ratio": "(stress / material_strength) * 100",
+      "safety_margin": "material_strength / stress"
+    },
+    "validation_rules": [
+      {
+        "field": "material_strength",
+        "rule": "min",
+        "value": 100,
+        "message": "Расчетное сопротивление должно быть не менее 100 МПа"
+      },
+      {
+        "field": "section_area",
+        "rule": "min",
+        "value": 1,
+        "message": "Площадь сечения должна быть положительной"
+      },
+      {
+        "field": "load_value",
+        "rule": "min",
+        "value": 0,
+        "message": "Нагрузка должна быть положительной"
+      }
+    ]
+  },
+  "structural_Обзор расчетов_1": {
+    "id": "structural_Обзор расчетов_1",
+    "name": "Оценка устойчивости, коэффициент",
+    "category": "construction",
+    "subcategory": "Обзор расчетов",
+    "description": "Расчет Оценка устойчивости, коэффициент",
+    "norms": [
+      "СП 20.13330.2016",
+      "СП 16.13330.2017",
+      "СП 63.13330.2018"
+    ],
+    "icon": "🏗️",
+    "input_fields": [
+      {
+        "name": "material_strength",
+        "label": "Расчетное сопротивление материала, МПа",
+        "type": "number",
+        "required": true,
+        "default": 235,
+        "unit": "МПа"
+      },
+      {
+        "name": "section_area",
+        "label": "Площадь сечения, см²",
+        "type": "number",
+        "required": true,
+        "default": 100,
+        "unit": "см²"
+      },
+      {
+        "name": "load_value",
+        "label": "Расчетная нагрузка, кН",
+        "type": "number",
+        "required": true,
+        "default": 100,
+        "unit": "кН"
+      },
+      {
+        "name": "safety_factor",
+        "label": "Коэффициент надежности",
+        "type": "number",
+        "required": false,
+        "default": 1.1,
+        "unit": ""
+      }
+    ],
+    "output_fields": [
+      {
+        "name": "stress",
+        "label": "Напряжение",
+        "unit": "МПа",
+        "formula": "load_value * 1000 / section_area"
+      },
+      {
+        "name": "utilization_ratio",
+        "label": "Коэффициент использования",
+        "unit": "%",
+        "formula": "(stress / material_strength) * 100"
+      },
+      {
+        "name": "safety_margin",
+        "label": "Запас прочности",
+        "unit": "",
+        "formula": "material_strength / stress"
+      }
+    ],
+    "formulas": {
+      "stress": "load_value * 1000 / section_area",
+      "utilization_ratio": "(stress / material_strength) * 100",
+      "safety_margin": "material_strength / stress"
+    },
+    "validation_rules": [
+      {
+        "field": "material_strength",
+        "rule": "min",
+        "value": 100,
+        "message": "Расчетное сопротивление должно быть не менее 100 МПа"
+      },
+      {
+        "field": "section_area",
+        "rule": "min",
+        "value": 1,
+        "message": "Площадь сечения должна быть положительной"
+      },
+      {
+        "field": "load_value",
+        "rule": "min",
+        "value": 0,
+        "message": "Нагрузка должна быть положительной"
+      }
+    ]
+  },
+  "structural_Обзор расчетов_2": {
+    "id": "structural_Обзор расчетов_2",
+    "name": "Максимальный прогиб",
+    "category": "construction",
+    "subcategory": "Обзор расчетов",
+    "description": "Расчет Максимальный прогиб",
+    "norms": [
+      "СП 20.13330.2016",
+      "СП 16.13330.2017",
+      "СП 63.13330.2018"
+    ],
+    "icon": "🏗️",
+    "input_fields": [
+      {
+        "name": "material_strength",
+        "label": "Расчетное сопротивление материала, МПа",
+        "type": "number",
+        "required": true,
+        "default": 235,
+        "unit": "МПа"
+      },
+      {
+        "name": "section_area",
+        "label": "Площадь сечения, см²",
+        "type": "number",
+        "required": true,
+        "default": 100,
+        "unit": "см²"
+      },
+      {
+        "name": "load_value",
+        "label": "Расчетная нагрузка, кН",
+        "type": "number",
+        "required": true,
+        "default": 100,
+        "unit": "кН"
+      },
+      {
+        "name": "safety_factor",
+        "label": "Коэффициент надежности",
+        "type": "number",
+        "required": false,
+        "default": 1.1,
+        "unit": ""
+      }
+    ],
+    "output_fields": [
+      {
+        "name": "stress",
+        "label": "Напряжение",
+        "unit": "МПа",
+        "formula": "load_value * 1000 / section_area"
+      },
+      {
+        "name": "utilization_ratio",
+        "label": "Коэффициент использования",
+        "unit": "%",
+        "formula": "(stress / material_strength) * 100"
+      },
+      {
+        "name": "safety_margin",
+        "label": "Запас прочности",
+        "unit": "",
+        "formula": "material_strength / stress"
+      }
+    ],
+    "formulas": {
+      "stress": "load_value * 1000 / section_area",
+      "utilization_ratio": "(stress / material_strength) * 100",
+      "safety_margin": "material_strength / stress"
+    },
+    "validation_rules": [
+      {
+        "field": "material_strength",
+        "rule": "min",
+        "value": 100,
+        "message": "Расчетное сопротивление должно быть не менее 100 МПа"
+      },
+      {
+        "field": "section_area",
+        "rule": "min",
+        "value": 1,
+        "message": "Площадь сечения должна быть положительной"
+      },
+      {
+        "field": "load_value",
+        "rule": "min",
+        "value": 0,
+        "message": "Нагрузка должна быть положительной"
+      }
+    ]
+  },
+  "structural_Обзор расчетов_3": {
+    "id": "structural_Обзор расчетов_3",
+    "name": "Открытие трещин, w",
+    "category": "construction",
+    "subcategory": "Обзор расчетов",
+    "description": "Расчет Открытие трещин, w",
+    "norms": [
+      "СП 20.13330.2016",
+      "СП 16.13330.2017",
+      "СП 63.13330.2018"
+    ],
+    "icon": "🏗️",
+    "input_fields": [
+      {
+        "name": "material_strength",
+        "label": "Расчетное сопротивление материала, МПа",
+        "type": "number",
+        "required": true,
+        "default": 235,
+        "unit": "МПа"
+      },
+      {
+        "name": "section_area",
+        "label": "Площадь сечения, см²",
+        "type": "number",
+        "required": true,
+        "default": 100,
+        "unit": "см²"
+      },
+      {
+        "name": "load_value",
+        "label": "Расчетная нагрузка, кН",
+        "type": "number",
+        "required": true,
+        "default": 100,
+        "unit": "кН"
+      },
+      {
+        "name": "safety_factor",
+        "label": "Коэффициент надежности",
+        "type": "number",
+        "required": false,
+        "default": 1.1,
+        "unit": ""
+      }
+    ],
+    "output_fields": [
+      {
+        "name": "stress",
+        "label": "Напряжение",
+        "unit": "МПа",
+        "formula": "load_value * 1000 / section_area"
+      },
+      {
+        "name": "utilization_ratio",
+        "label": "Коэффициент использования",
+        "unit": "%",
+        "formula": "(stress / material_strength) * 100"
+      },
+      {
+        "name": "safety_margin",
+        "label": "Запас прочности",
+        "unit": "",
+        "formula": "material_strength / stress"
+      }
+    ],
+    "formulas": {
+      "stress": "load_value * 1000 / section_area",
+      "utilization_ratio": "(stress / material_strength) * 100",
+      "safety_margin": "material_strength / stress"
+    },
+    "validation_rules": [
+      {
+        "field": "material_strength",
+        "rule": "min",
+        "value": 100,
+        "message": "Расчетное сопротивление должно быть не менее 100 МПа"
+      },
+      {
+        "field": "section_area",
+        "rule": "min",
+        "value": 1,
+        "message": "Площадь сечения должна быть положительной"
+      },
+      {
+        "field": "load_value",
+        "rule": "min",
+        "value": 0,
+        "message": "Нагрузка должна быть положительной"
+      }
+    ]
+  },
+  "structural_Обзор расчетов_4": {
+    "id": "structural_Обзор расчетов_4",
+    "name": "Ускорения, формы колебаний",
+    "category": "construction",
+    "subcategory": "Обзор расчетов",
+    "description": "Расчет Ускорения, формы колебаний",
+    "norms": [
+      "СП 20.13330.2016",
+      "СП 16.13330.2017",
+      "СП 63.13330.2018"
+    ],
+    "icon": "🏗️",
+    "input_fields": [
+      {
+        "name": "material_strength",
+        "label": "Расчетное сопротивление материала, МПа",
+        "type": "number",
+        "required": true,
+        "default": 235,
+        "unit": "МПа"
+      },
+      {
+        "name": "section_area",
+        "label": "Площадь сечения, см²",
+        "type": "number",
+        "required": true,
+        "default": 100,
+        "unit": "см²"
+      },
+      {
+        "name": "load_value",
+        "label": "Расчетная нагрузка, кН",
+        "type": "number",
+        "required": true,
+        "default": 100,
+        "unit": "кН"
+      },
+      {
+        "name": "safety_factor",
+        "label": "Коэффициент надежности",
+        "type": "number",
+        "required": false,
+        "default": 1.1,
+        "unit": ""
+      }
+    ],
+    "output_fields": [
+      {
+        "name": "stress",
+        "label": "Напряжение",
+        "unit": "МПа",
+        "formula": "load_value * 1000 / section_area"
+      },
+      {
+        "name": "utilization_ratio",
+        "label": "Коэффициент использования",
+        "unit": "%",
+        "formula": "(stress / material_strength) * 100"
+      },
+      {
+        "name": "safety_margin",
+        "label": "Запас прочности",
+        "unit": "",
+        "formula": "material_strength / stress"
+      }
+    ],
+    "formulas": {
+      "stress": "load_value * 1000 / section_area",
+      "utilization_ratio": "(stress / material_strength) * 100",
+      "safety_margin": "material_strength / stress"
+    },
+    "validation_rules": [
+      {
+        "field": "material_strength",
+        "rule": "min",
+        "value": 100,
+        "message": "Расчетное сопротивление должно быть не менее 100 МПа"
+      },
+      {
+        "field": "section_area",
+        "rule": "min",
+        "value": 1,
+        "message": "Площадь сечения должна быть положительной"
+      },
+      {
+        "field": "load_value",
+        "rule": "min",
+        "value": 0,
+        "message": "Нагрузка должна быть положительной"
+      }
+    ]
+  }
+}

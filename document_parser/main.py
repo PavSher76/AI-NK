@@ -4230,6 +4230,39 @@ async def delete_setting(setting_key: str):
         logger.error(f"Delete setting error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/checkable-documents/{document_id}/content")
+async def get_checkable_document_content(document_id: int):
+    """Получение содержимого документа для проверки"""
+    try:
+        with parser.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            # Получаем содержимое документа
+            cursor.execute("""
+                SELECT element_content, page_number, element_type
+                FROM checkable_elements
+                WHERE checkable_document_id = %s
+                ORDER BY page_number, id
+            """, (document_id,))
+            elements = cursor.fetchall()
+        
+        if not elements:
+            raise HTTPException(status_code=404, detail="Document content not found")
+        
+        # Объединяем содержимое
+        document_content = "\n\n".join([elem["element_content"] for elem in elements])
+        
+        return {
+            "document_id": document_id,
+            "content": document_content,
+            "elements_count": len(elements),
+            "pages_count": len(set(elem["page_number"] for elem in elements))
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get document content error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/checkable-documents/{document_id}/report")
 async def get_checkable_document_report(document_id: int):
     """Получение отчета о проверке документа"""

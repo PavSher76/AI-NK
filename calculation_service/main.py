@@ -413,6 +413,320 @@ class CalculationEngine:
         except Exception as e:
             logger.error(f"🔍 [DATABASE] Error updating calculation result: {e}")
 
+    def perform_structural_calculation(self, calculation_type: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Выполнение расчета строительных конструкций"""
+        try:
+            logger.info(f"🔍 [CALCULATION] Starting structural calculation: {calculation_type}")
+            
+            if calculation_type == 'strength':
+                return self._calculate_strength(parameters)
+            elif calculation_type == 'stability':
+                return self._calculate_stability(parameters)
+            elif calculation_type == 'stiffness':
+                return self._calculate_stiffness(parameters)
+            elif calculation_type == 'cracking':
+                return self._calculate_cracking(parameters)
+            elif calculation_type == 'dynamic':
+                return self._calculate_dynamic(parameters)
+            else:
+                raise ValueError(f"Unknown calculation type: {calculation_type}")
+                
+        except Exception as e:
+            logger.error(f"🔍 [CALCULATION] Error in structural calculation: {e}")
+            raise
+
+    def _calculate_strength(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Расчет на прочность"""
+        try:
+            load_value = float(parameters.get('load_value', 0))
+            section_area = float(parameters.get('section_area', 0))
+            material_strength = float(parameters.get('material_strength', 0))
+            safety_factor = float(parameters.get('safety_factor', 1.1))
+            
+            # Проверка входных данных
+            if load_value <= 0 or section_area <= 0 or material_strength <= 0:
+                raise ValueError("Все параметры должны быть положительными")
+            
+            # Расчет напряжения (МПа)
+            stress = (load_value * 1000) / section_area  # кН -> Н, см² -> мм²
+            
+            # Расчет коэффициента использования
+            utilization_ratio = (stress / material_strength) * 100
+            
+            # Расчет запаса прочности
+            safety_margin = material_strength / stress
+            
+            # Проверка прочности
+            is_safe = stress <= material_strength / safety_factor
+            
+            return {
+                "calculation_type": "strength",
+                "input_parameters": {
+                    "load_value": load_value,
+                    "section_area": section_area,
+                    "material_strength": material_strength,
+                    "safety_factor": safety_factor
+                },
+                "results": {
+                    "stress": round(stress, 2),
+                    "utilization_ratio": round(utilization_ratio, 2),
+                    "safety_margin": round(safety_margin, 2),
+                    "is_safe": is_safe
+                },
+                "units": {
+                    "stress": "МПа",
+                    "utilization_ratio": "%",
+                    "safety_margin": ""
+                },
+                "formulas": {
+                    "stress": "σ = N / A",
+                    "utilization_ratio": "η = (σ / R) × 100%",
+                    "safety_margin": "γ = R / σ"
+                },
+                "norms": ["СП 63.13330", "СП 16.13330", "EN 1992", "EN 1993"]
+            }
+            
+        except Exception as e:
+            logger.error(f"🔍 [CALCULATION] Error in strength calculation: {e}")
+            raise
+
+    def _calculate_stability(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Расчет на устойчивость"""
+        try:
+            element_length = float(parameters.get('element_length', 0))
+            moment_of_inertia = float(parameters.get('moment_of_inertia', 0))
+            elastic_modulus = float(parameters.get('elastic_modulus', 0))
+            end_conditions = parameters.get('end_conditions', 'pinned')
+            
+            # Коэффициенты длины в зависимости от типа закрепления
+            length_coefficients = {
+                'pinned': 1.0,      # Шарнирное
+                'fixed': 0.5,       # Жесткое
+                'cantilever': 2.0   # Консольное
+            }
+            
+            mu = length_coefficients.get(end_conditions, 1.0)
+            
+            # Расчет гибкости
+            radius_of_gyration = (moment_of_inertia / 100) ** 0.5  # см⁴ -> см²
+            slenderness = (mu * element_length * 100) / radius_of_gyration  # м -> см
+            
+            # Критическая гибкость для стали (приближенно)
+            critical_slenderness = 100
+            
+            # Проверка устойчивости
+            is_stable = slenderness <= critical_slenderness
+            
+            # Расчет критической силы (кН)
+            critical_force = (3.14159 ** 2 * elastic_modulus * moment_of_inertia) / ((mu * element_length * 100) ** 2) / 1000
+            
+            return {
+                "calculation_type": "stability",
+                "input_parameters": {
+                    "element_length": element_length,
+                    "moment_of_inertia": moment_of_inertia,
+                    "elastic_modulus": elastic_modulus,
+                    "end_conditions": end_conditions
+                },
+                "results": {
+                    "slenderness": round(slenderness, 2),
+                    "critical_slenderness": critical_slenderness,
+                    "critical_force": round(critical_force, 2),
+                    "is_stable": is_stable,
+                    "length_coefficient": mu
+                },
+                "units": {
+                    "slenderness": "",
+                    "critical_slenderness": "",
+                    "critical_force": "кН",
+                    "length_coefficient": ""
+                },
+                "formulas": {
+                    "slenderness": "λ = μ × l / i",
+                    "critical_force": "N_cr = π² × E × I / (μ × l)²"
+                },
+                "norms": ["СП 16.13330", "СП 63.13330", "EN 1993"]
+            }
+            
+        except Exception as e:
+            logger.error(f"🔍 [CALCULATION] Error in stability calculation: {e}")
+            raise
+
+    def _calculate_stiffness(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Расчет на жесткость (прогибы)"""
+        try:
+            span_length = float(parameters.get('span_length', 0))
+            distributed_load = float(parameters.get('distributed_load', 0))
+            moment_of_inertia = float(parameters.get('moment_of_inertia', 0))
+            elastic_modulus = float(parameters.get('elastic_modulus', 0))
+            
+            # Расчет максимального прогиба (см)
+            # Для равномерно распределенной нагрузки на шарнирно опертой балке
+            max_deflection = (5 * distributed_load * (span_length * 100) ** 4) / (384 * elastic_modulus * moment_of_inertia)
+            
+            # Допустимый прогиб (1/200 от пролета)
+            allowable_deflection = (span_length * 100) / 200
+            
+            # Проверка жесткости
+            is_adequate = max_deflection <= allowable_deflection
+            
+            # Относительный прогиб
+            relative_deflection = max_deflection / (span_length * 100) * 1000  # в промилле
+            
+            return {
+                "calculation_type": "stiffness",
+                "input_parameters": {
+                    "span_length": span_length,
+                    "distributed_load": distributed_load,
+                    "moment_of_inertia": moment_of_inertia,
+                    "elastic_modulus": elastic_modulus
+                },
+                "results": {
+                    "max_deflection": round(max_deflection, 3),
+                    "allowable_deflection": round(allowable_deflection, 3),
+                    "relative_deflection": round(relative_deflection, 2),
+                    "is_adequate": is_adequate
+                },
+                "units": {
+                    "max_deflection": "см",
+                    "allowable_deflection": "см",
+                    "relative_deflection": "‰"
+                },
+                "formulas": {
+                    "max_deflection": "f_max = 5 × q × l⁴ / (384 × E × I)",
+                    "allowable_deflection": "f_allow = l / 200"
+                },
+                "norms": ["СП 63.13330", "СП 64.13330", "EN 1995"]
+            }
+            
+        except Exception as e:
+            logger.error(f"🔍 [CALCULATION] Error in stiffness calculation: {e}")
+            raise
+
+    def _calculate_cracking(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Расчет на трещиностойкость"""
+        try:
+            reinforcement_area = float(parameters.get('reinforcement_area', 0))
+            concrete_class = parameters.get('concrete_class', 'B25')
+            bending_moment = float(parameters.get('bending_moment', 0))
+            crack_width_limit = float(parameters.get('crack_width_limit', 0.3))
+            
+            # Характеристики бетона по классам (МПа)
+            concrete_strengths = {
+                'B15': 11.0,
+                'B20': 15.0,
+                'B25': 18.5,
+                'B30': 22.0,
+                'B35': 25.5
+            }
+            
+            concrete_strength = concrete_strengths.get(concrete_class, 18.5)
+            
+            # Расчет ширины раскрытия трещин (мм)
+            # Упрощенная формула
+            crack_width = (bending_moment * 1000) / (reinforcement_area * concrete_strength) * 0.1
+            
+            # Проверка трещиностойкости
+            is_adequate = crack_width <= crack_width_limit
+            
+            return {
+                "calculation_type": "cracking",
+                "input_parameters": {
+                    "reinforcement_area": reinforcement_area,
+                    "concrete_class": concrete_class,
+                    "bending_moment": bending_moment,
+                    "crack_width_limit": crack_width_limit
+                },
+                "results": {
+                    "crack_width": round(crack_width, 3),
+                    "crack_width_limit": crack_width_limit,
+                    "is_adequate": is_adequate,
+                    "concrete_strength": concrete_strength
+                },
+                "units": {
+                    "crack_width": "мм",
+                    "crack_width_limit": "мм",
+                    "concrete_strength": "МПа"
+                },
+                "formulas": {
+                    "crack_width": "w = M / (A_s × R_bt) × k",
+                    "concrete_strength": "R_bt - расчетное сопротивление бетона растяжению"
+                },
+                "norms": ["СП 63.13330", "EN 1992"]
+            }
+            
+        except Exception as e:
+            logger.error(f"🔍 [CALCULATION] Error in cracking calculation: {e}")
+            raise
+
+    def _calculate_dynamic(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Динамический расчет на сейсмические воздействия"""
+        try:
+            seismic_zone = int(parameters.get('seismic_zone', 6))
+            soil_category = parameters.get('soil_category', 'B')
+            structure_weight = float(parameters.get('structure_weight', 0))
+            natural_period = float(parameters.get('natural_period', 0))
+            
+            # Коэффициенты сейсмичности по зонам
+            seismic_coefficients = {
+                6: 0.05,
+                7: 0.1,
+                8: 0.2,
+                9: 0.4
+            }
+            
+            # Коэффициенты грунта
+            soil_coefficients = {
+                'A': 1.0,
+                'B': 1.2,
+                'C': 1.5,
+                'D': 2.0
+            }
+            
+            k1 = seismic_coefficients.get(seismic_zone, 0.1)
+            k2 = soil_coefficients.get(soil_category, 1.2)
+            
+            # Расчет сейсмической силы (кН)
+            seismic_force = structure_weight * k1 * k2
+            
+            # Расчет ускорения (м/с²)
+            acceleration = seismic_force * 9.81 / structure_weight
+            
+            # Проверка безопасности (упрощенно)
+            is_safe = acceleration <= 2.0  # 2 м/с² как предельное ускорение
+            
+            return {
+                "calculation_type": "dynamic",
+                "input_parameters": {
+                    "seismic_zone": seismic_zone,
+                    "soil_category": soil_category,
+                    "structure_weight": structure_weight,
+                    "natural_period": natural_period
+                },
+                "results": {
+                    "seismic_force": round(seismic_force, 2),
+                    "acceleration": round(acceleration, 3),
+                    "is_safe": is_safe,
+                    "seismic_coefficient": k1,
+                    "soil_coefficient": k2
+                },
+                "units": {
+                    "seismic_force": "кН",
+                    "acceleration": "м/с²",
+                    "seismic_coefficient": "",
+                    "soil_coefficient": ""
+                },
+                "formulas": {
+                    "seismic_force": "S = W × k1 × k2",
+                    "acceleration": "a = S × g / W"
+                },
+                "norms": ["СП 14.13330", "EN 1998"]
+            }
+            
+        except Exception as e:
+            logger.error(f"🔍 [CALCULATION] Error in dynamic calculation: {e}")
+            raise
+
 # Инициализация движка расчетов
 calculation_engine = CalculationEngine()
 
@@ -739,6 +1053,39 @@ async def delete_calculation(
         logger.error(f"🔍 [API] Error deleting calculation {calculation_id}: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+@app.post("/calculations/structural/execute")
+async def execute_structural_calculation(
+    calculation_type: str,
+    parameters: Dict[str, Any],
+    current_user: str = Depends(get_current_user)
+):
+    """Выполнение расчета строительных конструкций"""
+    if is_shutting_down:
+        raise HTTPException(status_code=503, detail="Service is shutting down")
+
+    logger.info(f"🔍 [API] Executing structural calculation: {calculation_type}: Parameters: {parameters}")
+    
+    try:
+        # Выполняем расчет
+        calculation_start_time = datetime.now()
+        result = calculation_engine.perform_structural_calculation(calculation_type, parameters)
+        calculation_end_time = datetime.now()
+        processing_time = (calculation_end_time - calculation_start_time).total_seconds()
+        
+        # Добавляем время обработки к результату
+        result["processing_time"] = processing_time
+        result["executed_at"] = calculation_end_time.isoformat()
+        
+        logger.info(f"🔍 [API] Structural calculation completed in {processing_time:.3f}s")
+        return result
+        
+    except ValueError as e:
+        logger.error(f"🔍 [API] Validation error in structural calculation: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"🔍 [API] Error executing structural calculation: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 @app.post("/calculations/{calculation_id}/execute")
 async def execute_calculation(
     calculation_id: int,
@@ -761,6 +1108,85 @@ async def execute_calculation(
         raise
     except Exception as e:
         logger.error(f"🔍 [API] Error executing calculation {calculation_id}: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/calculations/structural/types")
+async def get_structural_calculation_types():
+    """Получение доступных типов расчетов строительных конструкций"""
+    if is_shutting_down:
+        raise HTTPException(status_code=503, detail="Service is shutting down")
+
+    logger.info(f"🔍 [API] Requesting structural calculation types")
+    
+    try:
+        types = [
+            {
+                "id": "strength",
+                "name": "Расчёт на прочность",
+                "description": "Проверка прочности элементов конструкций",
+                "norms": ["СП 63.13330", "СП 16.13330", "EN 1992", "EN 1993"],
+                "parameters": [
+                    {"name": "load_value", "label": "Расчетная нагрузка", "unit": "кН", "type": "number", "required": True},
+                    {"name": "section_area", "label": "Площадь сечения", "unit": "см²", "type": "number", "required": True},
+                    {"name": "material_strength", "label": "Расчетное сопротивление материала", "unit": "МПа", "type": "number", "required": True},
+                    {"name": "safety_factor", "label": "Коэффициент надежности", "unit": "", "type": "number", "required": False}
+                ]
+            },
+            {
+                "id": "stability",
+                "name": "Расчёт на устойчивость",
+                "description": "Проверка устойчивости сжатых элементов",
+                "norms": ["СП 16.13330", "СП 63.13330", "EN 1993"],
+                "parameters": [
+                    {"name": "element_length", "label": "Длина элемента", "unit": "м", "type": "number", "required": True},
+                    {"name": "moment_of_inertia", "label": "Момент инерции", "unit": "см⁴", "type": "number", "required": True},
+                    {"name": "elastic_modulus", "label": "Модуль упругости", "unit": "МПа", "type": "number", "required": True},
+                    {"name": "end_conditions", "label": "Тип закрепления", "unit": "", "type": "select", "required": True, "options": ["pinned", "fixed", "cantilever"]}
+                ]
+            },
+            {
+                "id": "stiffness",
+                "name": "Расчёт на жёсткость",
+                "description": "Проверка прогибов и деформаций",
+                "norms": ["СП 63.13330", "СП 64.13330", "EN 1995"],
+                "parameters": [
+                    {"name": "span_length", "label": "Пролет", "unit": "м", "type": "number", "required": True},
+                    {"name": "distributed_load", "label": "Распределенная нагрузка", "unit": "кН/м", "type": "number", "required": True},
+                    {"name": "moment_of_inertia", "label": "Момент инерции", "unit": "см⁴", "type": "number", "required": True},
+                    {"name": "elastic_modulus", "label": "Модуль упругости", "unit": "МПа", "type": "number", "required": True}
+                ]
+            },
+            {
+                "id": "cracking",
+                "name": "Расчёт на трещиностойкость",
+                "description": "Проверка ширины раскрытия трещин",
+                "norms": ["СП 63.13330", "EN 1992"],
+                "parameters": [
+                    {"name": "reinforcement_area", "label": "Площадь арматуры", "unit": "мм²", "type": "number", "required": True},
+                    {"name": "concrete_class", "label": "Класс бетона", "unit": "", "type": "select", "required": True, "options": ["B15", "B20", "B25", "B30", "B35"]},
+                    {"name": "bending_moment", "label": "Изгибающий момент", "unit": "кН·м", "type": "number", "required": True},
+                    {"name": "crack_width_limit", "label": "Предельная ширина трещин", "unit": "мм", "type": "number", "required": True}
+                ]
+            },
+            {
+                "id": "dynamic",
+                "name": "Динамический расчёт",
+                "description": "Расчет на сейсмические воздействия",
+                "norms": ["СП 14.13330", "EN 1998"],
+                "parameters": [
+                    {"name": "seismic_zone", "label": "Сейсмический район", "unit": "", "type": "select", "required": True, "options": ["6", "7", "8", "9"]},
+                    {"name": "soil_category", "label": "Категория грунта", "unit": "", "type": "select", "required": True, "options": ["A", "B", "C", "D"]},
+                    {"name": "structure_weight", "label": "Масса конструкции", "unit": "т", "type": "number", "required": True},
+                    {"name": "natural_period", "label": "Собственный период колебаний", "unit": "с", "type": "number", "required": True}
+                ]
+            }
+        ]
+        
+        logger.info(f"🔍 [API] Successfully returned {len(types)} structural calculation types")
+        return types
+        
+    except Exception as e:
+        logger.error(f"🔍 [API] Error getting structural calculation types: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 if __name__ == "__main__":

@@ -24,14 +24,16 @@ import {
   Info,
   X
 } from 'lucide-react';
+import StructuralCalculationModal from '../components/StructuralCalculationModal';
 
-const CalculationsPage = ({ isAuthenticated, authToken }) => {
+const CalculationsPage = ({ isAuthenticated, authToken, calculationType = 'all' }) => {
   const [calculations, setCalculations] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
   const [selectedCalculation, setSelectedCalculation] = useState(null);
   const [showNewCalculationModal, setShowNewCalculationModal] = useState(false);
+  const [showStructuralModal, setShowStructuralModal] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterCategory, setFilterCategory] = useState('all');
   const [sortBy, setSortBy] = useState('date');
@@ -48,7 +50,44 @@ const CalculationsPage = ({ isAuthenticated, authToken }) => {
       category: 'construction',
       description: 'Расчеты прочности, устойчивости и деформаций строительных конструкций',
       norms: ['СП 20.13330.2016', 'СП 16.13330.2017', 'СП 63.13330.2018'],
-      icon: '🏗️'
+      icon: '🏗️',
+      subcategories: [
+        {
+          id: 'strength',
+          name: 'Расчёт на прочность',
+          description: 'Проверка прочности элементов конструкций',
+          norms: ['СП 63.13330', 'СП 16.13330', 'EN 1992', 'EN 1993'],
+          parameters: ['Нагрузки, кН', 'Площадь сечения, см²', 'Прочность материала, МПа']
+        },
+        {
+          id: 'stability',
+          name: 'Расчёт на устойчивость',
+          description: 'Проверка устойчивости сжатых элементов',
+          norms: ['СП 16.13330', 'СП 63.13330', 'EN 1993'],
+          parameters: ['Длина элемента, м', 'Момент инерции', 'Модуль упругости']
+        },
+        {
+          id: 'stiffness',
+          name: 'Расчёт на жёсткость',
+          description: 'Проверка прогибов и деформаций',
+          norms: ['СП 63.13330', 'СП 64.13330', 'EN 1995'],
+          parameters: ['Пролет, м', 'Нагрузка, кН/м', 'Момент инерции']
+        },
+        {
+          id: 'cracking',
+          name: 'Расчёт на трещиностойкость',
+          description: 'Проверка ширины раскрытия трещин',
+          norms: ['СП 63.13330', 'EN 1992'],
+          parameters: ['Арматура, мм²', 'Класс бетона', 'Момент, кН·м']
+        },
+        {
+          id: 'dynamic',
+          name: 'Динамический расчёт',
+          description: 'Расчет на сейсмические воздействия',
+          norms: ['СП 14.13330', 'EN 1998'],
+          parameters: ['Сейсмический район', 'Категория грунта', 'Масса конструкции']
+        }
+      ]
     },
     {
       id: 'foundation',
@@ -213,6 +252,70 @@ const CalculationsPage = ({ isAuthenticated, authToken }) => {
     }
   };
 
+  // Создание структурного расчета
+  const createStructuralCalculation = async (calculationData) => {
+    if (!isAuthenticated || !authToken) {
+      setError('Ошибка авторизации');
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      console.log('🔍 [DEBUG] CalculationsPage.js: Creating structural calculation:', calculationData);
+      
+      // Сначала выполняем расчет
+      const executeResponse = await fetch(`${API_BASE}/calculations/structural/execute`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          calculation_type: calculationData.subcategory,
+          parameters: calculationData.parameters
+        })
+      });
+
+      if (!executeResponse.ok) {
+        const errorData = await executeResponse.json();
+        throw new Error(errorData.detail || 'Ошибка выполнения расчета');
+      }
+
+      const calculationResult = await executeResponse.json();
+      
+      // Создаем запись в базе данных
+      const createResponse = await fetch(`${API_BASE}/calculations`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          ...calculationData,
+          result: calculationResult
+        })
+      });
+
+      if (createResponse.ok) {
+        const newCalculation = await createResponse.json();
+        setCalculations(prev => [newCalculation, ...prev]);
+        setSuccess('Структурный расчет успешно создан и выполнен');
+        setShowStructuralModal(false);
+        console.log('🔍 [DEBUG] CalculationsPage.js: Structural calculation created successfully');
+      } else {
+        const errorData = await createResponse.json();
+        setError(errorData.message || 'Ошибка создания расчета');
+      }
+    } catch (error) {
+      console.error('🔍 [DEBUG] CalculationsPage.js: Structural calculation error:', error);
+      setError(error.message || 'Ошибка создания структурного расчета');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Удаление расчета
   const deleteCalculation = async (calculationId) => {
     if (!isAuthenticated || !authToken) {
@@ -265,7 +368,8 @@ const CalculationsPage = ({ isAuthenticated, authToken }) => {
       const matchesSearch = calc.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
                            calc.description.toLowerCase().includes(searchTerm.toLowerCase());
       const matchesCategory = filterCategory === 'all' || calc.category === filterCategory;
-      return matchesSearch && matchesCategory;
+      const matchesType = calculationType === 'all' || calc.type === calculationType;
+      return matchesSearch && matchesCategory && matchesType;
     })
     .sort((a, b) => {
       let comparison = 0;
@@ -421,10 +525,22 @@ const CalculationsPage = ({ isAuthenticated, authToken }) => {
         <div>
           <h1 className="text-2xl font-bold text-gray-900 flex items-center">
             <Calculator className="w-8 h-8 mr-3 text-blue-600" />
-            Инженерные расчеты
+            {calculationType === 'all' ? 'Инженерные расчеты' : 
+             calculationType === 'structural' ? 'Строительные конструкции' :
+             calculationType === 'electrical' ? 'Электротехнические расчеты' :
+             calculationType === 'mechanical' ? 'Механические расчеты' :
+             calculationType === 'thermal' ? 'Тепловые расчеты' :
+             calculationType === 'safety' ? 'Расчеты безопасности' :
+             'Инженерные расчеты'}
           </h1>
           <p className="text-gray-600 mt-1">
-            Расчеты в соответствии с нормами и методиками
+            {calculationType === 'all' ? 'Расчеты в соответствии с нормами и методиками' :
+             calculationType === 'structural' ? 'Расчеты прочности, устойчивости и деформаций строительных конструкций' :
+             calculationType === 'electrical' ? 'Расчеты электрических цепей и систем' :
+             calculationType === 'mechanical' ? 'Расчеты механических систем и деталей' :
+             calculationType === 'thermal' ? 'Расчеты теплообмена и теплопередачи' :
+             calculationType === 'safety' ? 'Расчеты надежности и безопасности' :
+             'Расчеты в соответствии с нормами и методиками'}
           </p>
         </div>
       </div>
@@ -468,7 +584,9 @@ const CalculationsPage = ({ isAuthenticated, authToken }) => {
 
       {/* Виды расчетов */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {calculationTypes.map((type) => (
+        {calculationTypes
+          .filter(type => calculationType === 'all' || type.id === calculationType)
+          .map((type) => (
           <div
             key={type.id}
             className="bg-white rounded-lg shadow p-6 hover:shadow-lg transition-shadow cursor-pointer border border-gray-200"
@@ -499,7 +617,16 @@ const CalculationsPage = ({ isAuthenticated, authToken }) => {
               )}
             </div>
             
-            <button className="w-full mt-4 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors flex items-center justify-center">
+            <button 
+              className="w-full mt-4 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors flex items-center justify-center"
+              onClick={() => {
+                if (type.id === 'structural') {
+                  setShowStructuralModal(true);
+                } else {
+                  handleNewCalculation(type.id);
+                }
+              }}
+            >
               <Plus className="w-4 h-4 mr-2" />
               Создать расчет
             </button>
@@ -512,7 +639,13 @@ const CalculationsPage = ({ isAuthenticated, authToken }) => {
         <div className="bg-white rounded-lg shadow">
           <div className="p-6 border-b border-gray-200">
             <h2 className="text-lg font-semibold text-gray-900">
-              Мои расчеты ({filteredCalculations.length})
+              {calculationType === 'all' ? 'Мои расчеты' :
+               calculationType === 'structural' ? 'Мои расчеты строительных конструкций' :
+               calculationType === 'electrical' ? 'Мои электротехнические расчеты' :
+               calculationType === 'mechanical' ? 'Мои механические расчеты' :
+               calculationType === 'thermal' ? 'Мои тепловые расчеты' :
+               calculationType === 'safety' ? 'Мои расчеты безопасности' :
+               'Мои расчеты'} ({filteredCalculations.length})
             </h2>
           </div>
           
@@ -620,6 +753,14 @@ const CalculationsPage = ({ isAuthenticated, authToken }) => {
 
       {/* Модальное окно создания расчета */}
       {showNewCalculationModal && selectedCalculation && <NewCalculationModal />}
+      {showStructuralModal && (
+        <StructuralCalculationModal
+          isOpen={showStructuralModal}
+          onClose={() => setShowStructuralModal(false)}
+          onCreateCalculation={createStructuralCalculation}
+          loading={loading}
+        />
+      )}
     </div>
   );
 };

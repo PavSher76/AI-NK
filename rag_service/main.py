@@ -26,7 +26,7 @@ import re
 
 # Настройка логирования с подробной отладкой
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
@@ -35,10 +35,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Создаем отдельный логгер для запросов к моделям
+model_logger = logging.getLogger('rag_model_requests')
+model_logger.setLevel(logging.INFO)
+
 # Добавляем логирование для всех модулей
-logging.getLogger('qdrant_client').setLevel(logging.DEBUG)
-logging.getLogger('sentence_transformers').setLevel(logging.DEBUG)
-logging.getLogger('psycopg2').setLevel(logging.DEBUG)
+logging.getLogger('qdrant_client').setLevel(logging.INFO)
+logging.getLogger('sentence_transformers').setLevel(logging.INFO)
+logging.getLogger('psycopg2').setLevel(logging.INFO)
 
 app = FastAPI(title="RAG Service for Norms", version="2.0.0")
 
@@ -100,14 +104,15 @@ class NormRAGService:
         logger.info("🚀 [INIT] Initializing NormRAGService...")
         self.db_conn = None
         self.qdrant_client = None
-        self.embedding_model = None
-        self.tokenizer = None
+        self._embedding_model = None  # Ленивая загрузка
+        self._tokenizer = None  # Ленивая загрузка
         self.text_splitter = None
         self.optimized_indexer = None  # Оптимизированный индексатор
+        self.model_loaded = False
+        self.model_load_start_time = None
         self.connect_services()
-        self.initialize_models()
         self.initialize_optimized_indexer()
-        logger.info("✅ [INIT] NormRAGService initialized successfully")
+        logger.info("✅ [INIT] NormRAGService initialized successfully (models will be loaded on demand)")
     
     def connect_services(self):
         """Подключение к базам данных"""
@@ -127,29 +132,65 @@ class NormRAGService:
             logger.error(f"❌ [CONNECT] Service connection error: {e}")
             raise
     
-    def initialize_models(self):
-        """Инициализация моделей для эмбеддингов и токенизации"""
-        logger.info("🤖 [MODELS] Initializing models...")
+    @property
+    def embedding_model(self):
+        """Ленивая загрузка модели эмбеддингов"""
+        if self._embedding_model is None:
+            self._load_embedding_model()
+        return self._embedding_model
+    
+    @property
+    def tokenizer(self):
+        """Ленивая загрузка токенизатора"""
+        if self._tokenizer is None:
+            self._load_tokenizer()
+        return self._tokenizer
+    
+    def _load_embedding_model(self):
+        """Загрузка модели эмбеддингов с оптимизацией"""
+        if self._embedding_model is not None:
+            return
+        
+        self.model_load_start_time = datetime.now()
+        logger.info("🤖 [MODELS] Loading BGE-M3 embedding model (lazy loading)...")
+        
         try:
-            # Инициализация токенизатора
-            logger.info("🤖 [MODELS] Initializing tokenizer...")
-            self.tokenizer = tiktoken.get_encoding("cl100k_base")
-            logger.info("✅ [MODELS] Tokenizer initialized")
+            # Оптимизация: используем кэш и прогресс-бар
+            import os
+            os.environ['TRANSFORMERS_CACHE'] = '/app/models'
+            os.environ['HF_HOME'] = '/app/models'
             
-            # Загружаем полноценную модель BGE-M3 для качественных эмбеддингов
-            logger.info("🤖 [MODELS] Loading BGE-M3 embedding model...")
-            try:
-                from sentence_transformers import SentenceTransformer
-                self.embedding_model = SentenceTransformer('BAAI/bge-m3', device='cpu')
-                logger.info("✅ [MODELS] BGE-M3 model loaded successfully")
-            except Exception as e:
-                logger.error(f"❌ [MODELS] Failed to load BGE-M3 model: {e}")
-                logger.info("🤖 [MODELS] Falling back to simple hash embedding")
-                self.embedding_model = None
+            from sentence_transformers import SentenceTransformer
+            
+            # Загружаем модель с оптимизациями
+            self._embedding_model = SentenceTransformer(
+                'BAAI/bge-m3', 
+                device='cpu',
+                cache_folder='/app/models'
+            )
+            
+            load_time = (datetime.now() - self.model_load_start_time).total_seconds()
+            logger.info(f"✅ [MODELS] BGE-M3 model loaded successfully in {load_time:.2f} seconds")
+            self.model_loaded = True
             
         except Exception as e:
-            logger.error(f"❌ [MODELS] Model initialization error: {e}")
-            raise
+            load_time = (datetime.now() - self.model_load_start_time).total_seconds()
+            logger.error(f"❌ [MODELS] Failed to load BGE-M3 model after {load_time:.2f} seconds: {e}")
+            logger.info("🤖 [MODELS] Falling back to simple hash embedding")
+            self._embedding_model = None
+    
+    def _load_tokenizer(self):
+        """Загрузка токенизатора"""
+        if self._tokenizer is not None:
+            return
+        
+        logger.info("🤖 [MODELS] Loading tokenizer (lazy loading)...")
+        try:
+            self._tokenizer = tiktoken.get_encoding("cl100k_base")
+            logger.info("✅ [MODELS] Tokenizer loaded successfully")
+        except Exception as e:
+            logger.error(f"❌ [MODELS] Failed to load tokenizer: {e}")
+            self._tokenizer = None
     
     def initialize_optimized_indexer(self):
         """Инициализация оптимизированного индексатора (временно отключена)"""
@@ -334,21 +375,34 @@ class NormRAGService:
     
     def create_embedding(self, text: str) -> List[float]:
         """Создание эмбеддинга для текста"""
-        logger.debug(f"🔢 [EMBED] Creating embedding for text: {len(text)} characters")
+        start_time = datetime.now()
+        text_length = len(text)
+        
+        model_logger.info(f"🤖 [EMBEDDING_MODEL] Creating embedding for text ({text_length} chars)")
+        logger.debug(f"🔢 [EMBED] Creating embedding for text: {text_length} characters")
         
         if self.embedding_model:
             try:
+                model_logger.info(f"🤖 [EMBEDDING_MODEL] Using BGE-M3 model for embedding")
                 logger.debug(f"🔢 [EMBED] Using BGE-M3 model for embedding")
+                
                 # BGE-M3 создает 1024-мерные векторы
                 embedding = self.embedding_model.encode(text, normalize_embeddings=True)
                 embedding_list = embedding.tolist()
+                
+                embedding_time = (datetime.now() - start_time).total_seconds()
+                model_logger.info(f"✅ [EMBEDDING_MODEL] BGE-M3 embedding created in {embedding_time:.3f}s: {len(embedding_list)} dimensions")
                 logger.debug(f"🔢 [EMBED] BGE-M3 embedding created: {len(embedding_list)} dimensions")
+                
                 return embedding_list
             except Exception as e:
+                embedding_time = (datetime.now() - start_time).total_seconds()
+                model_logger.error(f"❌ [EMBEDDING_MODEL] BGE-M3 embedding error after {embedding_time:.3f}s: {type(e).__name__}: {str(e)}")
                 logger.error(f"❌ [EMBED] BGE-M3 embedding creation error: {e}")
                 logger.info(f"🔢 [EMBED] Falling back to simple hash embedding")
         
         # Fallback к простому хеш-эмбеддингу
+        model_logger.info(f"🤖 [EMBEDDING_FALLBACK] Using simple hash embedding fallback")
         logger.debug(f"🔢 [EMBED] Using simple hash embedding fallback")
         return self.create_simple_embedding(text)
     
@@ -544,10 +598,23 @@ class NormRAGService:
     
     def vector_search(self, query: str, k: int) -> List[Dict[str, Any]]:
         """Векторный поиск в Qdrant"""
+        start_time = datetime.now()
         logger.info(f"🔍 [VECTOR] Performing vector search for query: '{query}' with k={k}")
+        
         try:
+            # Логируем создание эмбеддинга
+            model_logger.info(f"🤖 [EMBEDDING_CREATE] Creating embedding for query: '{query[:100]}...'")
+            embedding_start = datetime.now()
+            
             query_embedding = self.create_embedding(query)
-            logger.debug(f"🔍 [VECTOR] Query embedding created: {query_embedding}")
+            
+            embedding_time = (datetime.now() - embedding_start).total_seconds()
+            model_logger.info(f"✅ [EMBEDDING_CREATE] Embedding created in {embedding_time:.3f}s, dimension: {len(query_embedding)}")
+            logger.debug(f"🔍 [VECTOR] Query embedding created: {query_embedding[:5]}...")
+            
+            # Логируем поиск в Qdrant
+            search_start = datetime.now()
+            model_logger.info(f"🔍 [QDRANT_SEARCH] Searching in Qdrant collection: {VECTOR_COLLECTION}")
             
             results = self.qdrant_client.search(
                 collection_name=VECTOR_COLLECTION,
@@ -555,7 +622,18 @@ class NormRAGService:
                 limit=k,
                 with_payload=True
             )
-            logger.info(f"✅ [VECTOR] Vector search completed. Found {len(results)} results.")
+            
+            search_time = (datetime.now() - search_start).total_seconds()
+            total_time = (datetime.now() - start_time).total_seconds()
+            
+            logger.info(f"✅ [VECTOR] Vector search completed in {total_time:.3f}s. Found {len(results)} results.")
+            model_logger.info(f"✅ [QDRANT_SEARCH] Qdrant search completed in {search_time:.3f}s, found {len(results)} results")
+            
+            # Логируем топ результат
+            if results:
+                top_result = results[0]
+                model_logger.info(f"📊 [VECTOR_TOP] Top vector result: {top_result.payload.get('document_title', 'Unknown')} - Score: {top_result.score:.3f}")
+                model_logger.debug(f"📊 [VECTOR_TOP] Top result content: {top_result.payload.get('content', '')[:200]}...")
             
             return [
                 {
@@ -574,7 +652,9 @@ class NormRAGService:
             ]
             
         except Exception as e:
-            logger.error(f"❌ [VECTOR] Vector search error: {e}")
+            total_time = (datetime.now() - start_time).total_seconds()
+            logger.error(f"❌ [VECTOR] Vector search error after {total_time:.3f}s: {type(e).__name__}: {str(e)}")
+            model_logger.error(f"❌ [EMBEDDING_ERROR] Failed to create embedding for query: '{query[:100]}...' - {str(e)}")
             return []
     
     def bm25_search(self, query: str, k: int) -> List[Dict[str, Any]]:
@@ -855,8 +935,14 @@ async def search_norms(
     chunk_type_filter: Optional[str] = Form(None)
 ):
     """Гибридный поиск по нормативным документам"""
+    start_time = datetime.now()
     logger.info(f"🔍 [SEARCH_NORM] Performing hybrid search for query: '{query}' with k={k}")
+    logger.info(f"🔍 [SEARCH_NORM] Filters: document={document_filter}, chapter={chapter_filter}, chunk_type={chunk_type_filter}")
+    
     try:
+        # Логируем запрос к модели эмбеддингов
+        model_logger.info(f"🤖 [EMBEDDING_REQUEST] Generating embeddings for query: '{query[:100]}...'")
+        
         results = rag_service.hybrid_search(
             query=query,
             k=k,
@@ -864,16 +950,27 @@ async def search_norms(
             chapter_filter=chapter_filter,
             chunk_type_filter=chunk_type_filter
         )
-        logger.info(f"✅ [SEARCH_NORM] Hybrid search completed. Found {len(results)} results.")
+        
+        execution_time = (datetime.now() - start_time).total_seconds()
+        logger.info(f"✅ [SEARCH_NORM] Hybrid search completed in {execution_time:.2f}s. Found {len(results)} results.")
+        
+        # Логируем результаты поиска
+        if results:
+            top_result = results[0]
+            model_logger.info(f"📊 [SEARCH_RESULTS] Top result: {top_result.get('document_title', 'Unknown')} - Score: {top_result.get('score', 0):.3f}")
+            model_logger.debug(f"📊 [SEARCH_RESULTS] Top result content preview: {top_result.get('content', '')[:200]}...")
         
         return {
             "query": query,
             "results_count": len(results),
+            "execution_time": execution_time,
             "results": results
         }
         
     except Exception as e:
-        logger.error(f"❌ [SEARCH_NORM] Search error: {e}")
+        execution_time = (datetime.now() - start_time).total_seconds()
+        logger.error(f"❌ [SEARCH_NORM] Search error after {execution_time:.2f}s: {type(e).__name__}: {str(e)}")
+        model_logger.error(f"❌ [EMBEDDING_ERROR] Failed to process query: '{query[:100]}...' - {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/stats")

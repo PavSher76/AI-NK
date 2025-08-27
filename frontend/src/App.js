@@ -28,6 +28,7 @@ import DashboardPage from './pages/DashboardPage';
 import ChatPage from './pages/ChatPage';
 import NormcontrolPage from './pages/NormcontrolPage';
 import CalculationsPage from './pages/CalculationsPage';
+import StructuralCalculationsPage from './pages/StructuralCalculationsPage';
 import DocumentsPage from './pages/DocumentsPage';
 
 function App() {
@@ -494,6 +495,45 @@ function App() {
             <CalculationsPage
               isAuthenticated={isAuthenticated}
               authToken={authToken}
+            />
+          )}
+
+          {currentPage === 'structural-calculations' && (
+            <StructuralCalculationsPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
+            />
+          )}
+
+          {currentPage === 'electrical-calculations' && (
+            <CalculationsPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
+              calculationType="electrical"
+            />
+          )}
+
+          {currentPage === 'mechanical-calculations' && (
+            <CalculationsPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
+              calculationType="mechanical"
+            />
+          )}
+
+          {currentPage === 'thermal-calculations' && (
+            <CalculationsPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
+              calculationType="thermal"
+            />
+          )}
+
+          {currentPage === 'safety-calculations' && (
+            <CalculationsPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
+              calculationType="safety"
             />
           )}
 
