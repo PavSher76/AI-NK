@@ -270,7 +270,11 @@ async def proxy_api_v1(request: Request, path: str):
     print(f"🔍 [DEBUG] Gateway: API v1 route called with path: {path}")
     
     # Определяем сервис на основе пути
-    if path.startswith("documents") or path.startswith("checkable-documents"):
+    if path.startswith("documents"):
+        service_url = SERVICES["rag-service"]
+        print(f"🔍 [DEBUG] Gateway: Routing API v1 to rag-service: {service_url}")
+        return await proxy_request(request, service_url, f"/{path}")
+    elif path.startswith("checkable-documents"):
         service_url = SERVICES["document-parser"]
         print(f"🔍 [DEBUG] Gateway: Routing API v1 to document-parser: {service_url}")
         return await proxy_request(request, service_url, f"/{path}")
@@ -309,9 +313,13 @@ async def proxy_api(request: Request, path: str):
         service_url = SERVICES["document-parser"]
         return await proxy_request(request, service_url, f"/api/{path}")
     
-    if path.startswith("upload") or path.startswith("documents") or path.startswith("checkable-documents") or path.startswith("settings"):
+    if path.startswith("upload") or path.startswith("checkable-documents") or path.startswith("settings"):
         service_url = SERVICES["document-parser"]
         print(f"🔍 [DEBUG] Gateway: Routing to document-parser: {service_url}")
+        return await proxy_request(request, service_url, f"/{path}")
+    elif path.startswith("documents"):
+        service_url = SERVICES["rag-service"]
+        print(f"🔍 [DEBUG] Gateway: Routing to rag-service: {service_url}")
         return await proxy_request(request, service_url, f"/{path}")
     elif path.startswith("rag/"):
         service_url = SERVICES["rag-service"]
@@ -361,9 +369,13 @@ async def proxy_main(request: Request, path: str):
     print(f"🔍 [DEBUG] Gateway: Main route called with path: {path}")
     
     # Определяем сервис на основе пути
-    if path.startswith("upload") or path.startswith("documents") or path.startswith("checkable-documents") or path.startswith("settings"):
+    if path.startswith("upload") or path.startswith("checkable-documents") or path.startswith("settings"):
         service_url = SERVICES["document-parser"]
         print(f"🔍 [DEBUG] Gateway: Routing to document-parser: {service_url}")
+        return await proxy_request(request, service_url, f"/{path}")
+    elif path.startswith("documents"):
+        service_url = SERVICES["rag-service"]
+        print(f"🔍 [DEBUG] Gateway: Routing to rag-service: {service_url}")
         return await proxy_request(request, service_url, f"/{path}")
     elif path.startswith("rag/"):
         service_url = SERVICES["rag-service"]

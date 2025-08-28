@@ -188,7 +188,7 @@ class PDFReportGenerator:
             ['Название проекта', project_data.get('project_name', 'Не указано')],
             ['Стадия проектирования', project_data.get('project_stage', 'Не указано')],
             ['Тип проекта', project_data.get('project_type', 'Не указано')],
-            ['Комплект документов', project_data.get('document_set', 'Не указано')],
+            ['Марка комплекта', project_data.get('document_set', 'Не указано')],
             ['Уверенность анализа', f"{project_data.get('confidence', 0) * 100:.1f}%"]
         ]
         
@@ -219,12 +219,33 @@ class PDFReportGenerator:
         
         compliance_data = self._parse_json_string(compliance_summary)
         
-        elements.append(Paragraph("СВОДКА ПО СООТВЕТСТВИЮ НОРМАМ", self.styles['SectionTitle']))
+        elements.append(Paragraph("СВОДКА ПО СООТВЕТСТВИЮ НОРМАМ", ParagraphStyle(
+            name='ComplianceTitle',
+            fontName=self.bold_font,
+            fontSize=14,
+            spaceAfter=12,
+            spaceBefore=20,
+            textColor=colors.darkblue
+        )))
+        
+        # Добавляем информацию о том, на соответствие каким документам выполнялась проверка
+        project_stage = compliance_data.get('project_stage', 'Неизвестная стадия')
+        document_set = compliance_data.get('document_set', 'Неизвестный комплект')
+        
+        compliance_info = f"Документ проверен на соответствие: {project_stage}, {document_set}"
+        elements.append(Paragraph(compliance_info, ParagraphStyle(
+            name='ComplianceInfo',
+            fontName=self.default_font,
+            fontSize=10,
+            spaceAfter=6
+        )))
+        elements.append(Spacer(1, 10))
         
         # Общая статистика
         stats_table_data = [
             ['Параметр', 'Значение'],
-            ['Всего страниц', str(compliance_data.get('total_pages', 0))],
+            ['Листов в документе', str(compliance_data.get('total_pages', 0))],
+            ['Листов формата А4', str(compliance_data.get('total_pages', 0))],  # Пока используем то же значение
             ['Соответствующих страниц', str(compliance_data.get('compliant_pages', 0))],
             ['Процент соответствия', f"{compliance_data.get('compliance_percentage', 0):.1f}%"],
             ['Всего находок', str(compliance_data.get('total_findings', 0))],
@@ -252,7 +273,13 @@ class PDFReportGenerator:
         # Детальные находки
         findings = compliance_data.get('findings', [])
         if findings:
-            elements.append(Paragraph("ДЕТАЛЬНЫЕ НАХОДКИ", self.styles['SubTitle']))
+            elements.append(Paragraph("ДЕТАЛЬНЫЕ НАХОДКИ", ParagraphStyle(
+                name='FindingsTitle',
+                fontName=self.bold_font,
+                fontSize=12,
+                spaceAfter=8,
+                textColor=colors.darkgreen
+            )))
             
             findings_table_data = [['Тип', 'Заголовок', 'Описание', 'Рекомендация', 'Страница']]
             
@@ -293,7 +320,14 @@ class PDFReportGenerator:
         
         sections_data = self._parse_json_string(sections_analysis)
         
-        elements.append(Paragraph("АНАЛИЗ СЕКЦИЙ ДОКУМЕНТА", self.styles['SectionTitle']))
+        elements.append(Paragraph("АНАЛИЗ СЕКЦИЙ ДОКУМЕНТА", ParagraphStyle(
+            name='SectionsTitle',
+            fontName=self.bold_font,
+            fontSize=14,
+            spaceAfter=12,
+            spaceBefore=20,
+            textColor=colors.darkblue
+        )))
         
         sections = sections_data.get('sections', [])
         if sections:
@@ -329,7 +363,14 @@ class PDFReportGenerator:
         """Создание раздела с общим статусом"""
         elements = []
         
-        elements.append(Paragraph("ОБЩИЙ СТАТУС ПРОВЕРКИ", self.styles['SectionTitle']))
+        elements.append(Paragraph("ОБЩИЙ СТАТУС ПРОВЕРКИ", ParagraphStyle(
+            name='OverallStatusTitle',
+            fontName=self.bold_font,
+            fontSize=14,
+            spaceAfter=12,
+            spaceBefore=20,
+            textColor=colors.darkblue
+        )))
         
         # Определяем цвет и текст статуса
         status_colors = {

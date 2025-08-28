@@ -123,14 +123,17 @@ function App() {
       try {
         if (isAuthenticated && authToken) {
           const ollamaResponse = await axios.get('/ollama/api/tags', {
-            headers: { Authorization: `Bearer ${authToken}` }
+            headers: { Authorization: `Bearer ${authToken}` },
+            timeout: 300000 // 5 минут (300 секунд)
           });
           setSystemStatus(prev => ({ ...prev, ollama: true }));
         } else {
           // Если не авторизован, проверяем через Gateway без токена
           // Gateway вернет 401, но это означает что сервис доступен
           try {
-            const ollamaResponse = await axios.get('/ollama/api/tags');
+            const ollamaResponse = await axios.get('/ollama/api/tags', {
+              timeout: 300000 // 5 минут (300 секунд)
+            });
             setSystemStatus(prev => ({ ...prev, ollama: true }));
           } catch (gatewayError) {
             if (gatewayError.response && gatewayError.response.status === 401) {
@@ -228,7 +231,8 @@ function App() {
       console.log('loadModels: Отправляем запрос к /ollama/api/tags с токеном:', authToken.substring(0, 20) + '...');
       
       const response = await axios.get('/ollama/api/tags', {
-        headers: { Authorization: `Bearer ${authToken}` }
+        headers: { Authorization: `Bearer ${authToken}` },
+        timeout: 300000 // 5 минут (300 секунд)
       });
       
       console.log('loadModels: Получен ответ:', response.status, response.data);
@@ -286,7 +290,8 @@ function App() {
         headers: { 
           Authorization: `Bearer ${authToken}`,
           'Content-Type': 'application/json'
-        }
+        },
+        timeout: 300000 // 5 минут (300 секунд)
       });
 
       const assistantMessage = {
@@ -334,7 +339,8 @@ function App() {
         headers: { 
           Authorization: `Bearer ${authToken}`,
           'Content-Type': 'multipart/form-data'
-        }
+        },
+        timeout: 300000 // 5 минут (300 секунд)
       });
 
       if (uploadResponse.data.success) {
@@ -352,7 +358,8 @@ function App() {
           headers: { 
             Authorization: `Bearer ${authToken}`,
             'Content-Type': 'application/json'
-          }
+          },
+          timeout: 300000 // 5 минут (300 секунд)
         });
 
         const assistantMessage = {

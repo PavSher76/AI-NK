@@ -744,6 +744,60 @@ class NormRAGService:
         
         return filtered_results
     
+    def get_documents(self) -> List[Dict[str, Any]]:
+        """Получение списка нормативных документов"""
+        logger.info("📄 [GET_DOCUMENTS] Getting documents list...")
+        try:
+            with self.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                # Проверяем существование таблицы normative_chunks
+                cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_name = 'normative_chunks'
+                    );
+                """)
+                table_exists = cursor.fetchone()['exists']
+                
+                if not table_exists:
+                    logger.info("📄 [GET_DOCUMENTS] Table normative_chunks does not exist, returning empty list")
+                    return []
+                
+                # Получаем уникальные документы с их метаданными
+                cursor.execute("""
+                    SELECT DISTINCT 
+                        document_id,
+                        document_title,
+                        COUNT(*) as chunks_count,
+                        MIN(page_number) as first_page,
+                        MAX(page_number) as last_page,
+                        STRING_AGG(DISTINCT chunk_type, ', ') as chunk_types
+                    FROM normative_chunks 
+                    GROUP BY document_id, document_title
+                    ORDER BY document_id
+                """)
+                
+                documents = cursor.fetchall()
+                logger.info(f"✅ [GET_DOCUMENTS] Retrieved {len(documents)} documents")
+                
+                # Преобразуем в список словарей
+                result = []
+                for doc in documents:
+                    result.append({
+                        "id": doc['document_id'],
+                        "title": doc['document_title'] or f"Документ {doc['document_id']}",
+                        "chunks_count": doc['chunks_count'],
+                        "first_page": doc['first_page'],
+                        "last_page": doc['last_page'],
+                        "chunk_types": doc['chunk_types'].split(', ') if doc['chunk_types'] else [],
+                        "status": "indexed"
+                    })
+                
+                return result
+                
+        except Exception as e:
+            logger.error(f"❌ [GET_DOCUMENTS] Error getting documents: {e}")
+            return []
+    
     def get_stats(self) -> Dict[str, Any]:
         """Получение статистики индексации"""
         logger.info("📊 [STATS] Getting service statistics...")
@@ -973,6 +1027,18 @@ async def search_norms(
         model_logger.error(f"❌ [EMBEDDING_ERROR] Failed to process query: '{query[:100]}...' - {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/documents")
+async def get_documents():
+    """Получение списка нормативных документов"""
+    logger.info("📄 [GET_DOCUMENTS] Getting documents list...")
+    try:
+        documents = rag_service.get_documents()
+        logger.info(f"✅ [GET_DOCUMENTS] Documents list retrieved: {len(documents)} documents")
+        return {"documents": documents}
+    except Exception as e:
+        logger.error(f"❌ [GET_DOCUMENTS] Documents error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/stats")
 async def get_stats():
     """Получение статистики RAG-системы"""
@@ -983,6 +1049,32 @@ async def get_stats():
         return stats
     except Exception as e:
         logger.error(f"❌ [GET_STATS] Stats error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/documents/stats")
+async def get_documents_stats():
+    """Получение статистики документов в формате для фронтенда"""
+    logger.info("📊 [GET_DOCUMENTS_STATS] Getting documents statistics...")
+    try:
+        stats = rag_service.get_stats()
+        documents = rag_service.get_documents()
+        
+        # Адаптируем статистику для фронтенда
+        adapted_stats = {
+            "statistics": {
+                "total_documents": len(documents),
+                "indexed_documents": len(documents),
+                "indexing_progress_percent": 100 if len(documents) > 0 else 0,
+                "categories": [
+                    {"category": "Все документы", "count": len(documents)}
+                ]
+            }
+        }
+        
+        logger.info(f"✅ [GET_DOCUMENTS_STATS] Documents statistics retrieved: {adapted_stats}")
+        return adapted_stats
+    except Exception as e:
+        logger.error(f"❌ [GET_DOCUMENTS_STATS] Documents stats error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/indexes/document/{document_id}")
