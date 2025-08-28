@@ -130,35 +130,196 @@ class HierarchicalCheckService:
     async def extract_project_info(self, content: str) -> Dict[str, Any]:
         """Извлечение информации о проекте из первой страницы"""
         try:
-            # Здесь должна быть логика извлечения информации о проекте
-            # Пока возвращаем заглушку
+            logger.info(f"🔍 [PROJECT_INFO] Extracting project information from content")
+            logger.debug(f"🔍 [PROJECT_INFO] Content length: {len(content)} characters")
+            
+            # Инициализируем результат
             project_info = {
-                "project_name": "Проект по умолчанию",
-                "project_stage": "Рабочая документация",
+                "project_name": "Неизвестный проект",
+                "project_stage": "Неизвестная стадия",
                 "project_type": "Строительный",
-                "document_set": "Конструктивные решения",
-                "confidence": 0.8
+                "document_set": "Неизвестный комплект",
+                "project_code": "Неизвестный шифр",
+                "confidence": 0.5
             }
             
-            # Простая логика извлечения (можно заменить на LLM)
-            if "проект" in content.lower():
-                # Извлекаем название проекта
-                lines = content.split('\n')
-                for line in lines:
-                    if "проект" in line.lower() and len(line.strip()) > 10:
-                        project_info["project_name"] = line.strip()
-                        break
+            # Разбиваем контент на строки
+            lines = [line.strip() for line in content.split('\n') if line.strip()]
+            logger.debug(f"🔍 [PROJECT_INFO] Processing {len(lines)} non-empty lines")
             
-            if "рабочая" in content.lower():
-                project_info["project_stage"] = "Рабочая документация"
-            elif "проектная" in content.lower():
-                project_info["project_stage"] = "Проектная документация"
+            # Поиск шифра проекта (паттерн: Е110-0038-УКК.24.848-РД-01-02.12.032-АР)
+            project_code = self.extract_project_code(content)
+            if project_code:
+                project_info["project_code"] = project_code
+                project_info["confidence"] += 0.2
+                logger.info(f"🔍 [PROJECT_INFO] Found project code: {project_code}")
             
+            # Поиск названия проекта
+            project_name = self.extract_project_name(content, lines)
+            if project_name:
+                project_info["project_name"] = project_name
+                project_info["confidence"] += 0.2
+                logger.info(f"🔍 [PROJECT_INFO] Found project name: {project_name}")
+            
+            # Определение стадии проектирования
+            project_stage = self.extract_project_stage(content)
+            if project_stage:
+                project_info["project_stage"] = project_stage
+                project_info["confidence"] += 0.1
+                logger.info(f"🔍 [PROJECT_INFO] Found project stage: {project_stage}")
+            
+            # Определение марки комплекта
+            document_set = self.extract_document_set(content, project_code)
+            if document_set:
+                project_info["document_set"] = document_set
+                project_info["confidence"] += 0.2
+                logger.info(f"🔍 [PROJECT_INFO] Found document set: {document_set}")
+            
+            # Ограничиваем уверенность до 1.0
+            project_info["confidence"] = min(project_info["confidence"], 1.0)
+            
+            logger.info(f"🔍 [PROJECT_INFO] Final project info: {project_info}")
             return project_info
             
         except Exception as e:
-            logger.error(f"Error extracting project info: {e}")
+            logger.error(f"❌ [PROJECT_INFO] Error extracting project info: {e}")
             return {"project_name": "Неизвестный проект", "error": str(e)}
+    
+    def extract_project_code(self, content: str) -> Optional[str]:
+        """Извлечение шифра проекта"""
+        try:
+            # Паттерны для поиска шифра проекта
+            import re
+            
+            # Паттерн для шифра типа Е110-0038-УКК.24.848-РД-01-02.12.032-АР
+            patterns = [
+                r'[А-Я]\d{3}-\d{4}-[А-Я]{2,3}\.\d{2}\.\d{3}-[А-Я]{2}-\d{2}-\d{2}\.\d{3}-[А-Я]{2}',
+                r'[А-Я]\d{3}-\d{4}-[А-Я]{2,3}\.\d{2}\.\d{3}-[А-Я]{2}-\d{2}-\d{2}\.\d{3}-[А-Я]{2}',
+                r'[А-Я]\d{3}-\d{4}-[А-Я]{2,3}\.\d{2}\.\d{3}-[А-Я]{2}-\d{2}-\d{2}\.\d{3}-[А-Я]{2}',
+                r'[А-Я]\d{3}-\d{4}-[А-Я]{2,3}\.\d{2}\.\d{3}-[А-Я]{2}-\d{2}-\d{2}\.\d{3}-[А-Я]{2}'
+            ]
+            
+            for pattern in patterns:
+                matches = re.findall(pattern, content)
+                if matches:
+                    return matches[0]
+            
+            # Поиск по ключевым словам
+            lines = content.split('\n')
+            for line in lines:
+                if any(keyword in line.upper() for keyword in ['Е110', 'УКК', 'РД', 'АР']):
+                    # Извлекаем код из строки
+                    words = line.split()
+                    for word in words:
+                        if any(keyword in word.upper() for keyword in ['Е110', 'УКК', 'РД', 'АР']):
+                            return word.strip()
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error extracting project code: {e}")
+            return None
+    
+    def extract_project_name(self, content: str, lines: List[str]) -> Optional[str]:
+        """Извлечение названия проекта"""
+        try:
+            # Ключевые слова для поиска названия проекта
+            keywords = ['комбинат', 'фабрика', 'завод', 'комплекс', 'объект', 'сооружение']
+            
+            # Ищем строки с ключевыми словами
+            for line in lines:
+                line_lower = line.lower()
+                if any(keyword in line_lower for keyword in keywords):
+                    # Проверяем, что строка достаточно длинная для названия
+                    if len(line.strip()) > 20:
+                        return line.strip()
+            
+            # Поиск по паттерну "НАЗВАНИЕ ПРОЕКТА"
+            for line in lines:
+                if 'название' in line.lower() and 'проект' in line.lower():
+                    # Ищем следующую строку с названием
+                    line_index = lines.index(line)
+                    if line_index + 1 < len(lines):
+                        next_line = lines[line_index + 1].strip()
+                        if len(next_line) > 10:
+                            return next_line
+            
+            # Поиск по верхнему регистру (часто название проекта пишется заглавными буквами)
+            for line in lines:
+                if line.isupper() and len(line.strip()) > 20:
+                    return line.strip()
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error extracting project name: {e}")
+            return None
+    
+    def extract_project_stage(self, content: str) -> Optional[str]:
+        """Извлечение стадии проектирования"""
+        try:
+            content_lower = content.lower()
+            
+            if 'рабочая документация' in content_lower or 'рабочая' in content_lower:
+                return "Рабочая документация"
+            elif 'проектная документация' in content_lower or 'проектная' in content_lower:
+                return "Проектная документация"
+            elif 'эскизная документация' in content_lower or 'эскизная' in content_lower:
+                return "Эскизная документация"
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error extracting project stage: {e}")
+            return None
+    
+    def extract_document_set(self, content: str, project_code: Optional[str]) -> Optional[str]:
+        """Извлечение марки комплекта документов"""
+        try:
+            content_lower = content.lower()
+            
+            # Определение по шифру проекта
+            if project_code:
+                if '-АР' in project_code.upper():
+                    return "Архитектурные решения"
+                elif '-КР' in project_code.upper():
+                    return "Конструктивные решения"
+                elif '-ОВ' in project_code.upper():
+                    return "Отопление и вентиляция"
+                elif '-ВК' in project_code.upper():
+                    return "Водоснабжение и канализация"
+                elif '-ЭС' in project_code.upper():
+                    return "Электроснабжение"
+                elif '-СС' in project_code.upper():
+                    return "Сети связи"
+                elif '-ПОС' in project_code.upper():
+                    return "Проект организации строительства"
+                elif '-ПТ' in project_code.upper():
+                    return "Проект производства работ"
+            
+            # Определение по ключевым словам в контенте
+            if 'архитектурн' in content_lower:
+                return "Архитектурные решения"
+            elif 'конструктивн' in content_lower:
+                return "Конструктивные решения"
+            elif 'отоплен' in content_lower or 'вентиляц' in content_lower:
+                return "Отопление и вентиляция"
+            elif 'водоснабжен' in content_lower or 'канализац' in content_lower:
+                return "Водоснабжение и канализация"
+            elif 'электроснабжен' in content_lower:
+                return "Электроснабжение"
+            elif 'связ' in content_lower:
+                return "Сети связи"
+            elif 'организац' in content_lower and 'строительств' in content_lower:
+                return "Проект организации строительства"
+            elif 'производств' in content_lower and 'работ' in content_lower:
+                return "Проект производства работ"
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error extracting document set: {e}")
+            return None
     
     async def extract_document_metadata(self, content: str) -> Dict[str, Any]:
         """Извлечение метаданных документа"""

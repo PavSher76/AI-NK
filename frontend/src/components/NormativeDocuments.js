@@ -114,10 +114,10 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
     setIsLoading(true);
     try {
       const response = await fetch('/api/documents', {
-      headers: {
-        'Authorization': 'Bearer test-token'
-      }
-    });
+        headers: {
+          'Authorization': `Bearer ${authToken}`
+        }
+      });
       console.log('🔍 [DEBUG] NormativeDocuments.js: fetchDocuments response status:', response.status);
       if (response.ok) {
         const data = await response.json();
@@ -142,7 +142,7 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
     try {
       const response = await fetch('/api/documents/stats', {
         headers: {
-          'Authorization': 'Bearer test-token'
+          'Authorization': `Bearer ${authToken}`
         }
       });
       console.log('🔍 [DEBUG] NormativeDocuments.js: fetchStats response status:', response.status);
@@ -201,7 +201,7 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
       const response = await fetch('/api/reindex-documents', {
         method: 'POST',
         headers: {
-          'Authorization': 'Bearer test-token',
+          'Authorization': `Bearer ${authToken}`,
           'Content-Type': 'application/json',
         }
       });
@@ -247,7 +247,7 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
     try {
       const response = await fetch(`/api/documents/${documentId}/tokens`, {
         headers: {
-          'Authorization': 'Bearer test-token'
+          'Authorization': `Bearer ${authToken}`
         }
       });
       console.log('🔍 [DEBUG] NormativeDocuments.js: fetchDocumentTokens response status:', response.status);
@@ -271,7 +271,7 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
     try {
       const response = await fetch('/api/settings', {
         headers: {
-          'Authorization': 'Bearer test-token'
+          'Authorization': `Bearer ${authToken}`
         }
       });
       console.log('🔍 [DEBUG] NormativeDocuments.js: fetchSettings response status:', response.status);
@@ -299,7 +299,7 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
       let response = await fetch(`/api/settings/${settingKey}`, {
         method: 'PUT',
         headers: {
-          'Authorization': 'Bearer test-token',
+          'Authorization': `Bearer ${authToken}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ setting_value: newValue })
@@ -310,7 +310,7 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
         response = await fetch('/api/settings', {
           method: 'POST',
           headers: {
-            'Authorization': 'Bearer test-token',
+            'Authorization': `Bearer ${authToken}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
@@ -365,7 +365,7 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
       const response = await fetch(`/api/settings/${settingKey}`, {
         method: 'DELETE',
         headers: {
-          'Authorization': 'Bearer test-token',
+          'Authorization': `Bearer ${authToken}`,
         }
       });
       
@@ -467,7 +467,7 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
                 const processResponse = await fetch(`/api/documents/${result.document_id}/process`, {
                   method: 'POST',
                   headers: {
-                    'Authorization': 'Bearer test-token'
+                    'Authorization': `Bearer ${authToken}`
                   }
                 });
                 
@@ -560,7 +560,7 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
 
       // Открываем соединение и отправляем данные
       xhr.open('POST', '/api/upload');
-      xhr.setRequestHeader('Authorization', 'Bearer test-token');
+      xhr.setRequestHeader('Authorization', `Bearer ${authToken}`);
       xhr.send(formData);
 
     } catch (err) {
@@ -583,7 +583,7 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
       const response = await fetch(`/api/documents/${documentId}`, {
         method: 'DELETE',
         headers: {
-          'Authorization': 'Bearer test-token'
+          'Authorization': `Bearer ${authToken}`
         }
       });
 
@@ -600,12 +600,14 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
 
   // Получение иконки типа файла
   const getFileIcon = (fileType) => {
+    if (!fileType) return <File className="w-4 h-4" />;
     const format = supportedFormats.find(f => f.ext === fileType.toLowerCase());
     return format ? format.icon : <File className="w-4 h-4" />;
   };
 
   // Получение названия типа файла
   const getFileTypeName = (fileType) => {
+    if (!fileType) return 'Неизвестный тип';
     const format = supportedFormats.find(f => f.ext === fileType.toLowerCase());
     return format ? format.name : fileType.toUpperCase();
   };
@@ -622,8 +624,12 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
 
   // Фильтрация документов
   const filteredDocuments = documents.filter(doc => {
-    const matchesSearch = doc.original_filename.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                         doc.file_type.toLowerCase().includes(searchQuery.toLowerCase());
+    // Безопасная проверка полей документа
+    const filename = doc.original_filename || doc.title || doc.document_title || '';
+    const fileType = doc.file_type || doc.type || '';
+    
+    const matchesSearch = filename.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                         fileType.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesCategory = !filterCategory || doc.category === filterCategory;
     const matchesStatus = !filterStatus || doc.processing_status === filterStatus;
     
@@ -634,13 +640,15 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
   const sortedDocuments = [...filteredDocuments].sort((a, b) => {
     switch (sortBy) {
       case 'upload_date':
-        return new Date(b.upload_date) - new Date(a.upload_date);
+        return new Date(b.upload_date || 0) - new Date(a.upload_date || 0);
       case 'filename':
-        return a.original_filename.localeCompare(b.original_filename);
+        const filenameA = a.original_filename || a.title || a.document_title || '';
+        const filenameB = b.original_filename || b.title || b.document_title || '';
+        return filenameA.localeCompare(filenameB);
       case 'file_size':
-        return b.file_size - a.file_size;
+        return (b.file_size || 0) - (a.file_size || 0);
       case 'category':
-        return a.category.localeCompare(b.category);
+        return (a.category || '').localeCompare(b.category || '');
       default:
         return 0;
     }
