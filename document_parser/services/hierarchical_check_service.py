@@ -18,19 +18,32 @@ class HierarchicalCheckService:
         """Выполнение иерархической проверки документа"""
         try:
             logger.info(f"🚀 [HIERARCHICAL] Starting hierarchical check for document {document_id}")
+            logger.info(f"📊 [HIERARCHICAL] Memory usage before check: {check_memory_pressure()}")
             start_time = datetime.now()
             
             # Этап 1: Быстрая проверка первой страницы
             logger.info(f"📄 [HIERARCHICAL] Stage 1: Quick first page analysis")
+            stage1_start = datetime.now()
             first_page_info = await self.analyze_first_page(document_id)
+            stage1_time = (datetime.now() - stage1_start).total_seconds()
+            logger.info(f"📄 [HIERARCHICAL] Stage 1 completed in {stage1_time:.2f}s")
+            logger.info(f"📄 [HIERARCHICAL] Stage 1 result: {first_page_info.get('project_info', {}).get('project_name', 'Unknown')}")
             
             # Этап 2: Проверка всего документа на соответствие нормам
             logger.info(f"📋 [HIERARCHICAL] Stage 2: Full document norm compliance check")
+            stage2_start = datetime.now()
             norm_compliance_results = await self.check_norm_compliance(document_id, first_page_info)
+            stage2_time = (datetime.now() - stage2_start).total_seconds()
+            logger.info(f"📋 [HIERARCHICAL] Stage 2 completed in {stage2_time:.2f}s")
+            logger.info(f"📋 [HIERARCHICAL] Stage 2 findings: {norm_compliance_results.get('total_findings', 0)} total, {norm_compliance_results.get('critical_findings', 0)} critical")
             
             # Этап 3: Выявление разделов и организация проверки по разделам
             logger.info(f"📑 [HIERARCHICAL] Stage 3: Document sections identification and organization")
+            stage3_start = datetime.now()
             section_analysis = await self.analyze_document_sections(document_id, first_page_info)
+            stage3_time = (datetime.now() - stage3_start).total_seconds()
+            logger.info(f"📑 [HIERARCHICAL] Stage 3 completed in {stage3_time:.2f}s")
+            logger.info(f"📑 [HIERARCHICAL] Stage 3 sections identified: {len(section_analysis.get('sections', []))}")
             
             # Формирование общего результата
             total_time = (datetime.now() - start_time).total_seconds()
@@ -53,9 +66,19 @@ class HierarchicalCheckService:
             }
             
             # Сохранение результатов
+            save_start = datetime.now()
             await self.save_hierarchical_check_result(document_id, result)
+            save_time = (datetime.now() - save_start).total_seconds()
+            logger.info(f"💾 [HIERARCHICAL] Results saved in {save_time:.2f}s")
             
             logger.info(f"✅ [HIERARCHICAL] Hierarchical check completed for document {document_id} in {total_time:.2f}s")
+            logger.info(f"📊 [HIERARCHICAL] Memory usage after check: {check_memory_pressure()}")
+            logger.info(f"📈 [HIERARCHICAL] Performance summary:")
+            logger.info(f"   - Stage 1 (First page): {stage1_time:.2f}s")
+            logger.info(f"   - Stage 2 (Norm compliance): {stage2_time:.2f}s")
+            logger.info(f"   - Stage 3 (Sections): {stage3_time:.2f}s")
+            logger.info(f"   - Save results: {save_time:.2f}s")
+            logger.info(f"   - Total time: {total_time:.2f}s")
             return result
             
         except Exception as e:
@@ -72,18 +95,30 @@ class HierarchicalCheckService:
             logger.info(f"📄 [FIRST_PAGE] Analyzing first page for document {document_id}")
             
             # Получаем первую страницу документа
+            logger.debug(f"📄 [FIRST_PAGE] Fetching first page content for document {document_id}")
             first_page = self.get_first_page_content(document_id)
             if not first_page:
+                logger.error(f"📄 [FIRST_PAGE] First page not found for document {document_id}")
                 return {"error": "First page not found"}
             
+            logger.debug(f"📄 [FIRST_PAGE] First page content length: {len(first_page.get('content', ''))} characters")
+            
             # Анализируем содержимое первой страницы
+            logger.debug(f"📄 [FIRST_PAGE] Extracting project info from content")
+            project_info = await self.extract_project_info(first_page.get("content", ""))
+            logger.debug(f"📄 [FIRST_PAGE] Extracting document metadata from content")
+            document_metadata = await self.extract_document_metadata(first_page.get("content", ""))
+            
             analysis_result = {
                 "page_number": 1,
                 "content_length": len(first_page.get("content", "")),
-                "project_info": await self.extract_project_info(first_page.get("content", "")),
-                "document_metadata": await self.extract_document_metadata(first_page.get("content", "")),
+                "project_info": project_info,
+                "document_metadata": document_metadata,
                 "analysis_timestamp": datetime.now().isoformat()
             }
+            
+            logger.info(f"📄 [FIRST_PAGE] Project info extracted: {project_info.get('project_name', 'Unknown')} - {project_info.get('project_stage', 'Unknown')}")
+            logger.info(f"📄 [FIRST_PAGE] Document metadata: {document_metadata.get('document_mark', 'Unknown')} - {document_metadata.get('scale', 'Unknown')}")
             
             logger.info(f"📄 [FIRST_PAGE] First page analysis completed: {analysis_result.get('project_info', {}).get('project_name', 'Unknown')}")
             return analysis_result
@@ -165,28 +200,37 @@ class HierarchicalCheckService:
             project_stage = project_info.get("project_stage", "Рабочая документация")
             document_set = project_info.get("document_set", "Конструктивные решения")
             
+            logger.info(f"📋 [NORM_COMPLIANCE] Project stage: {project_stage}, Document set: {document_set}")
+            
             # Получаем все страницы документа
+            logger.debug(f"📋 [NORM_COMPLIANCE] Fetching all pages content for document {document_id}")
             pages = self.get_all_pages_content(document_id)
             
             findings = []
             total_pages = len(pages)
             compliant_pages = 0
             
+            logger.info(f"📋 [NORM_COMPLIANCE] Total pages to check: {total_pages}")
+            
             for page_data in pages:
                 page_number = page_data["page_number"]
                 content = page_data["content"]
                 
-                logger.info(f"📋 [NORM_COMPLIANCE] Checking page {page_number}/{total_pages}")
+                logger.info(f"📋 [NORM_COMPLIANCE] Checking page {page_number}/{total_pages} (content length: {len(content)} chars)")
                 
                 # Проверяем страницу на соответствие нормам
+                page_start = datetime.now()
                 page_findings = await self.check_page_norm_compliance(
                     content, page_number, project_stage, document_set
                 )
+                page_time = (datetime.now() - page_start).total_seconds()
                 
                 findings.extend(page_findings)
                 
                 if not page_findings:
                     compliant_pages += 1
+                
+                logger.debug(f"📋 [NORM_COMPLIANCE] Page {page_number} checked in {page_time:.2f}s, findings: {len(page_findings)}")
             
             result = {
                 "project_stage": project_stage,
@@ -392,8 +436,8 @@ class HierarchicalCheckService:
                 result = cursor.fetchone()
                 if result:
                     return {
-                        "content": result["element_content"],
-                        "page_number": result["page_number"]
+                        "content": result[0],  # element_content
+                        "page_number": result[1]  # page_number
                     }
                 return None
                 
@@ -415,8 +459,8 @@ class HierarchicalCheckService:
                 pages = []
                 for row in cursor.fetchall():
                     pages.append({
-                        "content": row["element_content"],
-                        "page_number": row["page_number"]
+                        "content": row[0],  # element_content
+                        "page_number": row[1]  # page_number
                     })
                 
                 return pages

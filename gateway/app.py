@@ -263,6 +263,31 @@ async def proxy_request(request: Request, service_url: str, path: str = "") -> J
             status_code=500
         )
 
+# Проксирование запросов к API v1 (должен быть перед /api/{path:path})
+@app.api_route("/api/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_api_v1(request: Request, path: str):
+    """Проксирование запросов к API v1"""
+    print(f"🔍 [DEBUG] Gateway: API v1 route called with path: {path}")
+    
+    # Определяем сервис на основе пути
+    if path.startswith("documents") or path.startswith("checkable-documents"):
+        service_url = SERVICES["document-parser"]
+        print(f"🔍 [DEBUG] Gateway: Routing API v1 to document-parser: {service_url}")
+        return await proxy_request(request, service_url, f"/{path}")
+    elif path.startswith("calculations"):
+        service_url = SERVICES["calculation-service"]
+        print(f"🔍 [DEBUG] Gateway: Routing API v1 to calculation-service: {service_url}")
+        return await proxy_request(request, service_url, f"/{path}")
+    elif path.startswith("rag"):
+        service_url = SERVICES["rag-service"]
+        print(f"🔍 [DEBUG] Gateway: Routing API v1 to rag-service: {service_url}")
+        return await proxy_request(request, service_url, f"/{path}")
+    else:
+        # По умолчанию направляем к document-parser
+        service_url = SERVICES["document-parser"]
+        print(f"🔍 [DEBUG] Gateway: Routing API v1 to document-parser (default): {service_url}")
+        return await proxy_request(request, service_url, f"/{path}")
+
 # Проксирование запросов к document-parser
 @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy_api(request: Request, path: str):
@@ -284,7 +309,7 @@ async def proxy_api(request: Request, path: str):
         service_url = SERVICES["document-parser"]
         return await proxy_request(request, service_url, f"/api/{path}")
     
-    if path.startswith("upload") or path.startswith("documents") or path.startswith("settings"):
+    if path.startswith("upload") or path.startswith("documents") or path.startswith("checkable-documents") or path.startswith("settings"):
         service_url = SERVICES["document-parser"]
         print(f"🔍 [DEBUG] Gateway: Routing to document-parser: {service_url}")
         return await proxy_request(request, service_url, f"/{path}")
@@ -328,6 +353,40 @@ async def proxy_ollama_api(request: Request, path: str):
     
     service_url = SERVICES["ollama"]
     return await proxy_request(request, service_url, f"/{path}")
+
+# Основной роут для всех остальных путей
+@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_main(request: Request, path: str):
+    """Основной роут для всех остальных путей"""
+    print(f"🔍 [DEBUG] Gateway: Main route called with path: {path}")
+    
+    # Определяем сервис на основе пути
+    if path.startswith("upload") or path.startswith("documents") or path.startswith("checkable-documents") or path.startswith("settings"):
+        service_url = SERVICES["document-parser"]
+        print(f"🔍 [DEBUG] Gateway: Routing to document-parser: {service_url}")
+        return await proxy_request(request, service_url, f"/{path}")
+    elif path.startswith("rag/"):
+        service_url = SERVICES["rag-service"]
+        # Убираем префикс "rag/" из пути
+        path = path[4:]  # Убираем "rag/"
+        print(f"🔍 [DEBUG] Gateway: Routing to rag-service: {service_url} with path: {path}")
+        return await proxy_request(request, service_url, f"/{path}")
+    elif path.startswith("rules"):
+        service_url = SERVICES["rule-engine"]
+        print(f"🔍 [DEBUG] Gateway: Routing to rule-engine: {service_url}")
+        return await proxy_request(request, service_url, f"/{path}")
+    elif path.startswith("calculations"):
+        service_url = SERVICES["calculation-service"]
+        print(f"🔍 [DEBUG] Gateway: Routing to calculation-service: {service_url}")
+        return await proxy_request(request, service_url, f"/{path}")
+    elif path.startswith("chat") or path.startswith("generate"):
+        service_url = SERVICES["ollama"]
+        print(f"🔍 [DEBUG] Gateway: Routing to ollama: {service_url} with path: {path}")
+        return await proxy_request(request, service_url, f"/api/{path}")
+    else:
+        print(f"🔍 [DEBUG] Gateway: Unknown path, defaulting to document-parser")
+        service_url = SERVICES["document-parser"]
+        return await proxy_request(request, service_url, f"/{path}")
 
 # Health check endpoint
 @app.get("/health")
