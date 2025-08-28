@@ -22,8 +22,6 @@ logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Конфигурация авторизации
-VALID_TOKENS = ["test-token", "admin-token", "user-token", "demo-token"]
-
 def verify_token(authorization_header: str) -> bool:
     """Проверка токена авторизации"""
     print(f"🔍 [DEBUG] Gateway: verify_token called with: {authorization_header}")
@@ -37,11 +35,6 @@ def verify_token(authorization_header: str) -> bool:
         if authorization_header.startswith("Bearer "):
             token = authorization_header[7:]  # Убираем "Bearer "
             print(f"🔍 [DEBUG] Gateway: Extracted token: {token[:20]}..." if len(token) > 20 else f"🔍 [DEBUG] Gateway: Extracted token: {token}")
-            
-            # Проверяем простые токены (fallback)
-            if token in VALID_TOKENS:
-                print(f"🔍 [DEBUG] Gateway: Token matched VALID_TOKENS: {token}")
-                return True
             
             # Проверяем JWT токены от Keycloak
             if token.startswith("eyJ") and KEYCLOAK_ENABLED:
@@ -63,7 +56,7 @@ def verify_token(authorization_header: str) -> bool:
                 print(f"🔍 [DEBUG] Gateway: JWT token detected and accepted (fallback): {token[:20]}...")
                 return True
             
-            print(f"🔍 [DEBUG] Gateway: Token not in VALID_TOKENS and not valid JWT: {token}")
+            print(f"🔍 [DEBUG] Gateway: Token not valid JWT: {token}")
             return False
         else:
             print(f"🔍 [DEBUG] Gateway: Authorization header doesn't start with 'Bearer ': {authorization_header}")
@@ -313,9 +306,17 @@ async def proxy_api(request: Request, path: str):
         service_url = SERVICES["document-parser"]
         return await proxy_request(request, service_url, f"/api/{path}")
     
-    if path.startswith("upload") or path.startswith("checkable-documents") or path.startswith("settings"):
+    if path.startswith("checkable-documents") or path.startswith("settings"):
         service_url = SERVICES["document-parser"]
         print(f"🔍 [DEBUG] Gateway: Routing to document-parser: {service_url}")
+        return await proxy_request(request, service_url, f"/{path}")
+    elif path.startswith("upload/checkable"):
+        service_url = SERVICES["document-parser"]
+        print(f"🔍 [DEBUG] Gateway: Routing upload/checkable to document-parser: {service_url}")
+        return await proxy_request(request, service_url, f"/{path}")
+    elif path.startswith("upload"):
+        service_url = SERVICES["rag-service"]
+        print(f"🔍 [DEBUG] Gateway: Routing upload to rag-service: {service_url}")
         return await proxy_request(request, service_url, f"/{path}")
     elif path.startswith("documents"):
         service_url = SERVICES["rag-service"]
@@ -369,9 +370,20 @@ async def proxy_main(request: Request, path: str):
     print(f"🔍 [DEBUG] Gateway: Main route called with path: {path}")
     
     # Определяем сервис на основе пути
-    if path.startswith("upload") or path.startswith("checkable-documents") or path.startswith("settings"):
+    if path == "metrics":
+        # Используем собственный эндпоинт metrics
+        return await metrics()
+    elif path.startswith("checkable-documents") or path.startswith("settings"):
         service_url = SERVICES["document-parser"]
         print(f"🔍 [DEBUG] Gateway: Routing to document-parser: {service_url}")
+        return await proxy_request(request, service_url, f"/{path}")
+    elif path.startswith("upload/checkable"):
+        service_url = SERVICES["document-parser"]
+        print(f"🔍 [DEBUG] Gateway: Routing upload/checkable to document-parser: {service_url}")
+        return await proxy_request(request, service_url, f"/{path}")
+    elif path.startswith("upload"):
+        service_url = SERVICES["rag-service"]
+        print(f"🔍 [DEBUG] Gateway: Routing upload to rag-service: {service_url}")
         return await proxy_request(request, service_url, f"/{path}")
     elif path.startswith("documents"):
         service_url = SERVICES["rag-service"]

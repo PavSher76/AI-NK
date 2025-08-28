@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 class TrainingConfig:
     """Конфигурация для обучения системы"""
     api_base_url: str = "https://localhost/api"
-    auth_token: str = "test-token"
+    auth_token: str = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0cmFpbmluZy11c2VyIiwicHJlZmVycmVkX3VzZXJuYW1lIjoidHJhaW5pbmctdXNlciIsImV4cCI6OTk5OTk5OTk5OX0udHJhaW5pbmctc2lnbmF0dXJl"
     database_url: str = "postgresql://norms_user:norms_password@localhost:5432/norms_db"
     test_documents_path: str = "TestDocs/for_check"
     normative_documents_path: str = "TestDocs/Norms"

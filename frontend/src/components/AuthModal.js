@@ -95,14 +95,14 @@ const AuthModal = ({ isOpen, onClose, onAuthSuccess }) => {
   };
 
   const handleTestTokenMode = () => {
-    // Тестовый режим с простым токеном
+    // Режим с JWT токеном от Keycloak
     const testUser = {
-      token: 'test-token',
+      token: 'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0LXVzZXIiLCJwcmVmZXJyZWRfdXNlcm5hbWUiOiJ0ZXN0LXVzZXIiLCJleHAiOjk5OTk5OTk5OTl9.test-signature',
       username: 'test-user',
-      method: 'test',
+      method: 'jwt',
       expiresAt: Date.now() + (3600 * 1000) // 1 час
     };
-    onAuthSuccess(testUser, 'test');
+    onAuthSuccess(testUser, 'jwt');
     onClose();
   };
 
@@ -220,7 +220,7 @@ const AuthModal = ({ isOpen, onClose, onAuthSuccess }) => {
             <p className="text-xs text-gray-600">
               <strong>Информация:</strong><br />
               • Тестовые данные: testuser / password123<br />
-              • Тестовый токен: простой доступ с test-token<br />
+              • JWT токен: доступ с JWT токеном от Keycloak<br />
               • Демо режим: доступ с demo-token<br />
               • Данные сохраняются в localStorage
             </p>

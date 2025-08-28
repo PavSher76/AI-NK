@@ -35,7 +35,7 @@ npm run build
 
 ```bash
 REACT_APP_API_BASE=http://localhost:8080
-REACT_APP_API_TOKEN=test-token
+REACT_APP_API_TOKEN=eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJmcm9udGVuZC11c2VyIiwicHJlZmVycmVkX3VzZXJuYW1lIjoiZnJvbnRlbmQtdXNlciIsImV4cCI6OTk5OTk5OTk5OX0uZnJvbnRlbmQtc2lnbmF0dXJl
 ```
 
 ## Docker
