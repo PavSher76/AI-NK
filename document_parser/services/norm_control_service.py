@@ -131,8 +131,8 @@ class NormControlService:
                 pages = []
                 for row in cursor.fetchall():
                     pages.append({
-                        "page_number": row["page_number"],
-                        "content": row["element_content"]
+                        "page_number": row[1],  # page_number
+                        "content": row[0]  # element_content
                     })
                 
                 return pages

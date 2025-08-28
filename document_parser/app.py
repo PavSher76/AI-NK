@@ -47,7 +47,7 @@ signal.signal(signal.SIGINT, signal_handler)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Управление жизненным циклом приложения"""
-    global db_connection, norm_control_service, startup_time
+    global db_connection, norm_control_service, hierarchical_check_service, startup_time
     
     # Startup
     startup_time = datetime.now()
@@ -60,8 +60,12 @@ async def lifespan(app: FastAPI):
         
         # Инициализация сервисов
         logger.info("🔍 [STARTUP] Initializing services...")
+        logger.info("🔍 [STARTUP] Creating NormControlService...")
         norm_control_service = NormControlService(db_connection)
+        logger.info("🔍 [STARTUP] NormControlService created successfully")
+        logger.info("🔍 [STARTUP] Creating HierarchicalCheckService...")
         hierarchical_check_service = HierarchicalCheckService(db_connection)
+        logger.info("🔍 [STARTUP] HierarchicalCheckService created successfully")
         
         # Логирование использования памяти
         log_memory_usage("startup")
@@ -242,7 +246,7 @@ async def trigger_norm_control_check(
             raise HTTPException(status_code=404, detail="Document content not found")
         
         # Объединяем содержимое
-        document_content = "\n\n".join([elem["element_content"] for elem in elements])
+        document_content = "\n\n".join([elem[0] for elem in elements])  # element_content
         
         # Запускаем асинхронную проверку
         asyncio.create_task(
@@ -266,6 +270,56 @@ async def trigger_norm_control_check(
             pass
         raise HTTPException(status_code=500, detail=str(e))
 
+# Получение списка проверяемых документов
+@app.get("/checkable-documents")
+async def get_checkable_documents():
+    """Получение списка всех проверяемых документов"""
+    try:
+        def _get_documents(conn):
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT id, original_filename, file_type, file_size, upload_date, 
+                               processing_status, category, review_deadline, review_status, 
+                               assigned_reviewer
+                        FROM checkable_documents 
+                        ORDER BY upload_date DESC
+                    """)
+                    documents = cursor.fetchall()
+                    result = []
+                    for doc in documents:
+                        result.append({
+                            'id': doc[0],
+                            'original_filename': doc[1],
+                            'file_type': doc[2],
+                            'file_size': doc[3],
+                            'upload_date': doc[4],
+                            'processing_status': doc[5],
+                            'category': doc[6],
+                            'review_deadline': doc[7],
+                            'review_status': doc[8],
+                            'assigned_reviewer': doc[9]
+                        })
+                    return result
+            except Exception as db_error:
+                logger.error(f"🔍 [DATABASE] Error in _get_documents: {db_error}")
+                raise
+        
+        try:
+            logger.debug(f"🔍 [DATABASE] Starting read-only transaction for get_checkable_documents")
+            documents = db_connection.execute_in_read_only_transaction(_get_documents)
+            logger.debug(f"🔍 [DATABASE] Successfully retrieved {len(documents)} checkable documents using read-only transaction")
+            return {"documents": documents}
+        except Exception as e:
+            logger.error(f"Get checkable documents error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get checkable documents error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Иерархическая проверка документа
 @app.post("/checkable-documents/{document_id}/hierarchical-check")
 async def trigger_hierarchical_check(
@@ -274,32 +328,48 @@ async def trigger_hierarchical_check(
 ):
     """Запуск иерархической проверки документа"""
     try:
+        logger.info(f"🎯 [API] Hierarchical check requested for document {document_id}")
+        logger.info(f"🎯 [API] Request timestamp: {datetime.now().isoformat()}")
+        
         # Проверяем существование документа
+        logger.debug(f"🎯 [API] Checking document existence for ID {document_id}")
         document = get_checkable_document(document_id)
         if not document:
+            logger.error(f"🎯 [API] Document {document_id} not found")
             raise HTTPException(status_code=404, detail="Document not found")
         
+        logger.info(f"🎯 [API] Document found: {document.get('original_filename', 'Unknown')}")
+        
         # Проверяем текущий статус документа
-        if document.get("processing_status") == "processing":
+        current_status = document.get("processing_status", "unknown")
+        logger.info(f"🎯 [API] Current document status: {current_status}")
+        
+        if current_status == "processing":
+            logger.warning(f"🎯 [API] Document {document_id} is already being processed")
             return {
                 "status": "already_processing",
                 "message": "Document is already being processed"
             }
         
         # Обновляем статус на "processing"
+        logger.info(f"🎯 [API] Updating document status to 'processing'")
         update_checkable_document_status(document_id, "processing")
         
         # Запускаем асинхронную иерархическую проверку
+        logger.info(f"🎯 [API] Starting async hierarchical check task")
         asyncio.create_task(
             perform_async_hierarchical_check(document_id, hierarchical_check_service)
         )
         
-        return {
+        response = {
             "status": "started",
             "message": "Hierarchical check started asynchronously",
             "document_id": document_id,
             "check_type": "hierarchical"
         }
+        
+        logger.info(f"🎯 [API] Hierarchical check response: {response}")
+        return response
         
     except HTTPException:
         raise
@@ -317,14 +387,21 @@ async def perform_async_hierarchical_check(document_id: int, hierarchical_check_
     """Асинхронное выполнение иерархической проверки"""
     try:
         logger.info(f"🚀 [ASYNC_HIERARCHICAL] Starting async hierarchical check for document {document_id}")
+        logger.info(f"🚀 [ASYNC_HIERARCHICAL] Async task started at: {datetime.now().isoformat()}")
         
         # Выполняем иерархическую проверку документа
+        logger.info(f"🚀 [ASYNC_HIERARCHICAL] Calling hierarchical_check_service.perform_hierarchical_check")
         result = await hierarchical_check_service.perform_hierarchical_check(document_id)
         
+        logger.info(f"🚀 [ASYNC_HIERARCHICAL] Hierarchical check result received: {result.get('check_type', 'unknown')}")
+        logger.info(f"🚀 [ASYNC_HIERARCHICAL] Execution time: {result.get('execution_time', 0):.2f}s")
+        
         # Обновляем статус на "completed"
+        logger.info(f"🚀 [ASYNC_HIERARCHICAL] Updating document status to 'completed'")
         update_checkable_document_status(document_id, "completed")
         
         logger.info(f"✅ [ASYNC_HIERARCHICAL] Async hierarchical check completed for document {document_id}")
+        logger.info(f"✅ [ASYNC_HIERARCHICAL] Async task completed at: {datetime.now().isoformat()}")
         
     except Exception as e:
         logger.error(f"❌ [ASYNC_HIERARCHICAL] Async hierarchical check failed for document {document_id}: {e}")
@@ -347,7 +424,21 @@ def get_checkable_document(document_id: int):
                     WHERE id = %s
                 """, (document_id,))
                 document = cursor.fetchone()
-                return dict(document) if document else None
+                if document:
+                    # Преобразуем кортеж в словарь по позициям
+                    return {
+                        'id': document[0],
+                        'original_filename': document[1],
+                        'file_type': document[2],
+                        'file_size': document[3],
+                        'upload_date': document[4],
+                        'processing_status': document[5],
+                        'category': document[6],
+                        'review_deadline': document[7],
+                        'review_status': document[8],
+                        'assigned_reviewer': document[9]
+                    }
+                return None
         except Exception as db_error:
             logger.error(f"🔍 [DATABASE] Error in _get_document: {db_error}")
             raise

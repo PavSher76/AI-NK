@@ -48,7 +48,7 @@ const AuthModal = ({ isOpen, onClose, onAuthSuccess }) => {
       const accessToken = tokenData.access_token;
 
       // Проверяем токен через Gateway
-      const gatewayResponse = await fetch('/api/documents', {
+      const gatewayResponse = await fetch('/api/v1/checkable-documents', {
         headers: {
           'Authorization': `Bearer ${accessToken}`,
           'Content-Type': 'application/json'
@@ -78,7 +78,7 @@ const AuthModal = ({ isOpen, onClose, onAuthSuccess }) => {
   };
 
   const handleTestLogin = () => {
-    setUsername('testuser');
+    setUsername('user');
     setPassword('password123');
   };
 
