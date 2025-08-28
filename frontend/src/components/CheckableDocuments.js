@@ -15,7 +15,8 @@ import {
   Loader2,
   RefreshCw,
   AlertCircle,
-  Play
+  Play,
+  Layers
 } from 'lucide-react';
 
 const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefreshComplete }) => {
@@ -378,6 +379,57 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
     }
   };
 
+  // Запуск иерархической проверки
+  const runHierarchicalCheck = async (documentId) => {
+    // Проверка авторизации
+    if (!isAuthenticated || !authToken) {
+      console.log('🔍 [DEBUG] CheckableDocuments.js: runHierarchicalCheck - not authenticated');
+      setError('Требуется авторизация для запуска проверки');
+      return;
+    }
+    
+    try {
+      setLoadingReports(prev => ({ ...prev, [documentId]: true }));
+      setError(null);
+      
+      // Отправляем запрос на асинхронную иерархическую проверку
+      const checkResponse = await fetch(`${API_BASE}/checkable-documents/${documentId}/hierarchical-check`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      if (checkResponse.ok) {
+        const result = await checkResponse.json();
+        
+        if (result.status === 'started') {
+          setSuccess(`Иерархическая проверка запущена асинхронно`);
+          
+          // Запускаем периодическую проверку статуса
+          startStatusPolling(documentId);
+        } else if (result.status === 'already_processing') {
+          setError('Документ уже обрабатывается');
+        } else {
+          setSuccess(`Иерархическая проверка завершена`);
+          // Обновляем отчет
+          setTimeout(() => {
+            fetchReport(documentId);
+          }, 1000);
+        }
+      } else {
+        const errorData = await checkResponse.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Ошибка запуска иерархической проверки');
+      }
+    } catch (error) {
+      console.error('Ошибка иерархической проверки:', error);
+      setError(`Ошибка иерархической проверки: ${error.message}`);
+    } finally {
+      setLoadingReports(prev => ({ ...prev, [documentId]: false }));
+    }
+  };
+
   // Периодическая проверка статуса документа
   const startStatusPolling = (documentId) => {
     const pollInterval = setInterval(async () => {
@@ -485,8 +537,8 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
 
   // Получение статуса проверки документа
   const getDocumentStatus = (doc) => {
-    // Если есть отчет о проверке, документ проверен
-    if (reports[doc.id]?.norm_control_result) {
+    // Если есть отчет о проверке (обычная или иерархическая), документ проверен
+    if (reports[doc.id]?.norm_control_result || reports[doc.id]?.hierarchical_result) {
       return {
         text: 'Проверен',
         color: 'bg-green-100 text-green-800',
@@ -860,12 +912,29 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
                           ? 'text-gray-300 cursor-not-allowed' 
                           : 'text-gray-400 hover:text-green-600'
                       }`}
-                      title={getProcessingStatusText(doc)}
+                      title="Запустить проверку нормоконтроля"
                     >
                       {loadingReports[doc.id] || doc.processing_status === 'processing' ? (
                         <Loader2 className="w-4 h-4 animate-spin" />
                       ) : (
                         <Play className="w-4 h-4" />
+                      )}
+                    </button>
+                    
+                    <button
+                      onClick={() => runHierarchicalCheck(doc.id)}
+                      disabled={loadingReports[doc.id] || doc.processing_status === 'processing'}
+                      className={`p-2 transition-colors ${
+                        loadingReports[doc.id] || doc.processing_status === 'processing'
+                          ? 'text-gray-300 cursor-not-allowed' 
+                          : 'text-gray-400 hover:text-purple-600'
+                      }`}
+                      title="Запустить иерархическую проверку"
+                    >
+                      {loadingReports[doc.id] || doc.processing_status === 'processing' ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Layers className="w-4 h-4" />
                       )}
                     </button>
                     

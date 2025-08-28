@@ -452,6 +452,111 @@ def get_checkable_document(document_id: int):
         logger.error(f"Get checkable document error: {e}")
         return None
 
+# Получение отчета о проверке
+@app.get("/checkable-documents/{document_id}/report")
+async def get_report(document_id: int):
+    """Получение отчета о проверке документа"""
+    try:
+        # Проверяем существование документа
+        document = get_checkable_document(document_id)
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        # Получаем результаты проверки
+        def _get_report(conn):
+            try:
+                with conn.cursor() as cursor:
+                    # Получаем результаты иерархической проверки
+                    cursor.execute("""
+                        SELECT project_info, norm_compliance_summary, sections_analysis, 
+                               overall_status, execution_time
+                        FROM hierarchical_check_results
+                        WHERE checkable_document_id = %s
+                        ORDER BY analysis_date DESC
+                        LIMIT 1
+                    """, (document_id,))
+                    hierarchical_result = cursor.fetchone()
+                    
+                    return {
+                        'hierarchical_result': {
+                            'project_info': hierarchical_result[0] if hierarchical_result else None,
+                            'norm_compliance_summary': hierarchical_result[1] if hierarchical_result else None,
+                            'sections_analysis': hierarchical_result[2] if hierarchical_result else None,
+                            'overall_status': hierarchical_result[3] if hierarchical_result else None,
+                            'execution_time': hierarchical_result[4] if hierarchical_result else None
+                        } if hierarchical_result else None,
+                        'document_info': {
+                            'id': document.get('id'),
+                            'original_filename': document.get('original_filename'),
+                            'processing_status': document.get('processing_status')
+                        }
+                    }
+            except Exception as db_error:
+                logger.error(f"🔍 [DATABASE] Error in _get_report: {db_error}")
+                raise
+        
+        try:
+            logger.debug(f"🔍 [DATABASE] Starting read-only transaction for get_report {document_id}")
+            report = db_connection.execute_in_read_only_transaction(_get_report)
+            logger.debug(f"🔍 [DATABASE] Successfully retrieved report for document {document_id}")
+            return report
+        except Exception as e:
+            logger.error(f"Get report error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get report error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Скачивание отчета в формате PDF
+@app.get("/checkable-documents/{document_id}/download-report")
+async def download_report(document_id: int):
+    """Скачивание отчета о проверке в формате PDF"""
+    try:
+        # Проверяем существование документа
+        document = get_checkable_document(document_id)
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        # Получаем отчет
+        report_response = await get_report(document_id)
+        
+        # Генерируем PDF отчет
+        try:
+            from utils.pdf_generator import PDFReportGenerator
+            
+            pdf_generator = PDFReportGenerator()
+            pdf_content = pdf_generator.generate_report_pdf(report_response)
+            
+            # Формируем имя файла
+            filename = f"report_{document_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+            
+            # Возвращаем PDF файл
+            from fastapi.responses import Response
+            return Response(
+                content=pdf_content,
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": f"attachment; filename={filename}",
+                    "Content-Length": str(len(pdf_content))
+                }
+            )
+            
+        except ImportError as e:
+            logger.error(f"PDF generator import error: {e}")
+            raise HTTPException(status_code=500, detail="PDF generation not available")
+        except Exception as e:
+            logger.error(f"PDF generation error: {e}")
+            raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Download report error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     uvicorn.run(
         "app:app",
