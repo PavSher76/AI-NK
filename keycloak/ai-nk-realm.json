@@ -3,6 +3,13 @@
   "enabled": true,
   "displayName": "AI-НК",
   "displayNameHtml": "<div class=\"kc-logo-text\"><span>AI-НК</span></div>",
+  "attributes": {
+    "cors.origins": "https://localhost,http://localhost,https://localhost:8443,http://localhost:8443",
+    "cors.methods": "GET,POST,PUT,DELETE,OPTIONS",
+    "cors.headers": "*",
+    "cors.exposedHeaders": "*",
+    "cors.allowCredentials": "true"
+  },
   "users": [
     {
       "username": "admin",
@@ -56,8 +63,8 @@
       "publicClient": true,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": true,
-      "redirectUris": ["https://localhost/*", "http://localhost/*"],
-      "webOrigins": ["https://localhost", "http://localhost"],
+      "redirectUris": ["https://localhost/*", "http://localhost/*", "https://localhost:8443/*", "http://localhost:8443/*"],
+      "webOrigins": ["https://localhost", "http://localhost", "https://localhost:8443", "http://localhost:8443", "+"],
       "attributes": {
         "saml.assertion.signature": "false",
         "saml.force.post.binding": "false",
@@ -81,8 +88,8 @@
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": true,
       "serviceAccountsEnabled": true,
-      "redirectUris": ["https://localhost/*", "http://localhost/*"],
-      "webOrigins": ["https://localhost", "http://localhost"],
+      "redirectUris": ["https://localhost/*", "http://localhost/*", "https://localhost:8443/*", "http://localhost:8443/*"],
+      "webOrigins": ["https://localhost", "http://localhost", "https://localhost:8443", "http://localhost:8443", "+"],
       "attributes": {
         "saml.assertion.signature": "false",
         "saml.force.post.binding": "false",

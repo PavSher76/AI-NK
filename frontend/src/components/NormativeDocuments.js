@@ -241,11 +241,11 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
     }
   };
 
-  // Получение информации о токенах документа
+  // Получение информации о чанках документа
   const fetchDocumentTokens = async (documentId) => {
     console.log('🔍 [DEBUG] NormativeDocuments.js: fetchDocumentTokens started for ID:', documentId);
     try {
-      const response = await fetch(`/api/documents/${documentId}/tokens`, {
+      const response = await fetch(`/api/documents/${documentId}/chunks`, {
         headers: {
           'Authorization': `Bearer ${authToken}`
         }
@@ -257,9 +257,12 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
         setShowTokenModal(true);
       } else {
         console.error('🔍 [DEBUG] NormativeDocuments.js: fetchDocumentTokens failed with status:', response.status);
+        setError('Не удалось получить информацию о чанках документа');
       }
     } catch (err) {
       console.error('🔍 [DEBUG] NormativeDocuments.js: fetchDocumentTokens error:', err);
+      setError('Ошибка при получении информации о чанках документа');
+    }
     }
   };
 
@@ -630,8 +633,8 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
     
     const matchesSearch = filename.toLowerCase().includes(searchQuery.toLowerCase()) ||
                          fileType.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesCategory = !filterCategory || doc.category === filterCategory;
-    const matchesStatus = !filterStatus || doc.processing_status === filterStatus;
+    const matchesCategory = !filterCategory || (doc.category || 'other') === filterCategory;
+    const matchesStatus = !filterStatus || (doc.status || doc.processing_status || 'uploaded') === filterStatus;
     
     return matchesSearch && matchesCategory && matchesStatus;
   });
@@ -646,7 +649,7 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
         const filenameB = b.original_filename || b.title || b.document_title || '';
         return filenameA.localeCompare(filenameB);
       case 'file_size':
-        return (b.file_size || 0) - (a.file_size || 0);
+        return (b.chunks_count || b.file_size || 0) - (a.chunks_count || a.file_size || 0);
       case 'category':
         return (a.category || '').localeCompare(b.category || '');
       default:
@@ -686,15 +689,6 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
       fetchSettings();
     }
   }, [showSettingsModal]);
-
-  console.log('🔍 [DEBUG] NormativeDocuments.js: Rendering with state:', {
-    documentsCount: documents.length,
-    isLoading,
-    error,
-    showSettings: showSettingsModal,
-    settingsCount: settings.length,
-    stats
-  });
 
   return (
     <div className="space-y-6">
@@ -776,7 +770,6 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
       )}
 
       {/* Статистика */}
-      {console.log('🔍 [DEBUG] NormativeDocuments.js: Rendering stats section with:', { isLoadingStats, stats })}
       {isLoadingStats ? (
         <div className="bg-white p-8 rounded-lg border shadow-sm text-center">
           <Loader2 className="w-8 h-8 animate-spin mx-auto text-blue-600" />
@@ -951,26 +944,26 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
                     
                     <div className="flex-1">
                       <div className="flex items-center space-x-2 mb-1">
-                        <h4 className="font-medium text-gray-900">{doc.original_filename}</h4>
-                        <span className={`px-2 py-1 rounded-full text-xs ${getCategoryInfo(doc.category).color}`}>
-                          {getCategoryInfo(doc.category).label}
+                        <h4 className="font-medium text-gray-900">{doc.title || doc.original_filename || 'Без названия'}</h4>
+                        <span className={`px-2 py-1 rounded-full text-xs ${getCategoryInfo(doc.category || 'other').color}`}>
+                          {getCategoryInfo(doc.category || 'other').label}
                         </span>
-                        <span className={`px-2 py-1 rounded-full text-xs ${getStatusInfo(doc.processing_status).color}`}>
-                          {getStatusInfo(doc.processing_status).label}
+                        <span className={`px-2 py-1 rounded-full text-xs ${getStatusInfo(doc.status || doc.processing_status || 'uploaded').color}`}>
+                          {getStatusInfo(doc.status || doc.processing_status || 'uploaded').label}
                         </span>
                       </div>
                       
                       <div className="flex items-center space-x-4 text-sm text-gray-500">
-                        <span>{getFileTypeName(doc.file_type)}</span>
-                        <span>{(doc.file_size / 1024 / 1024).toFixed(2)} МБ</span>
+                        <span>{getFileTypeName(doc.file_type || 'pdf')}</span>
+                        <span>{doc.chunks_count ? `${doc.chunks_count} чанков` : (doc.file_size ? `${(doc.file_size / 1024 / 1024).toFixed(2)} МБ` : 'Размер неизвестен')}</span>
                         <span className="flex items-center space-x-1">
                           <Calendar className="w-3 h-3" />
-                          <span>{new Date(doc.upload_date).toLocaleDateString('ru-RU')}</span>
+                          <span>{doc.upload_date ? new Date(doc.upload_date).toLocaleDateString('ru-RU') : 'Дата неизвестна'}</span>
                         </span>
-                        {doc.token_count > 0 && (
+                        {doc.chunks_count > 0 && (
                           <span className="flex items-center space-x-1 text-purple-600">
                             <Hash className="w-3 h-3" />
-                            <span>{doc.token_count.toLocaleString()} токенов</span>
+                            <span>{doc.chunks_count.toLocaleString()} чанков</span>
                           </span>
                         )}
                       </div>
@@ -986,11 +979,11 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
                       <Eye className="w-4 h-4" />
                     </button>
                     
-                    {doc.token_count > 0 && (
+                    {doc.chunks_count > 0 && (
                       <button
                         onClick={() => fetchDocumentTokens(doc.id)}
                         className="p-2 text-gray-400 hover:text-purple-600 transition-colors"
-                        title="Информация о токенах"
+                        title="Информация о чанках"
                       >
                         <BarChart3 className="w-4 h-4" />
                       </button>
@@ -1168,38 +1161,45 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">Название файла</label>
-                  <p className="text-sm text-gray-900">{selectedDocument.original_filename}</p>
+                  <label className="block text-sm font-medium text-gray-700">Название документа</label>
+                  <p className="text-sm text-gray-900">{selectedDocument.title || selectedDocument.original_filename || 'Без названия'}</p>
                 </div>
                 
                 <div>
                   <label className="block text-sm font-medium text-gray-700">Тип файла</label>
-                  <p className="text-sm text-gray-900">{getFileTypeName(selectedDocument.file_type)}</p>
+                  <p className="text-sm text-gray-900">{getFileTypeName(selectedDocument.file_type || 'pdf')}</p>
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Количество чанков</label>
+                  <p className="text-sm text-gray-900">{selectedDocument.chunks_count || 'Неизвестно'}</p>
                 </div>
                 
                 <div>
                   <label className="block text-sm font-medium text-gray-700">Размер</label>
-                  <p className="text-sm text-gray-900">{(selectedDocument.file_size / 1024 / 1024).toFixed(2)} МБ</p>
+                  <p className="text-sm text-gray-900">
+                    {selectedDocument.file_size ? `${(selectedDocument.file_size / 1024 / 1024).toFixed(2)} МБ` : 'Неизвестен'}
+                  </p>
                 </div>
                 
                 <div>
                   <label className="block text-sm font-medium text-gray-700">Дата загрузки</label>
                   <p className="text-sm text-gray-900">
-                    {new Date(selectedDocument.upload_date).toLocaleString('ru-RU')}
+                    {selectedDocument.upload_date ? new Date(selectedDocument.upload_date).toLocaleString('ru-RU') : 'Неизвестна'}
                   </p>
                 </div>
                 
                 <div>
                   <label className="block text-sm font-medium text-gray-700">Категория</label>
-                  <span className={`px-2 py-1 rounded-full text-xs ${getCategoryInfo(selectedDocument.category).color}`}>
-                    {getCategoryInfo(selectedDocument.category).label}
+                  <span className={`px-2 py-1 rounded-full text-xs ${getCategoryInfo(selectedDocument.category || 'other').color}`}>
+                    {getCategoryInfo(selectedDocument.category || 'other').label}
                   </span>
                 </div>
                 
                 <div>
                   <label className="block text-sm font-medium text-gray-700">Статус</label>
-                  <span className={`px-2 py-1 rounded-full text-xs ${getStatusInfo(selectedDocument.processing_status).color}`}>
-                    {getStatusInfo(selectedDocument.processing_status).label}
+                  <span className={`px-2 py-1 rounded-full text-xs ${getStatusInfo(selectedDocument.status || selectedDocument.processing_status || 'uploaded').color}`}>
+                    {getStatusInfo(selectedDocument.status || selectedDocument.processing_status || 'uploaded').label}
                   </span>
                 </div>
               </div>
@@ -1236,7 +1236,7 @@ const NormativeDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
           <div className="bg-white rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-gray-900">
-                Информация о токенах: {selectedDocumentTokens.document.original_filename}
+                Информация о чанках: {selectedDocumentTokens.document.title || selectedDocumentTokens.document.original_filename || 'Без названия'}
               </h3>
               <button
                 onClick={() => setShowTokenModal(false)}

@@ -72,6 +72,7 @@ MAX_TOKENS = 1000
 
 # Названия коллекций
 VECTOR_COLLECTION = "normative_documents"
+CHECKABLE_COLLECTION = "checkable_documents"
 BM25_COLLECTION = "normative_bm25"
 
 logger.info(f"🔧 [CONFIG] CHUNK_SIZE: {CHUNK_SIZE}")
@@ -128,9 +129,65 @@ class NormRAGService:
             self.qdrant_client = qdrant_client.QdrantClient(url=QDRANT_URL)
             logger.info("✅ [CONNECT] Connected to Qdrant")
             
+            # Создаем коллекции при инициализации
+            self._create_collections()
+            
         except Exception as e:
             logger.error(f"❌ [CONNECT] Service connection error: {e}")
             raise
+    
+    def _create_collections(self):
+        """Создание коллекций в Qdrant при инициализации"""
+        try:
+            import requests
+            response = requests.get(f"{QDRANT_URL}/collections")
+            if response.status_code == 200:
+                collections_data = response.json()
+                collection_names = [col['name'] for col in collections_data.get('result', {}).get('collections', [])]
+                
+                # Создаем коллекцию для нормативных документов
+                if VECTOR_COLLECTION not in collection_names:
+                    self.qdrant_client.create_collection(
+                        collection_name=VECTOR_COLLECTION,
+                        vectors_config=VectorParams(size=1024, distance=Distance.COSINE)
+                    )
+                    logger.info(f"✅ [QDRANT] Created Qdrant collection: {VECTOR_COLLECTION}")
+                else:
+                    logger.info(f"✅ [QDRANT] Qdrant collection {VECTOR_COLLECTION} already exists.")
+                
+                # Создаем коллекцию для проверяемых документов
+                if CHECKABLE_COLLECTION not in collection_names:
+                    self.qdrant_client.create_collection(
+                        collection_name=CHECKABLE_COLLECTION,
+                        vectors_config=VectorParams(size=1024, distance=Distance.COSINE)
+                    )
+                    logger.info(f"✅ [QDRANT] Created Qdrant collection: {CHECKABLE_COLLECTION}")
+                else:
+                    logger.info(f"✅ [QDRANT] Qdrant collection {CHECKABLE_COLLECTION} already exists.")
+            else:
+                logger.warning(f"⚠️ [QDRANT] Could not check collections: {response.status_code}")
+                # Пытаемся создать коллекции в любом случае
+                try:
+                    self.qdrant_client.create_collection(
+                        collection_name=VECTOR_COLLECTION,
+                        vectors_config=VectorParams(size=1024, distance=Distance.COSINE)
+                    )
+                    logger.info(f"✅ [QDRANT] Created Qdrant collection: {VECTOR_COLLECTION}")
+                except Exception as e:
+                    logger.info(f"✅ [QDRANT] Qdrant collection {VECTOR_COLLECTION} already exists or error: {e}")
+                
+                try:
+                    self.qdrant_client.create_collection(
+                        collection_name=CHECKABLE_COLLECTION,
+                        vectors_config=VectorParams(size=1024, distance=Distance.COSINE)
+                    )
+                    logger.info(f"✅ [QDRANT] Created Qdrant collection: {CHECKABLE_COLLECTION}")
+                except Exception as e:
+                    logger.info(f"✅ [QDRANT] Qdrant collection {CHECKABLE_COLLECTION} already exists or error: {e}")
+                    
+        except Exception as e:
+            logger.error(f"❌ [QDRANT] Error creating collections: {e}")
+            # Не прерываем инициализацию из-за ошибки создания коллекций
     
     @property
     def embedding_model(self):
@@ -459,6 +516,16 @@ class NormRAGService:
                     logger.info(f"✅ [QDRANT] Created Qdrant collection: {VECTOR_COLLECTION}")
                 else:
                     logger.info(f"✅ [QDRANT] Qdrant collection {VECTOR_COLLECTION} already exists.")
+                
+                # Создаем коллекцию для проверяемых документов
+                if CHECKABLE_COLLECTION not in collection_names:
+                    self.qdrant_client.create_collection(
+                        collection_name=CHECKABLE_COLLECTION,
+                        vectors_config=VectorParams(size=1024, distance=Distance.COSINE)
+                    )
+                    logger.info(f"✅ [QDRANT] Created Qdrant collection: {CHECKABLE_COLLECTION}")
+                else:
+                    logger.info(f"✅ [QDRANT] Qdrant collection {CHECKABLE_COLLECTION} already exists.")
             else:
                 logger.warning(f"⚠️ [QDRANT] Could not check collections: {response.status_code}")
                 # Пытаемся создать коллекцию в любом случае
@@ -470,6 +537,16 @@ class NormRAGService:
                     logger.info(f"✅ [QDRANT] Created Qdrant collection: {VECTOR_COLLECTION}")
                 except Exception as e:
                     logger.info(f"✅ [QDRANT] Qdrant collection {VECTOR_COLLECTION} already exists or error: {e}")
+                
+                # Пытаемся создать коллекцию для проверяемых документов
+                try:
+                    self.qdrant_client.create_collection(
+                        collection_name=CHECKABLE_COLLECTION,
+                        vectors_config=VectorParams(size=1024, distance=Distance.COSINE)
+                    )
+                    logger.info(f"✅ [QDRANT] Created Qdrant collection: {CHECKABLE_COLLECTION}")
+                except Exception as e:
+                    logger.info(f"✅ [QDRANT] Qdrant collection {CHECKABLE_COLLECTION} already exists or error: {e}")
             
             # Подготавливаем точки для индексации
             points = []
@@ -765,15 +842,17 @@ class NormRAGService:
                 # Получаем уникальные документы с их метаданными
                 cursor.execute("""
                     SELECT DISTINCT 
-                        document_id,
-                        document_title,
+                        nc.document_id,
+                        nc.document_title,
                         COUNT(*) as chunks_count,
-                        MIN(page_number) as first_page,
-                        MAX(page_number) as last_page,
-                        STRING_AGG(DISTINCT chunk_type, ', ') as chunk_types
-                    FROM normative_chunks 
-                    GROUP BY document_id, document_title
-                    ORDER BY document_id
+                        MIN(nc.page_number) as first_page,
+                        MAX(nc.page_number) as last_page,
+                        STRING_AGG(DISTINCT nc.chunk_type, ', ') as chunk_types,
+                        ud.category
+                    FROM normative_chunks nc
+                    LEFT JOIN uploaded_documents ud ON nc.document_id = ud.id
+                    GROUP BY nc.document_id, nc.document_title, ud.category
+                    ORDER BY nc.document_title ASC
                 """)
                 
                 documents = cursor.fetchall()
@@ -789,6 +868,7 @@ class NormRAGService:
                         "first_page": doc['first_page'],
                         "last_page": doc['last_page'],
                         "chunk_types": doc['chunk_types'].split(', ') if doc['chunk_types'] else [],
+                        "category": doc['category'] or 'other',
                         "status": "indexed"
                     })
                 
@@ -796,6 +876,63 @@ class NormRAGService:
                 
         except Exception as e:
             logger.error(f"❌ [GET_DOCUMENTS] Error getting documents: {e}")
+            return []
+    
+    def get_document_chunks(self, document_id: int) -> List[Dict[str, Any]]:
+        """Получение информации о чанках конкретного документа"""
+        logger.info(f"📄 [GET_DOCUMENT_CHUNKS] Getting chunks for document ID: {document_id}")
+        try:
+            with self.db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                # Проверяем существование таблицы normative_chunks
+                cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_name = 'normative_chunks'
+                    );
+                """)
+                table_exists = cursor.fetchone()['exists']
+                
+                if not table_exists:
+                    logger.info("📄 [GET_DOCUMENT_CHUNKS] Table normative_chunks does not exist, returning empty list")
+                    return []
+                
+                # Получаем чанки документа
+                cursor.execute("""
+                    SELECT 
+                        chunk_id,
+                        clause_id,
+                        chapter,
+                        section,
+                        page_number,
+                        chunk_type,
+                        LENGTH(content) as content_length,
+                        created_at
+                    FROM normative_chunks 
+                    WHERE document_id = %s
+                    ORDER BY page_number ASC, chunk_id ASC
+                """, (document_id,))
+                
+                chunks = cursor.fetchall()
+                logger.info(f"✅ [GET_DOCUMENT_CHUNKS] Retrieved {len(chunks)} chunks for document {document_id}")
+                
+                # Преобразуем в список словарей
+                result = []
+                for chunk in chunks:
+                    result.append({
+                        "chunk_id": chunk['chunk_id'],
+                        "clause_id": chunk['clause_id'],
+                        "chapter": chunk['chapter'] or "Не указано",
+                        "section": chunk['section'] or "Не указано",
+                        "page_number": chunk['page_number'],
+                        "chunk_type": chunk['chunk_type'],
+                        "content_length": chunk['content_length'],
+                        "created_at": chunk['created_at'].isoformat() if chunk['created_at'] else None
+                    })
+                
+                return result
+                
+        except Exception as e:
+            logger.error(f"❌ [GET_DOCUMENT_CHUNKS] Error getting document chunks: {e}")
             return []
     
     def get_stats(self) -> Dict[str, Any]:
@@ -980,6 +1117,67 @@ async def index_document(
         logger.error(f"❌ [INDEX_DOC] Indexing error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/upload")
+async def upload_document(
+    file: UploadFile = File(...),
+    category: str = Form("other"),
+    description: str = Form("")
+):
+    """Загрузка и индексация нормативного документа"""
+    logger.info(f"📤 [UPLOAD_DOC] Uploading document: {file.filename}")
+    try:
+        # Проверяем тип файла
+        if not file.filename.lower().endswith(('.pdf', '.docx', '.txt')):
+            raise HTTPException(status_code=400, detail="Unsupported file type. Only PDF, DOCX, and TXT files are allowed.")
+        
+        # Читаем содержимое файла
+        content = await file.read()
+        
+        # Генерируем уникальный ID документа (небольшое число для PostgreSQL)
+        import hashlib
+        import time
+        # Используем только небольшой хеш + timestamp для уникальности
+        hash_part = int(hashlib.md5(f"{file.filename}_{content[:100]}".encode()).hexdigest()[:3], 16)
+        time_part = int(time.time()) % 100000  # Последние 5 цифр времени
+        document_id = time_part * 1000 + hash_part  # Получится число до 8 цифр (макс. 99999999)
+        
+        # Извлекаем текст из файла (упрощенная версия)
+        if file.filename.lower().endswith('.txt'):
+            text_content = content.decode('utf-8', errors='ignore')
+        else:
+            # Для PDF и DOCX пока используем заглушку
+            text_content = f"Содержимое документа {file.filename}"
+        
+        # Создаем чанки
+        chunks = rag_service.chunk_document(
+            document_id=document_id,
+            document_title=file.filename,
+            content=text_content,
+            chapter="",
+            section="",
+            page_number=1
+        )
+        
+        # Индексируем чанки
+        success = rag_service.index_chunks(chunks)
+        
+        if success:
+            return {
+                "status": "success",
+                "document_id": document_id,
+                "filename": file.filename,
+                "chunks_created": len(chunks),
+                "message": f"Document uploaded and indexed successfully"
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to index document")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ [UPLOAD_DOC] Upload error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/search")
 async def search_norms(
     query: str = Form(...),
@@ -1051,6 +1249,18 @@ async def get_stats():
         logger.error(f"❌ [GET_STATS] Stats error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/documents/{document_id}/chunks")
+async def get_document_chunks(document_id: int):
+    """Получение информации о чанках конкретного документа"""
+    logger.info(f"📄 [GET_DOCUMENT_CHUNKS] Getting chunks for document ID: {document_id}")
+    try:
+        chunks_info = rag_service.get_document_chunks(document_id)
+        logger.info(f"✅ [GET_DOCUMENT_CHUNKS] Chunks info retrieved for document {document_id}")
+        return {"chunks": chunks_info}
+    except Exception as e:
+        logger.error(f"❌ [GET_DOCUMENT_CHUNKS] Chunks error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/documents/stats")
 async def get_documents_stats():
     """Получение статистики документов в формате для фронтенда"""
@@ -1075,6 +1285,27 @@ async def get_documents_stats():
         return adapted_stats
     except Exception as e:
         logger.error(f"❌ [GET_DOCUMENTS_STATS] Documents stats error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/documents/{document_id}")
+async def delete_document(document_id: int):
+    """Удаление документа и его индексов"""
+    logger.info(f"🗑️ [DELETE_DOCUMENT] Deleting document ID: {document_id}")
+    try:
+        success = rag_service.delete_document_indexes(document_id)
+        
+        if success:
+            return {
+                "status": "success",
+                "message": f"Document {document_id} deleted successfully"
+            }
+        else:
+            raise HTTPException(status_code=404, detail="Document not found")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ [DELETE_DOCUMENT] Delete document error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/indexes/document/{document_id}")

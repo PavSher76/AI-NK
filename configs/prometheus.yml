@@ -39,17 +39,17 @@ scrape_configs:
       - targets: ['rag-service:8003']
     metrics_path: '/metrics'
 
-  # PostgreSQL
-  - job_name: 'postgres'
-    static_configs:
-      - targets: ['norms-db:5432']
-    metrics_path: '/metrics'
+  # PostgreSQL (комментируем, так как нет экспортера метрик)
+  # - job_name: 'postgres'
+  #   static_configs:
+  #     - targets: ['norms-db:5432']
+  #   metrics_path: '/metrics'
 
-  # Redis
-  - job_name: 'redis'
-    static_configs:
-      - targets: ['redis:6379']
-    metrics_path: '/metrics'
+  # Redis (комментируем, так как нет экспортера метрик)
+  # - job_name: 'redis'
+  #   static_configs:
+  #     - targets: ['redis:6379']
+  #   metrics_path: '/metrics'
 
   # Qdrant
   - job_name: 'qdrant'

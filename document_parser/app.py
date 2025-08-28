@@ -5,7 +5,7 @@ import asyncio
 from datetime import datetime
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import uvicorn
@@ -91,6 +91,21 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Настройка лимитов для загрузки файлов
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
+
+class LargeFileMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # Увеличиваем лимит для загрузки файлов
+        if request.url.path.startswith("/upload"):
+            # Устанавливаем больший лимит для загрузки
+            request.scope["client_max_size"] = 100 * 1024 * 1024  # 100 MB
+        return await call_next(request)
+
+app.add_middleware(LargeFileMiddleware)
+
 # Настройка CORS
 app.add_middleware(
     CORSMiddleware,
@@ -148,23 +163,46 @@ async def health_check():
 # Metrics endpoint
 @app.get("/metrics")
 async def get_metrics():
-    """Получение метрик сервиса"""
+    """Получение метрик сервиса в формате Prometheus"""
     try:
         from utils.memory_utils import get_memory_usage
         
         memory_info = get_memory_usage()
         uptime = (datetime.now() - startup_time).total_seconds() if startup_time else 0
+        db_connected = 1 if (db_connection.db_conn is not None and not db_connection.db_conn.closed if db_connection else False) else 0
+        qdrant_connected = 1 if (db_connection.qdrant_client is not None if db_connection else False) else 0
         
-        return {
-            "service": "document-parser",
-            "uptime_seconds": uptime,
-            "memory_usage_mb": memory_info.get("rss_mb", 0),
-            "memory_percent": memory_info.get("percent", 0),
-            "available_memory_mb": memory_info.get("available_mb", 0),
-            "database_connected": db_connection.db_conn is not None and not db_connection.db_conn.closed if db_connection else False,
-            "qdrant_connected": db_connection.qdrant_client is not None if db_connection else False,
-            "timestamp": datetime.now().isoformat()
-        }
+        # Формат метрик Prometheus
+        metrics = f"""# HELP document_parser_uptime_seconds Время работы сервиса в секундах
+# TYPE document_parser_uptime_seconds gauge
+document_parser_uptime_seconds {uptime}
+
+# HELP document_parser_memory_usage_mb Использование памяти в МБ
+# TYPE document_parser_memory_usage_mb gauge
+document_parser_memory_usage_mb {memory_info.get("rss_mb", 0)}
+
+# HELP document_parser_memory_percent Процент использования памяти
+# TYPE document_parser_memory_percent gauge
+document_parser_memory_percent {memory_info.get("percent", 0)}
+
+# HELP document_parser_available_memory_mb Доступная память в МБ
+# TYPE document_parser_available_memory_mb gauge
+document_parser_available_memory_mb {memory_info.get("available_mb", 0)}
+
+# HELP document_parser_database_connected Статус подключения к базе данных
+# TYPE document_parser_database_connected gauge
+document_parser_database_connected {db_connected}
+
+# HELP document_parser_qdrant_connected Статус подключения к Qdrant
+# TYPE document_parser_qdrant_connected gauge
+document_parser_qdrant_connected {qdrant_connected}
+
+# HELP document_parser_info Информация о сервисе
+# TYPE document_parser_info gauge
+document_parser_info{{service="document-parser"}} 1
+"""
+        
+        return Response(content=metrics, media_type="text/plain")
     except Exception as e:
         logger.error(f"Metrics error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -320,6 +358,104 @@ async def get_checkable_documents():
         logger.error(f"Get checkable documents error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# Загрузка документа для проверки
+@app.post("/upload/checkable")
+async def upload_checkable_document(
+    file: UploadFile = File(...),  # Убираем max_length, так как он не работает с UploadFile
+    category: str = Form("other"),
+    description: str = Form("")
+):
+    """Загрузка документа для проверки нормоконтроля"""
+    logger.info(f"📤 [UPLOAD_CHECKABLE] Uploading document for check: {file.filename}")
+    try:
+        # Проверяем тип файла
+        if not file.filename.lower().endswith(('.pdf', '.dwg', '.ifc', '.docx')):
+            raise HTTPException(status_code=400, detail="Unsupported file type. Only PDF, DWG, IFC, and DOCX files are allowed.")
+        
+        # Читаем содержимое файла
+        content = await file.read()
+        file_size = len(content)
+        
+        # Проверяем размер файла (максимум 100 MB)
+        max_file_size = 100 * 1024 * 1024  # 100 MB
+        if file_size > max_file_size:
+            raise HTTPException(
+                status_code=413, 
+                detail=f"File too large. Maximum size is {max_file_size // (1024*1024)} MB"
+            )
+        
+        # Генерируем хеш документа для дедупликации
+        import hashlib
+        document_hash = hashlib.sha256(content).hexdigest()
+        
+        # Генерируем уникальный ID документа
+        import time
+        document_id = int(time.time() * 1000) % 100000000  # 8-значное число
+        
+        def _save_document(conn):
+            try:
+                with conn.cursor() as cursor:
+                    # Проверяем, не загружен ли уже документ с таким хешем
+                    cursor.execute("""
+                        SELECT id FROM checkable_documents 
+                        WHERE document_hash = %s
+                    """, (document_hash,))
+                    
+                    if cursor.fetchone():
+                        raise HTTPException(status_code=409, detail="Document with this content already exists")
+                    
+                    # Сохраняем документ в базу данных
+                    cursor.execute("""
+                        INSERT INTO checkable_documents 
+                        (id, filename, original_filename, file_type, file_size, document_hash, category, review_deadline)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP + INTERVAL '2 days')
+                        RETURNING id
+                    """, (
+                        document_id,
+                        file.filename,
+                        file.filename,
+                        file.filename.split('.')[-1].lower(),
+                        file_size,
+                        document_hash,
+                        category
+                    ))
+                    
+                    saved_id = cursor.fetchone()[0]
+                    conn.commit()
+                    return saved_id
+                    
+            except HTTPException:
+                raise
+            except Exception as db_error:
+                logger.error(f"🔍 [DATABASE] Error in _save_document: {db_error}")
+                conn.rollback()
+                raise
+        
+        try:
+            logger.debug(f"🔍 [DATABASE] Starting transaction for upload_checkable_document")
+            saved_document_id = db_connection.execute_in_transaction(_save_document)
+            logger.debug(f"🔍 [DATABASE] Successfully saved checkable document {saved_document_id}")
+            
+            return {
+                "status": "success",
+                "document_id": saved_document_id,
+                "filename": file.filename,
+                "file_size": file_size,
+                "message": f"Document uploaded successfully for checking"
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Upload checkable document error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ [UPLOAD_CHECKABLE] Upload error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Иерархическая проверка документа
 @app.post("/checkable-documents/{document_id}/hierarchical-check")
 async def trigger_hierarchical_check(
@@ -452,6 +588,71 @@ def get_checkable_document(document_id: int):
         logger.error(f"Get checkable document error: {e}")
         return None
 
+# Удаление проверяемого документа
+@app.delete("/checkable-documents/{document_id}")
+async def delete_checkable_document(document_id: int):
+    """Удаление проверяемого документа"""
+    try:
+        logger.info(f"🗑️ [DELETE] Deleting checkable document ID: {document_id}")
+        
+        # Проверяем существование документа
+        document = get_checkable_document(document_id)
+        if not document:
+            logger.error(f"🗑️ [DELETE] Document {document_id} not found")
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        # Удаляем документ из базы данных
+        def _delete_document(conn):
+            try:
+                with conn.cursor() as cursor:
+                    # Удаляем связанные результаты проверки
+                    cursor.execute("""
+                        DELETE FROM hierarchical_check_results 
+                        WHERE checkable_document_id = %s
+                    """, (document_id,))
+                    logger.info(f"🗑️ [DELETE] Deleted hierarchical check results for document {document_id}")
+                    
+                    # Удаляем сам документ
+                    cursor.execute("""
+                        DELETE FROM checkable_documents 
+                        WHERE id = %s
+                    """, (document_id,))
+                    deleted_count = cursor.rowcount
+                    conn.commit()
+                    
+                    if deleted_count > 0:
+                        logger.info(f"✅ [DELETE] Successfully deleted document {document_id}")
+                        return True
+                    else:
+                        logger.error(f"❌ [DELETE] No document deleted for ID {document_id}")
+                        return False
+                        
+            except Exception as db_error:
+                logger.error(f"🔍 [DATABASE] Error in _delete_document: {db_error}")
+                raise
+        
+        try:
+            logger.debug(f"🔍 [DATABASE] Starting transaction for delete_checkable_document {document_id}")
+            success = db_connection.execute_in_transaction(_delete_document)
+            
+            if success:
+                return {
+                    "status": "success",
+                    "message": f"Document {document_id} deleted successfully"
+                }
+            else:
+                raise HTTPException(status_code=404, detail="Document not found")
+                
+        except Exception as e:
+            logger.error(f"🗑️ [DELETE] Database error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"🗑️ [DELETE] Delete checkable document error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Получение отчета о проверке
 @app.get("/checkable-documents/{document_id}/report")
 async def get_report(document_id: int):
@@ -563,5 +764,7 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8001,
         reload=False,
-        log_level=LOG_LEVEL.lower()
+        log_level=LOG_LEVEL.lower(),
+        timeout_keep_alive=300,  # 5 минут для keep-alive
+        timeout_graceful_shutdown=30  # 30 секунд для graceful shutdown
     )
