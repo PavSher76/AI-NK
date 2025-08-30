@@ -94,10 +94,28 @@ async def auth_middleware(request: Request, call_next):
     """Middleware для проверки авторизации"""
     print(f"🔍 [DEBUG] Gateway: Auth middleware - {request.method} {request.url.path}")
     
-    # Пропускаем health check и metrics без авторизации
-    if request.url.path in ["/health", "/metrics"]:
+    # Пропускаем health check, metrics, статистику документов и эндпоинты авторизации без авторизации
+    public_paths = [
+        "/health", 
+        "/metrics", 
+        "/api/health",             # Эндпоинт для проверки здоровья RAG-сервиса
+        "/api/documents/stats",
+        "/api/calculation/token",  # Эндпоинт для получения JWT токена
+        "/api/calculation/me",     # Эндпоинт для получения информации о пользователе
+        "/api/chat/tags",          # Эндпоинт для проверки статуса Ollama
+        "/api/chat/health",        # Эндпоинт для проверки здоровья Ollama
+        "/api/ntd-consultation/chat",  # Эндпоинт для консультации НТД
+        "/api/ntd-consultation/stats", # Эндпоинт для статистики консультаций
+        "/api/ntd-consultation/cache", # Эндпоинт для управления кэшем
+        "/api/ntd-consultation/cache/stats" # Эндпоинт для статистики кэша
+    ]
+    
+    print(f"🔍 [DEBUG] Gateway: Checking path '{request.url.path}' against public paths: {public_paths}")
+    if request.url.path in public_paths:
         print(f"🔍 [DEBUG] Gateway: Skipping auth for {request.url.path}")
         return await call_next(request)
+    else:
+        print(f"🔍 [DEBUG] Gateway: Path '{request.url.path}' not in public paths")
     
     # Проверяем заголовок авторизации
     authorization_header = request.headers.get("authorization")
@@ -157,8 +175,10 @@ async def proxy_request(request: Request, service_url: str, path: str = "") -> J
     
     print(f"🔍 [DEBUG] Gateway: Cleaned headers: {headers}")
     
-    # Подготавливаем URL
+    # Подготавливаем URL с query параметрами
     target_url = f"{service_url}{path}"
+    if request.url.query:
+        target_url += f"?{request.url.query}"
     print(f"🔍 [DEBUG] Gateway: Target URL: {target_url}")
     
     try:
@@ -271,7 +291,7 @@ async def proxy_api_v1(request: Request, path: str):
         service_url = SERVICES["document-parser"]
         print(f"🔍 [DEBUG] Gateway: Routing API v1 to document-parser: {service_url}")
         return await proxy_request(request, service_url, f"/{path}")
-    elif path.startswith("calculations"):
+    elif path.startswith("calculations") or path.startswith("calculation"):
         service_url = SERVICES["calculation-service"]
         print(f"🔍 [DEBUG] Gateway: Routing API v1 to calculation-service: {service_url}")
         return await proxy_request(request, service_url, f"/{path}")
@@ -322,6 +342,14 @@ async def proxy_api(request: Request, path: str):
         service_url = SERVICES["rag-service"]
         print(f"🔍 [DEBUG] Gateway: Routing to rag-service: {service_url}")
         return await proxy_request(request, service_url, f"/{path}")
+    elif path.startswith("reindex-documents"):
+        service_url = SERVICES["rag-service"]
+        print(f"🔍 [DEBUG] Gateway: Routing reindex-documents to rag-service: {service_url}")
+        return await proxy_request(request, service_url, f"/{path}")
+    elif path.startswith("ntd-consultation"):
+        service_url = SERVICES["rag-service"]
+        print(f"🔍 [DEBUG] Gateway: Routing NTD consultation to rag-service: {service_url}")
+        return await proxy_request(request, service_url, f"/{path}")
     elif path.startswith("rag/"):
         service_url = SERVICES["rag-service"]
         # Убираем префикс "rag/" из пути
@@ -332,10 +360,22 @@ async def proxy_api(request: Request, path: str):
         service_url = SERVICES["rule-engine"]
         print(f"🔍 [DEBUG] Gateway: Routing to rule-engine: {service_url}")
         return await proxy_request(request, service_url, f"/{path}")
-    elif path.startswith("calculations"):
+    elif path.startswith("calculations") or path.startswith("calculation"):
         service_url = SERVICES["calculation-service"]
         print(f"🔍 [DEBUG] Gateway: Routing to calculation-service: {service_url}")
+        # Убираем префикс "calculation/" из пути, если он есть
+        if path.startswith("calculation/"):
+            path = path[12:]  # Убираем "calculation/"
+        print(f"🔍 [DEBUG] Gateway: Proxying request to {service_url}/{path}")
         return await proxy_request(request, service_url, f"/{path}")
+    elif path.startswith("chat/health"):
+        service_url = SERVICES["ollama"]
+        print(f"🔍 [DEBUG] Gateway: Routing chat/health to ollama: {service_url}")
+        return await proxy_request(request, service_url, "/api/version")
+    elif path.startswith("chat/tags"):
+        service_url = SERVICES["ollama"]
+        print(f"🔍 [DEBUG] Gateway: Routing chat/tags to ollama: {service_url}")
+        return await proxy_request(request, service_url, "/api/tags")
     elif path.startswith("chat") or path.startswith("generate"):
         service_url = SERVICES["ollama"]
         print(f"🔍 [DEBUG] Gateway: Routing to ollama: {service_url} with path: {path}")
@@ -361,6 +401,19 @@ async def proxy_ollama_api(request: Request, path: str):
     print(f"🔍 [DEBUG] Gateway: Ollama API route called with path: {path}")
     
     service_url = SERVICES["ollama"]
+    return await proxy_request(request, service_url, f"/{path}")
+
+# Проксирование запросов к Calculation Service
+@app.api_route("/calculation/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_calculation_api(request: Request, path: str):
+    """Проксирование запросов к Calculation Service"""
+    print(f"🔍 [DEBUG] Gateway: Calculation API route called with path: {path}")
+    
+    service_url = SERVICES["calculation-service"]
+    # Убираем префикс "calculation/" из пути, если он есть
+    if path.startswith("calculation/"):
+        path = path[12:]  # Убираем "calculation/"
+    print(f"🔍 [DEBUG] Gateway: Proxying request to {service_url}/{path}")
     return await proxy_request(request, service_url, f"/{path}")
 
 # Основной роут для всех остальных путей
@@ -389,6 +442,10 @@ async def proxy_main(request: Request, path: str):
         service_url = SERVICES["rag-service"]
         print(f"🔍 [DEBUG] Gateway: Routing to rag-service: {service_url}")
         return await proxy_request(request, service_url, f"/{path}")
+    elif path.startswith("ntd-consultation"):
+        service_url = SERVICES["rag-service"]
+        print(f"🔍 [DEBUG] Gateway: Routing NTD consultation to rag-service: {service_url}")
+        return await proxy_request(request, service_url, f"/{path}")
     elif path.startswith("rag/"):
         service_url = SERVICES["rag-service"]
         # Убираем префикс "rag/" из пути
@@ -399,10 +456,18 @@ async def proxy_main(request: Request, path: str):
         service_url = SERVICES["rule-engine"]
         print(f"🔍 [DEBUG] Gateway: Routing to rule-engine: {service_url}")
         return await proxy_request(request, service_url, f"/{path}")
-    elif path.startswith("calculations"):
+    elif path.startswith("calculations") or path.startswith("calculation"):
         service_url = SERVICES["calculation-service"]
         print(f"🔍 [DEBUG] Gateway: Routing to calculation-service: {service_url}")
         return await proxy_request(request, service_url, f"/{path}")
+    elif path.startswith("chat/health"):
+        service_url = SERVICES["ollama"]
+        print(f"🔍 [DEBUG] Gateway: Routing chat/health to ollama: {service_url}")
+        return await proxy_request(request, service_url, "/api/version")
+    elif path.startswith("chat/tags"):
+        service_url = SERVICES["ollama"]
+        print(f"🔍 [DEBUG] Gateway: Routing chat/tags to ollama: {service_url}")
+        return await proxy_request(request, service_url, "/api/tags")
     elif path.startswith("chat") or path.startswith("generate"):
         service_url = SERVICES["ollama"]
         print(f"🔍 [DEBUG] Gateway: Routing to ollama: {service_url} with path: {path}")

@@ -10,7 +10,8 @@ import {
   CheckCircle,
   AlertCircle,
   RefreshCw,
-  X
+  X,
+  HelpCircle
 } from 'lucide-react';
 
 const Sidebar = ({ 
@@ -56,6 +57,12 @@ const Sidebar = ({
       label: 'Чат с ИИ',
       icon: MessageSquare,
       onClick: () => handlePageClick('chat')
+    },
+    {
+      id: 'ntd-consultation',
+      label: 'Консультация НТД от ИИ',
+      icon: HelpCircle,
+      onClick: () => handlePageClick('ntd-consultation')
     },
     {
       id: 'calculations',

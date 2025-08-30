@@ -34,14 +34,12 @@ model_logger.setLevel(logging.INFO)
 
 app = FastAPI(title="Rule Engine Service", version="1.0.0")
 
-# Конфигурация
-POSTGRES_HOST = os.getenv("POSTGRES_HOST", "norms-db")
-POSTGRES_DB = os.getenv("POSTGRES_DB", "norms_db")
-POSTGRES_USER = os.getenv("POSTGRES_USER", "norms_user")
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "norms_password")
+# Конфигурация сервисов
+POSTGRES_URL = os.getenv("POSTGRES_URL", "postgresql://norms_user:norms_password@norms-db:5432/norms_db")
 QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 GATEWAY_URL = os.getenv("GATEWAY_URL", "http://gateway:8080")
+VLLM_URL = os.getenv("VLLM_URL", "http://vllm:8000")  # Добавляем прямой доступ к VLLM
 
 class RuleEngine:
     def __init__(self):
@@ -54,12 +52,7 @@ class RuleEngine:
         """Подключение к базам данных"""
         try:
             # PostgreSQL
-            self.db_conn = psycopg2.connect(
-                host=POSTGRES_HOST,
-                database=POSTGRES_DB,
-                user=POSTGRES_USER,
-                password=POSTGRES_PASSWORD
-            )
+            self.db_conn = psycopg2.connect(POSTGRES_URL)
             logger.info("Connected to PostgreSQL")
             
             # Qdrant
@@ -404,7 +397,7 @@ class RuleEngine:
             # Отправляем запрос к LLM
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    f"{GATEWAY_URL}/v1/chat/completions",
+                    f"{VLLM_URL}/v1/chat/completions",
                     headers={"Authorization": f"Bearer {auth_token}"},
                     json={
                         "model": "llama3:8b",
