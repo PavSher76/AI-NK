@@ -354,6 +354,23 @@ class RAGService:
             logger.error(f"❌ [GET_DOCUMENTS] Error getting documents: {e}")
             return []
     
+    def get_documents_from_uploaded(self, document_type: str = 'normative') -> List[Dict[str, Any]]:
+        """Получение документов из таблицы uploaded_documents"""
+        try:
+            with self.db_manager.get_cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, original_filename, category, processing_status, created_at, 
+                           file_size, COALESCE(token_count, 0) as token_count
+                    FROM uploaded_documents
+                    WHERE category = %s OR %s = 'all'
+                    ORDER BY created_at DESC
+                """, (document_type, document_type))
+                documents = cursor.fetchall()
+                return [dict(doc) for doc in documents]
+        except Exception as e:
+            logger.error(f"❌ [GET_DOCUMENTS_FROM_UPLOADED] Error getting documents: {e}")
+            return []
+    
     def get_stats(self) -> Dict[str, Any]:
         """Получение статистики RAG-системы"""
         try:
@@ -403,3 +420,71 @@ class RAGService:
         except Exception as e:
             logger.error(f"❌ [GET_DOCUMENT_CHUNKS] Error getting chunks: {e}")
             return []
+    
+    def get_ntd_consultation(self, message: str, history: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Получение консультации НТД на основе поиска по документам"""
+        try:
+            logger.info(f"💬 [NTD_CONSULTATION] Processing consultation request: '{message[:100]}...'")
+            
+            # Выполняем поиск по запросу
+            search_results = self.hybrid_search(message, k=5)
+            
+            if not search_results:
+                return {
+                    "status": "success",
+                    "response": "К сожалению, я не нашел релевантной информации в базе нормативных документов. Попробуйте переформулировать ваш вопрос или обратитесь к актуальным нормативным документам.",
+                    "sources": [],
+                    "confidence": 0.0,
+                    "documents_used": 0,
+                    "timestamp": datetime.now().isoformat()
+                }
+            
+            # Формируем ответ на основе найденных документов
+            sources = []
+            response_parts = []
+            
+            for result in search_results[:3]:  # Берем топ-3 результата
+                source = {
+                    "title": result.get('title', 'Неизвестный документ'),
+                    "code": result.get('code', ''),
+                    "content": result.get('content', '')[:200] + '...',
+                    "page": result.get('page', 1),
+                    "score": result.get('score', 0)
+                }
+                sources.append(source)
+                
+                # Добавляем информацию о документе в ответ
+                if result.get('code'):
+                    response_parts.append(f"📄 **{result['code']}** - {result.get('title', '')}")
+                else:
+                    response_parts.append(f"📄 {result.get('title', '')}")
+                
+                response_parts.append(f"Содержание: {result.get('content', '')[:300]}...")
+                response_parts.append("")
+            
+            # Формируем итоговый ответ
+            if response_parts:
+                response = "На основе поиска в базе нормативных документов, вот что я нашел:\n\n" + "\n".join(response_parts)
+                response += f"\n\nНайдено {len(sources)} релевантных фрагментов из нормативных документов."
+            else:
+                response = "К сожалению, я не нашел релевантной информации в базе нормативных документов."
+            
+            return {
+                "status": "success",
+                "response": response,
+                "sources": sources,
+                "confidence": min(0.9, max(0.1, search_results[0].get('score', 0.5))),
+                "documents_used": len(sources),
+                "timestamp": datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ [NTD_CONSULTATION] Error processing consultation: {e}")
+            return {
+                "status": "error",
+                "response": "Произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте еще раз.",
+                "sources": [],
+                "confidence": 0.0,
+                "documents_used": 0,
+                "timestamp": datetime.now().isoformat()
+            }

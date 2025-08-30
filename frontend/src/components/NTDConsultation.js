@@ -98,6 +98,7 @@ const NTDConsultation = ({ isAuthenticated, authToken }) => {
         },
         body: JSON.stringify({
           message: inputMessage,
+          user_id: 'default_user', // Добавляем user_id
           history: messages.filter(m => m.type !== 'system').map(m => ({
             role: m.type === 'user' ? 'user' : 'assistant',
             content: m.content

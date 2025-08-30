@@ -47,8 +47,8 @@ const AuthModal = ({ isOpen, onClose, onAuthSuccess }) => {
       const tokenData = await tokenResponse.json();
       const accessToken = tokenData.access_token;
 
-      // Проверяем токен через Gateway - используем существующий endpoint
-      const gatewayResponse = await fetch('/api/documents/stats', {
+      // Проверяем токен через Gateway - используем защищенный endpoint
+      const gatewayResponse = await fetch('/api/documents', {
         headers: {
           'Authorization': `Bearer ${accessToken}`,
           'Content-Type': 'application/json'
