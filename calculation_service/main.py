@@ -14,8 +14,10 @@ import qdrant_client
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
 import uvicorn
+import jwt
 
 # Настройка логирования
 logging.basicConfig(
@@ -727,6 +729,9 @@ class CalculationEngine:
             logger.error(f"🔍 [CALCULATION] Error in dynamic calculation: {e}")
             raise
 
+# OAuth2 схема для авторизации
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
 # Инициализация движка расчетов
 calculation_engine = CalculationEngine()
 
@@ -843,10 +848,196 @@ app.add_event_handler("shutdown", shutdown_event_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
 
-# Заглушка для получения пользователя (в реальном приложении здесь будет JWT токен)
-def get_current_user():
-    # В реальном приложении здесь будет проверка JWT токена
-    return "test_user"
+# Модели для авторизации
+class User(BaseModel):
+    id: str
+    username: str
+    email: str
+    role: str
+    permissions: List[str] = []
+
+class TokenData(BaseModel):
+    username: Optional[str] = None
+    user_id: Optional[str] = None
+    role: Optional[str] = None
+
+# Конфигурация JWT
+JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY', 'your-secret-key-change-in-production')
+JWT_ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+# Класс для работы с авторизацией
+class AuthService:
+    def __init__(self):
+        self.secret_key = JWT_SECRET_KEY
+        self.algorithm = JWT_ALGORITHM
+        self.access_token_expire_minutes = ACCESS_TOKEN_EXPIRE_MINUTES
+    
+    def create_access_token(self, data: dict, expires_delta: Optional[timedelta] = None):
+        """Создание JWT токена"""
+        to_encode = data.copy()
+        if expires_delta:
+            expire = datetime.utcnow() + expires_delta
+        else:
+            expire = datetime.utcnow() + timedelta(minutes=self.access_token_expire_minutes)
+        to_encode.update({"exp": expire})
+        encoded_jwt = jwt.encode(to_encode, self.secret_key, algorithm=self.algorithm)
+        return encoded_jwt
+    
+    def verify_token(self, token: str) -> Optional[TokenData]:
+        """Проверка JWT токена"""
+        try:
+            payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
+            username: str = payload.get("sub")
+            user_id: str = payload.get("user_id")
+            role: str = payload.get("role")
+            if username is None:
+                return None
+            token_data = TokenData(username=username, user_id=user_id, role=role)
+            return token_data
+        except Exception:
+            return None
+    
+    def authenticate_user(self, username: str, password: str) -> Optional[User]:
+        """Аутентификация пользователя"""
+        try:
+            # В реальном приложении здесь будет проверка в базе данных
+            # Пока используем заглушку
+            if username == "test_user" and password == "test_password":
+                return User(
+                    id="1",
+                    username=username,
+                    email="test@example.com",
+                    role="engineer",
+                    permissions=["read", "write", "execute"]
+                )
+            return None
+        except Exception as e:
+            logger.error(f"🔍 [AUTH] Authentication error: {e}")
+            return None
+    
+    def get_user_by_id(self, user_id: str) -> Optional[User]:
+        """Получение пользователя по ID"""
+        try:
+            # В реальном приложении здесь будет запрос к базе данных
+            # Пока используем заглушку
+            if user_id == "1":
+                return User(
+                    id=user_id,
+                    username="test_user",
+                    email="test@example.com",
+                    role="engineer",
+                    permissions=["read", "write", "execute"]
+                )
+            return None
+        except Exception as e:
+            logger.error(f"🔍 [AUTH] Error getting user by ID: {e}")
+            return None
+
+# Инициализация сервиса авторизации
+auth_service = AuthService()
+
+# Зависимости для авторизации
+async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
+    """Получение текущего пользователя из JWT токена"""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    try:
+        token_data = auth_service.verify_token(token)
+        if token_data is None:
+            raise credentials_exception
+        
+        user = auth_service.get_user_by_id(token_data.user_id)
+        if user is None:
+            raise credentials_exception
+        
+        return user
+    except Exception as e:
+        logger.error(f"🔍 [AUTH] Error getting current user: {e}")
+        raise credentials_exception
+
+async def get_current_active_user(current_user: User = Depends(get_current_user)) -> User:
+    """Получение активного пользователя"""
+    if not current_user:
+        raise HTTPException(status_code=400, detail="Inactive user")
+    return current_user
+
+def require_permission(permission: str):
+    """Декоратор для проверки прав доступа"""
+    def permission_checker(current_user: User = Depends(get_current_active_user)):
+        if permission not in current_user.permissions:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not enough permissions"
+            )
+        return current_user
+    return permission_checker
+
+# API endpoints для авторизации
+@app.post("/token")
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+    """Получение JWT токена для авторизации"""
+    if is_shutting_down:
+        raise HTTPException(status_code=503, detail="Service is shutting down")
+
+    logger.info(f"🔍 [AUTH] Login attempt for user: {form_data.username}")
+    
+    try:
+        user = auth_service.authenticate_user(form_data.username, form_data.password)
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect username or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        access_token_expires = timedelta(minutes=auth_service.access_token_expire_minutes)
+        access_token = auth_service.create_access_token(
+            data={"sub": user.username, "user_id": user.id, "role": user.role},
+            expires_delta=access_token_expires
+        )
+        
+        logger.info(f"🔍 [AUTH] Successful login for user: {user.username}")
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "role": user.role,
+                "permissions": user.permissions
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"🔍 [AUTH] Login error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/me")
+async def read_users_me(current_user: User = Depends(get_current_active_user)):
+    """Получение информации о текущем пользователе"""
+    if is_shutting_down:
+        raise HTTPException(status_code=503, detail="Service is shutting down")
+
+    logger.info(f"🔍 [AUTH] User info request for: {current_user.username}")
+    
+    try:
+        return {
+            "id": current_user.id,
+            "username": current_user.username,
+            "email": current_user.email,
+            "role": current_user.role,
+            "permissions": current_user.permissions
+        }
+    except Exception as e:
+        logger.error(f"🔍 [AUTH] Error getting user info: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 # API endpoints
 @app.get("/health")
@@ -940,7 +1131,7 @@ async def health_check():
 async def list_calculations(
     limit: int = 100,
     offset: int = 0,
-    current_user: str = Depends(get_current_user)
+    current_user: User = Depends(get_current_active_user)
 ):
     """Получение списка расчетов пользователя"""
     if is_shutting_down:
@@ -949,7 +1140,7 @@ async def list_calculations(
     logger.info(f"🔍 [API] Request list of calculations for user {current_user}")
     
     try:
-        calculations = calculation_engine.get_calculations(current_user, limit, offset)
+        calculations = calculation_engine.get_calculations(current_user.id, limit, offset)
         logger.info(f"🔍 [API] Successfully retrieved {len(calculations)} calculations")
         return calculations
     except Exception as e:
@@ -959,7 +1150,7 @@ async def list_calculations(
 @app.post("/calculations", response_model=CalculationResponse)
 async def create_calculation(
     calculation: CalculationCreate,
-    current_user: str = Depends(get_current_user)
+    current_user: User = Depends(get_current_active_user)
 ):
     """Создание нового расчета"""
     if is_shutting_down:
@@ -969,7 +1160,7 @@ async def create_calculation(
     
     try:
         calculation_data = calculation.model_dump()
-        result = calculation_engine.create_calculation(calculation_data, current_user)
+        result = calculation_engine.create_calculation(calculation_data, current_user.id)
         logger.info(f"🔍 [API] Calculation created successfully: {result['id']}")
         return result
     except Exception as e:
@@ -979,7 +1170,7 @@ async def create_calculation(
 @app.get("/calculations/{calculation_id}", response_model=CalculationResponse)
 async def get_calculation(
     calculation_id: int,
-    current_user: str = Depends(get_current_user)
+    current_user: User = Depends(get_current_active_user)
 ):
     """Получение конкретного расчета"""
     if is_shutting_down:
@@ -988,7 +1179,7 @@ async def get_calculation(
     logger.info(f"🔍 [API] Request calculation {calculation_id} for user {current_user}")
     
     try:
-        calculation = calculation_engine.get_calculation(calculation_id, current_user)
+        calculation = calculation_engine.get_calculation(calculation_id, current_user.id)
         if not calculation:
             raise HTTPException(status_code=404, detail="Calculation not found")
         
@@ -1004,7 +1195,7 @@ async def get_calculation(
 async def update_calculation(
     calculation_id: int,
     calculation_update: CalculationUpdate,
-    current_user: str = Depends(get_current_user)
+    current_user: User = Depends(get_current_active_user)
 ):
     """Обновление расчета"""
     if is_shutting_down:
@@ -1017,7 +1208,7 @@ async def update_calculation(
         if not update_data:
             raise HTTPException(status_code=400, detail="No fields to update")
         
-        result = calculation_engine.update_calculation(calculation_id, current_user, update_data)
+        result = calculation_engine.update_calculation(calculation_id, current_user.id, update_data)
         if not result:
             raise HTTPException(status_code=404, detail="Calculation not found")
         
@@ -1032,7 +1223,7 @@ async def update_calculation(
 @app.delete("/calculations/{calculation_id}")
 async def delete_calculation(
     calculation_id: int,
-    current_user: str = Depends(get_current_user)
+    current_user: User = Depends(get_current_active_user)
 ):
     """Удаление расчета"""
     if is_shutting_down:
@@ -1041,7 +1232,7 @@ async def delete_calculation(
     logger.info(f"🔍 [API] Deleting calculation {calculation_id}")
     
     try:
-        success = calculation_engine.delete_calculation(calculation_id, current_user)
+        success = calculation_engine.delete_calculation(calculation_id, current_user.id)
         if not success:
             raise HTTPException(status_code=404, detail="Calculation not found")
         
@@ -1057,7 +1248,7 @@ async def delete_calculation(
 async def execute_structural_calculation(
     calculation_type: str,
     parameters: Dict[str, Any],
-    current_user: str = Depends(get_current_user)
+    current_user: User = Depends(require_permission("execute"))
 ):
     """Выполнение расчета строительных конструкций"""
     if is_shutting_down:
@@ -1089,7 +1280,7 @@ async def execute_structural_calculation(
 @app.post("/calculations/{calculation_id}/execute")
 async def execute_calculation(
     calculation_id: int,
-    current_user: str = Depends(get_current_user)
+    current_user: User = Depends(require_permission("execute"))
 ):
     """Выполнение расчета"""
     if is_shutting_down:
@@ -1098,7 +1289,7 @@ async def execute_calculation(
     logger.info(f"🔍 [API] Executing calculation {calculation_id}")
     
     try:
-        result = calculation_engine.execute_calculation(calculation_id, current_user)
+        result = calculation_engine.execute_calculation(calculation_id, current_user.id)
         if not result:
             raise HTTPException(status_code=404, detail="Calculation not found")
         

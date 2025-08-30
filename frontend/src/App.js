@@ -30,6 +30,7 @@ import NormcontrolPage from './pages/NormcontrolPage';
 import CalculationsPage from './pages/CalculationsPage';
 import StructuralCalculationsPage from './pages/StructuralCalculationsPage';
 import DocumentsPage from './pages/DocumentsPage';
+import NTDConsultation from './components/NTDConsultation';
 
 function App() {
   const [models, setModels] = useState([]);
@@ -550,6 +551,13 @@ function App() {
               authToken={authToken}
               refreshTrigger={refreshTabs}
               onRefreshComplete={() => setRefreshTabs(false)}
+            />
+          )}
+
+          {currentPage === 'ntd-consultation' && (
+            <NTDConsultation
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
             />
           )}
         </main>

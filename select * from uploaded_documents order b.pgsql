@@ -1,0 +1,1 @@
+select * from uploaded_documents order by filename;

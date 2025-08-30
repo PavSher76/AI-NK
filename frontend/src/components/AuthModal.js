@@ -47,8 +47,8 @@ const AuthModal = ({ isOpen, onClose, onAuthSuccess }) => {
       const tokenData = await tokenResponse.json();
       const accessToken = tokenData.access_token;
 
-      // Проверяем токен через Gateway
-      const gatewayResponse = await fetch('/api/v1/checkable-documents', {
+      // Проверяем токен через Gateway - используем существующий endpoint
+      const gatewayResponse = await fetch('/api/documents/stats', {
         headers: {
           'Authorization': `Bearer ${accessToken}`,
           'Content-Type': 'application/json'
@@ -78,89 +78,54 @@ const AuthModal = ({ isOpen, onClose, onAuthSuccess }) => {
   };
 
   const handleTestLogin = () => {
-    setUsername('user');
-    setPassword('password123');
-  };
-
-  const handleDemoMode = () => {
-    // Демо режим без реальной авторизации
-    const demoUser = {
-      token: 'demo-token',
-      username: 'demo-user',
-      method: 'demo',
-      expiresAt: Date.now() + (3600 * 1000) // 1 час
-    };
-    onAuthSuccess(demoUser, 'demo');
-    onClose();
-  };
-
-  const handleTestTokenMode = () => {
-    // Режим с JWT токеном от Keycloak
-    const testUser = {
-      token: 'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0LXVzZXIiLCJwcmVmZXJyZWRfdXNlcm5hbWUiOiJ0ZXN0LXVzZXIiLCJleHAiOjk5OTk5OTk5OTl9.test-signature',
-      username: 'test-user',
-      method: 'jwt',
-      expiresAt: Date.now() + (3600 * 1000) // 1 час
-    };
-    onAuthSuccess(testUser, 'jwt');
-    onClose();
+    setUsername('admin');
+    setPassword('admin');
   };
 
   if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 p-6">
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center space-x-3">
-            <img 
-              src="/logo.png" 
-              alt="AI-НК Logo" 
-              className="w-8 h-8 object-contain"
-            />
-            <h2 className="text-xl font-bold text-gray-900">Авторизация</h2>
-          </div>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 transition-colors"
-          >
-            ✕
-          </button>
+      <div className="bg-white rounded-lg p-8 w-full max-w-md">
+        <div className="text-center mb-6">
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">Авторизация</h2>
+          <p className="text-gray-600">Войдите в систему для продолжения работы</p>
         </div>
 
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <label htmlFor="username" className="block text-sm font-medium text-gray-700 mb-1">
               Логин
             </label>
             <input
               type="text"
+              id="username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              placeholder="Введите логин..."
-              className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              disabled={loading}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              placeholder="Введите логин"
+              required
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-1">
               Пароль
             </label>
             <div className="relative">
               <input
-                type={showPassword ? 'text' : 'password'}
+                type={showPassword ? "text" : "password"}
+                id="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="Введите пароль..."
-                className="w-full p-3 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                disabled={loading}
+                className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                placeholder="Введите пароль"
+                required
               />
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
                 className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                disabled={loading}
               >
                 {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
@@ -169,61 +134,50 @@ const AuthModal = ({ isOpen, onClose, onAuthSuccess }) => {
 
           {error && (
             <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
-              <p className="text-sm text-red-600">{error}</p>
+              <p className="text-sm text-red-800">{error}</p>
             </div>
           )}
 
-          <div className="flex space-x-2">
-            <button
-              type="button"
-              onClick={handleTestLogin}
-              className="flex-1 py-2 px-4 bg-gray-100 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-200 transition-colors"
-              disabled={loading}
-            >
-              Тестовые данные
-            </button>
+          <div className="space-y-3">
             <button
               type="submit"
-              className="flex-1 py-2 px-4 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
               disabled={loading}
+              className="w-full flex items-center justify-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {loading ? (
                 <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  <Loader2 className="w-4 h-4 animate-spin mr-2" />
                   Вход...
                 </>
               ) : (
                 'Войти'
               )}
             </button>
+
+            <button
+              type="button"
+              onClick={handleTestLogin}
+              className="w-full px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+            >
+              Заполнить тестовые данные (admin/admin)
+            </button>
           </div>
         </form>
 
-        <div className="mt-6 space-y-3">
+        <div className="mt-6 text-center">
           <button
-            onClick={handleTestTokenMode}
-            className="w-full py-2 px-4 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
-            disabled={loading}
+            onClick={onClose}
+            className="text-gray-500 hover:text-gray-700 text-sm"
           >
-            Тестовый токен
+            Отмена
           </button>
-          
-          <button
-            onClick={handleDemoMode}
-            className="w-full py-2 px-4 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 transition-colors"
-            disabled={loading}
-          >
-            Демо режим
-          </button>
+        </div>
 
-          <div className="p-3 bg-gray-50 rounded-lg">
-            <p className="text-xs text-gray-600">
-              <strong>Информация:</strong><br />
-              • Тестовые данные: testuser / password123<br />
-              • JWT токен: доступ с JWT токеном от Keycloak<br />
-              • Демо режим: доступ с demo-token<br />
-              • Данные сохраняются в localStorage
-            </p>
+        <div className="mt-4 p-3 bg-blue-50 rounded-lg">
+          <h3 className="text-sm font-medium text-blue-900 mb-2">Тестовые учетные данные:</h3>
+          <div className="text-xs text-blue-800 space-y-1">
+            <p><strong>Администратор:</strong> admin / admin</p>
+            <p><strong>Пользователь:</strong> user / password123</p>
           </div>
         </div>
       </div>

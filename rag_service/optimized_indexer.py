@@ -17,7 +17,7 @@ from psycopg2.extras import RealDictCursor
 import qdrant_client
 from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue, Range
 import numpy as np
-from sentence_transformers import SentenceTransformer
+# from sentence_transformers import SentenceTransformer  # Отключено для тестирования
 import tiktoken
 
 logger = logging.getLogger(__name__)

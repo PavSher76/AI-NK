@@ -14,6 +14,7 @@ from core.config import LOG_LEVEL, LOG_FORMAT
 from database.connection import DatabaseConnection
 from services.norm_control_service import NormControlService
 from services.hierarchical_check_service import HierarchicalCheckService
+from services.document_processor import DocumentProcessor
 from utils.memory_utils import log_memory_usage
 
 # Настройка логирования
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__)
 db_connection = None
 norm_control_service = None
 hierarchical_check_service = None
+document_processor = None
 startup_time = None
 
 def signal_handler(signum, frame):
@@ -47,7 +49,7 @@ signal.signal(signal.SIGINT, signal_handler)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Управление жизненным циклом приложения"""
-    global db_connection, norm_control_service, hierarchical_check_service, startup_time
+    global db_connection, norm_control_service, hierarchical_check_service, document_processor, startup_time
     
     # Startup
     startup_time = datetime.now()
@@ -66,6 +68,9 @@ async def lifespan(app: FastAPI):
         logger.info("🔍 [STARTUP] Creating HierarchicalCheckService...")
         hierarchical_check_service = HierarchicalCheckService(db_connection)
         logger.info("🔍 [STARTUP] HierarchicalCheckService created successfully")
+        logger.info("🔍 [STARTUP] Creating DocumentProcessor...")
+        document_processor = DocumentProcessor(db_connection)
+        logger.info("🔍 [STARTUP] DocumentProcessor created successfully")
         
         # Логирование использования памяти
         log_memory_usage("startup")
@@ -393,67 +398,139 @@ async def upload_checkable_document(
         document_id = int(time.time() * 1000) % 100000000  # 8-значное число
         
         def _save_document(conn):
-            try:
-                with conn.cursor() as cursor:
-                    # Проверяем, не загружен ли уже документ с таким хешем
-                    cursor.execute("""
-                        SELECT id FROM checkable_documents 
-                        WHERE document_hash = %s
-                    """, (document_hash,))
-                    
-                    if cursor.fetchone():
-                        raise HTTPException(status_code=409, detail="Document with this content already exists")
-                    
-                    # Сохраняем документ в базу данных
-                    cursor.execute("""
-                        INSERT INTO checkable_documents 
-                        (id, filename, original_filename, file_type, file_size, document_hash, category, review_deadline)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP + INTERVAL '2 days')
-                        RETURNING id
-                    """, (
-                        document_id,
-                        file.filename,
-                        file.filename,
-                        file.filename.split('.')[-1].lower(),
-                        file_size,
-                        document_hash,
-                        category
-                    ))
-                    
-                    saved_id = cursor.fetchone()[0]
-                    conn.commit()
-                    return saved_id
-                    
-            except HTTPException:
-                raise
-            except Exception as db_error:
-                logger.error(f"🔍 [DATABASE] Error in _save_document: {db_error}")
-                conn.rollback()
-                raise
+            with conn.cursor() as cursor:
+                # Проверяем, не загружен ли уже документ с таким хешем
+                cursor.execute("""
+                    SELECT id FROM checkable_documents 
+                    WHERE document_hash = %s
+                """, (document_hash,))
+                
+                if cursor.fetchone():
+                    raise HTTPException(status_code=409, detail="Document with this content already exists")
+                
+                # Сохраняем документ в базу данных
+                cursor.execute("""
+                    INSERT INTO checkable_documents 
+                    (id, filename, original_filename, file_type, file_size, document_hash, category, review_deadline)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP + INTERVAL '2 days')
+                    RETURNING id
+                """, (
+                    document_id,
+                    file.filename,
+                    file.filename,
+                    file.filename.split('.')[-1].lower(),
+                    file_size,
+                    document_hash,
+                    category
+                ))
+                
+                saved_id = cursor.fetchone()[0]
+                conn.commit()
+                return saved_id
         
         try:
             logger.debug(f"🔍 [DATABASE] Starting transaction for upload_checkable_document")
             saved_document_id = db_connection.execute_in_transaction(_save_document)
             logger.debug(f"🔍 [DATABASE] Successfully saved checkable document {saved_document_id}")
             
+            # Запускаем асинхронную обработку документа
+            logger.info(f"🔄 [UPLOAD] Starting document processing for {saved_document_id}")
+            asyncio.create_task(process_document_async(saved_document_id, content, file.filename))
+            
             return {
                 "status": "success",
                 "document_id": saved_document_id,
                 "filename": file.filename,
                 "file_size": file_size,
-                "message": f"Document uploaded successfully for checking"
+                "message": f"Document uploaded successfully and processing started"
             }
             
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Upload checkable document error: {e}")
+            logger.error(f"❌ [UPLOAD_CHECKABLE] Upload error: {e}")
             raise HTTPException(status_code=500, detail=str(e))
             
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"❌ [UPLOAD_CHECKABLE] Upload error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def process_document_async(document_id: int, file_content: bytes, filename: str):
+    """Асинхронная обработка документа"""
+    try:
+        logger.info(f"🔄 [ASYNC_PROCESS] Starting async document processing for {document_id}")
+        
+        # Обновляем статус на "processing"
+        def _update_processing_status(conn):
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE checkable_documents 
+                    SET processing_status = 'processing'
+                    WHERE id = %s
+                """, (document_id,))
+                conn.commit()
+        
+        db_connection.execute_in_transaction(_update_processing_status)
+        
+        # Обрабатываем документ
+        result = document_processor.process_document(document_id, file_content, filename)
+        
+        if result["status"] == "success":
+            logger.info(f"✅ [ASYNC_PROCESS] Document {document_id} processed successfully")
+        else:
+            logger.error(f"❌ [ASYNC_PROCESS] Document {document_id} processing failed: {result.get('error', 'Unknown error')}")
+            
+    except Exception as e:
+        logger.error(f"❌ [ASYNC_PROCESS] Async processing failed for document {document_id}: {e}")
+        
+        # Обновляем статус на "failed"
+        try:
+            def _update_failed_status(conn):
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        UPDATE checkable_documents 
+                        SET processing_status = 'failed'
+                        WHERE id = %s
+                    """, (document_id,))
+                    conn.commit()
+            
+            db_connection.execute_in_transaction(_update_failed_status)
+        except Exception as update_error:
+            logger.error(f"❌ [ASYNC_PROCESS] Failed to update status for document {document_id}: {update_error}")
+
+# Переобработка документа
+@app.post("/checkable-documents/{document_id}/reprocess")
+async def reprocess_document_endpoint(document_id: int):
+    """Переобработка документа"""
+    try:
+        logger.info(f"🔄 [REPROCESS] Reprocessing requested for document {document_id}")
+        
+        # Проверяем существование документа
+        document = get_checkable_document(document_id)
+        if not document:
+            logger.error(f"🔄 [REPROCESS] Document {document_id} not found")
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        # Обновляем статус на "processing"
+        update_checkable_document_status(document_id, "processing")
+        
+        # Запускаем переобработку (пока заглушка)
+        result = await document_processor.reprocess_document(document_id)
+        
+        if result["status"] == "success":
+            return {
+                "status": "success",
+                "message": "Document reprocessing started"
+            }
+        else:
+            raise HTTPException(status_code=500, detail=result.get("error", "Reprocessing failed"))
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ [REPROCESS] Reprocessing error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Иерархическая проверка документа
