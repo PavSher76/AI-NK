@@ -83,8 +83,8 @@ SERVICES = {
     "rag-service": "http://rag-service:8003",
     "rule-engine": "http://rule-engine:8004",
     "calculation-service": "http://calculation-service:8002",
-    "ollama": "http://ollama:11434",
-    "vllm": "http://vllm:8000"
+            "ollama": "http://host.docker.internal:11434",  # Прямое подключение к Ollama
+        "vllm": "http://vllm:8005"  # VLLM сервис в контейнере
 }
 
 print("🔍 [DEBUG] Gateway: Starting with services configuration:", SERVICES)
@@ -94,28 +94,62 @@ async def auth_middleware(request: Request, call_next):
     """Middleware для проверки авторизации"""
     print(f"🔍 [DEBUG] Gateway: Auth middleware - {request.method} {request.url.path}")
     
-    # Пропускаем health check, metrics, статистику документов и эндпоинты авторизации без авторизации
+    # Отключаем авторизацию для всех путей фронтенда
     public_paths = [
         "/health", 
         "/metrics", 
         "/api/health",             # Эндпоинт для проверки здоровья RAG-сервиса
-        "/api/documents/stats",
+        "/api/documents",          # Эндпоинт для получения списка документов
+        "/api/documents/stats",    # Эндпоинт для статистики документов
+        "/api/upload",             # Эндпоинт для загрузки документов
         "/api/calculation/token",  # Эндпоинт для получения JWT токена
         "/api/calculation/me",     # Эндпоинт для получения информации о пользователе
         "/api/chat/tags",          # Эндпоинт для проверки статуса Ollama
         "/api/chat/health",        # Эндпоинт для проверки здоровья Ollama
+        "/api/chat",               # Эндпоинт для чата с ИИ
+        "/api/generate",           # Эндпоинт для генерации текста
         "/api/ntd-consultation/chat",  # Эндпоинт для консультации НТД
         "/api/ntd-consultation/stats", # Эндпоинт для статистики консультаций
         "/api/ntd-consultation/cache", # Эндпоинт для управления кэшем
-        "/api/ntd-consultation/cache/stats" # Эндпоинт для статистики кэша
+        "/api/ntd-consultation/cache/stats", # Эндпоинт для статистики кэша
+        "/api/checkable-documents", # Эндпоинт для проверяемых документов
+        "/api/settings",           # Эндпоинт для настроек
+        "/api/upload/checkable",   # Эндпоинт для загрузки проверяемых документов
+        "/api/rules",              # Эндпоинт для правил
+        "/api/calculations",       # Эндпоинт для расчетов
+        "/api/rag",                # Эндпоинт для RAG сервиса
+        "/api/ollama",             # Эндпоинт для Ollama
+        "/api/vllm"                # Эндпоинт для vLLM
     ]
     
     print(f"🔍 [DEBUG] Gateway: Checking path '{request.url.path}' against public paths: {public_paths}")
+    
+    # Проверяем точное совпадение
     if request.url.path in public_paths:
-        print(f"🔍 [DEBUG] Gateway: Skipping auth for {request.url.path}")
+        print(f"🔍 [DEBUG] Gateway: Skipping auth for exact match {request.url.path}")
         return await call_next(request)
-    else:
-        print(f"🔍 [DEBUG] Gateway: Path '{request.url.path}' not in public paths")
+    
+    # Проверяем префиксы для API путей
+    api_prefixes = [
+        "/api/upload",
+        "/api/chat",
+        "/api/generate", 
+        "/api/ntd-consultation",
+        "/api/checkable-documents",
+        "/api/settings",
+        "/api/rules",
+        "/api/calculations",
+        "/api/rag",
+        "/api/ollama",
+        "/api/vllm"
+    ]
+    
+    for prefix in api_prefixes:
+        if request.url.path.startswith(prefix):
+            print(f"🔍 [DEBUG] Gateway: Skipping auth for prefix match {request.url.path} (prefix: {prefix})")
+            return await call_next(request)
+    
+    print(f"🔍 [DEBUG] Gateway: Path '{request.url.path}' not in public paths or prefixes")
     
     # Проверяем заголовок авторизации
     authorization_header = request.headers.get("authorization")
@@ -370,16 +404,18 @@ async def proxy_api(request: Request, path: str):
         return await proxy_request(request, service_url, f"/{path}")
     elif path.startswith("chat/health"):
         service_url = SERVICES["ollama"]
-        print(f"🔍 [DEBUG] Gateway: Routing chat/health to ollama: {service_url}")
-        return await proxy_request(request, service_url, "/api/version")
+        print(f"🔍 [DEBUG] Gateway: Routing chat/health to ollama service: {service_url}")
+        return await proxy_request(request, service_url, "/health")
     elif path.startswith("chat/tags"):
         service_url = SERVICES["ollama"]
-        print(f"🔍 [DEBUG] Gateway: Routing chat/tags to ollama: {service_url}")
-        return await proxy_request(request, service_url, "/api/tags")
+        print(f"🔍 [DEBUG] Gateway: Routing chat/tags to ollama service: {service_url}")
+        return await proxy_request(request, service_url, "/models")
     elif path.startswith("chat") or path.startswith("generate"):
         service_url = SERVICES["ollama"]
-        print(f"🔍 [DEBUG] Gateway: Routing to ollama: {service_url} with path: {path}")
-        return await proxy_request(request, service_url, f"/api/{path}")
+        print(f"🔍 [DEBUG] Gateway: Routing to ollama service: {service_url} with path: {path}")
+        # Для чата передаем путь без префикса api/
+        clean_path = path.replace("api/", "") if path.startswith("api/") else path
+        return await proxy_request(request, service_url, f"/{clean_path}")
     else:
         print(f"🔍 [DEBUG] Gateway: Unknown path, defaulting to document-parser")
         service_url = SERVICES["document-parser"]
@@ -462,16 +498,18 @@ async def proxy_main(request: Request, path: str):
         return await proxy_request(request, service_url, f"/{path}")
     elif path.startswith("chat/health"):
         service_url = SERVICES["ollama"]
-        print(f"🔍 [DEBUG] Gateway: Routing chat/health to ollama: {service_url}")
-        return await proxy_request(request, service_url, "/api/version")
+        print(f"🔍 [DEBUG] Gateway: Routing chat/health to ollama service: {service_url}")
+        return await proxy_request(request, service_url, "/health")
     elif path.startswith("chat/tags"):
         service_url = SERVICES["ollama"]
-        print(f"🔍 [DEBUG] Gateway: Routing chat/tags to ollama: {service_url}")
-        return await proxy_request(request, service_url, "/api/tags")
+        print(f"🔍 [DEBUG] Gateway: Routing chat/tags to ollama service: {service_url}")
+        return await proxy_request(request, service_url, "/models")
     elif path.startswith("chat") or path.startswith("generate"):
         service_url = SERVICES["ollama"]
-        print(f"🔍 [DEBUG] Gateway: Routing to ollama: {service_url} with path: {path}")
-        return await proxy_request(request, service_url, f"/api/{path}")
+        print(f"🔍 [DEBUG] Gateway: Routing to ollama service: {service_url} with path: {path}")
+        # Для чата передаем путь без префикса api/
+        clean_path = path.replace("api/", "") if path.startswith("api/") else path
+        return await proxy_request(request, service_url, f"/{clean_path}")
     else:
         print(f"🔍 [DEBUG] Gateway: Unknown path, defaulting to document-parser")
         service_url = SERVICES["document-parser"]

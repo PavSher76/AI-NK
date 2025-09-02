@@ -444,3 +444,6 @@ echo "   python gpt-oss/gpt_oss/metal/examples/generate.py models/gpt-oss-20b/me
 echo ""
 
 log_success "Установка завершена!"
+
+
+

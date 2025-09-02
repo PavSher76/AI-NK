@@ -25,37 +25,26 @@ export const fetchDocuments = async (authToken) => {
 // Получение статистики документов
 export const fetchStats = async (authToken) => {
   try {
-    const response = await fetch('/api/documents/stats', {
-      headers: {
-        'Authorization': `Bearer ${authToken}`
-      }
-    });
+    // Получаем статистику напрямую от RAG сервиса
+    const response = await fetch('http://localhost:8003/documents/stats');
     
     if (response.ok) {
       const data = await response.json();
       
-      // Адаптируем данные для совместимости с фронтендом
-      if (data.statistics) {
-        const adaptedStats = {
-          total_documents: data.statistics.total_documents,
-          indexed_documents: data.statistics.indexed_documents,
-          indexing_progress: `${data.statistics.indexing_progress_percent}%`,
-          category_distribution: data.statistics.categories.reduce((acc, cat) => {
-            acc[cat.category] = cat.count;
-            return acc;
-          }, {}),
-          collection_name: 'normative_documents'
-        };
-        return adaptedStats;
-      }
-      
-      return data;
+      // Возвращаем данные в том же формате, что возвращает RAG сервис
+      return {
+        tokens: data.tokens || 0,
+        chunks: data.chunks || 0,
+        vectors: data.vectors || 0,
+        documents: data.documents || 0,
+        timestamp: data.timestamp
+      };
     } else {
-      console.error('Failed to fetch stats:', response.status);
+      console.error('Failed to fetch stats from RAG service:', response.status);
       return null;
     }
   } catch (error) {
-    console.error('Error fetching stats:', error);
+    console.error('Error fetching stats from RAG service:', error);
     return null;
   }
 };

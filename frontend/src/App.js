@@ -21,7 +21,7 @@ import {
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import SettingsPanel from './components/SettingsPanel';
-import AuthModal from './components/AuthModal';
+// import AuthModal from './components/AuthModal'; // Отключено
 
 // Pages
 import DashboardPage from './pages/DashboardPage';
@@ -73,34 +73,28 @@ function App() {
   // API конфигурация
   const API_BASE = process.env.REACT_APP_API_BASE || '/api/v1';
 
-  // Проверка авторизации при загрузке
+  // Отключена авторизация - автоматически устанавливаем как авторизованного
   useEffect(() => {
-    const savedUserInfo = localStorage.getItem('userInfo');
+    console.log('🔍 [DEBUG] App.js: Авторизация отключена - устанавливаем как авторизованного');
     
-    if (savedUserInfo) {
-      try {
-        const user = JSON.parse(savedUserInfo);
-        const now = Date.now();
-        
-        // Проверяем, не истек ли токен
-        if (user.expiresAt && user.expiresAt > now) {
-          setUserInfo(user);
-          setAuthToken(user.token);
-          setAuthMethod(user.method);
-          setIsAuthenticated(true);
-        } else {
-          // Токен истек, очищаем данные
-          localStorage.removeItem('userInfo');
-          setShowAuthModal(true);
-        }
-      } catch (error) {
-        console.error('Error parsing saved user info:', error);
-        localStorage.removeItem('userInfo');
-        setShowAuthModal(true);
-      }
-    } else {
-      setShowAuthModal(true);
-    }
+    // Устанавливаем пользователя как авторизованного без проверки токена
+    const userInfo = {
+      token: 'disabled-auth',
+      username: 'user',
+      method: 'disabled',
+      expiresAt: Date.now() + (24 * 60 * 60 * 1000) // 24 часа
+    };
+    
+    setUserInfo(userInfo);
+    setAuthToken(userInfo.token);
+    setAuthMethod(userInfo.method);
+    setIsAuthenticated(true);
+    setShowAuthModal(false);
+    
+    // Сохраняем в localStorage
+    localStorage.setItem('userInfo', JSON.stringify(userInfo));
+    
+    console.log('🔍 [DEBUG] App.js: Пользователь установлен как авторизованный');
   }, []);
 
   // Проверка статуса сервисов
@@ -120,43 +114,19 @@ function App() {
         }
       }
 
-      // Проверка Ollama (через Gateway с авторизацией)
+      // Проверка Ollama (авторизация отключена)
       try {
-        if (isAuthenticated && authToken) {
-          const ollamaResponse = await axios.get('/ollama/api/tags', {
-            headers: { Authorization: `Bearer ${authToken}` },
-            timeout: 300000 // 5 минут (300 секунд)
-          });
-          setSystemStatus(prev => ({ ...prev, ollama: true }));
-        } else {
-          // Если не авторизован, проверяем через Gateway без токена
-          // Gateway вернет 401, но это означает что сервис доступен
-          try {
-            const ollamaResponse = await axios.get('/ollama/api/tags', {
-              timeout: 300000 // 5 минут (300 секунд)
-            });
-            setSystemStatus(prev => ({ ...prev, ollama: true }));
-          } catch (gatewayError) {
-            if (gatewayError.response && gatewayError.response.status === 401) {
-              // Gateway доступен, но требует авторизации - это нормально
-              setSystemStatus(prev => ({ ...prev, ollama: true }));
-            } else {
-              setSystemStatus(prev => ({ ...prev, ollama: false }));
-            }
-          }
-        }
+        const ollamaResponse = await axios.get('/api/chat/health', {
+          timeout: 300000 // 5 минут (300 секунд)
+        });
+        setSystemStatus(prev => ({ ...prev, ollama: true }));
       } catch (error) {
+        console.log('🔍 [DEBUG] App.js: Ollama health check failed:', error.message);
         setSystemStatus(prev => ({ ...prev, ollama: false }));
       }
 
-      // Проверка Keycloak (всегда доступен)
-      try {
-        const keycloakResponse = await axios.get('/keycloak/realms/ai-nk');
-        setSystemStatus(prev => ({ ...prev, keycloak: true }));
-      } catch (error) {
-        console.log('Keycloak realm not found yet');
-        setSystemStatus(prev => ({ ...prev, keycloak: false }));
-      }
+      // Проверка Keycloak (авторизация отключена)
+      setSystemStatus(prev => ({ ...prev, keycloak: true }));
     } catch (error) {
       console.error('🔍 [DEBUG] App.js: Error checking system status:', error);
       setSystemStatus({ gateway: false, ollama: false, keycloak: false });
@@ -226,41 +196,44 @@ function App() {
       return;
     }
 
-    try {
-      console.log('loadModels: Загружаем модели...');
-      console.log('loadModels: Метод авторизации:', authMethod);
-      console.log('loadModels: Отправляем запрос к /ollama/api/tags с токеном:', authToken.substring(0, 20) + '...');
-      
-      const response = await axios.get('/ollama/api/tags', {
-        headers: { Authorization: `Bearer ${authToken}` },
-        timeout: 300000 // 5 минут (300 секунд)
-      });
-      
-      console.log('loadModels: Получен ответ:', response.status, response.data);
-      
-      // Преобразуем формат данных из Ollama в формат, ожидаемый фронтендом
-      const modelsData = response.data.models.map(model => ({
-        id: model.name,
-        name: model.name,
-        size: model.size,
-        modified_at: model.modified_at
-      }));
-      
-      console.log('loadModels: Преобразованные данные:', modelsData);
-      
-      setModels(modelsData);
-      if (modelsData.length > 0 && !selectedModel) {
-        setSelectedModel(modelsData[0].id);
-        console.log('loadModels: Установлена первая модель:', modelsData[0].id);
+          try {
+        console.log('loadModels: Загружаем модели от VLLM сервиса...');
+        
+        // Получаем модели напрямую от VLLM сервиса
+        const response = await axios.get('http://localhost:8005/models', {
+          timeout: 10000 // 10 секунд
+        });
+        
+        console.log('loadModels: Получен ответ от VLLM:', response.status, response.data);
+        
+        if (response.data.status === 'success' && response.data.models) {
+          // Преобразуем формат данных из VLLM в формат, ожидаемый фронтендом
+          const modelsData = response.data.models.map(model => ({
+            id: model.name,
+            name: model.name,
+            status: model.status,
+            type: model.type
+          }));
+          
+          console.log('loadModels: Преобразованные данные:', modelsData);
+          
+          setModels(modelsData);
+          if (modelsData.length > 0 && !selectedModel) {
+            setSelectedModel(modelsData[0].id);
+            console.log('loadModels: Установлена первая модель:', modelsData[0].id);
+          }
+          setError(null); // Очищаем ошибки при успешной загрузке
+          console.log('loadModels: Модели загружены', modelsData.length);
+        } else {
+          console.error('loadModels: Неверный формат ответа от VLLM:', response.data);
+          setError('Неверный формат ответа от сервиса моделей');
+        }
+      } catch (error) {
+        console.error('🔍 [DEBUG] App.js: Error loading models:', error);
+        console.error('🔍 [DEBUG] App.js: Error response:', error.response?.data);
+        console.error('🔍 [DEBUG] App.js: Error status:', error.response?.status);
+        setError('Ошибка загрузки моделей от VLLM сервиса');
       }
-      setError(null); // Очищаем ошибки при успешной загрузке
-      console.log('loadModels: Модели загружены', modelsData.length);
-    } catch (error) {
-      console.error('🔍 [DEBUG] App.js: Error loading models:', error);
-      console.error('🔍 [DEBUG] App.js: Error response:', error.response?.data);
-      console.error('🔍 [DEBUG] App.js: Error status:', error.response?.status);
-      setError('Ошибка загрузки моделей');
-    }
   };
 
   // Отправка сообщения
@@ -283,31 +256,30 @@ function App() {
     setError(null);
 
     try {
-      const response = await axios.post(`/ollama/api/generate`, {
-        model: selectedModel,
-        prompt: content,
-        stream: false
+      const response = await axios.post(`http://localhost:8005/chat`, {
+        message: content,
+        model: selectedModel
       }, {
-        headers: { 
-          Authorization: `Bearer ${authToken}`,
-          'Content-Type': 'application/json'
-        },
-        timeout: 300000 // 5 минут (300 секунд)
+        timeout: 120000 // 2 минуты
       });
 
-      const assistantMessage = {
-        id: Date.now() + 1,
-        role: 'assistant',
-        content: response.data.response,
-        timestamp: new Date().toISOString(),
-        usage: {
-          prompt_tokens: response.data.prompt_eval_count,
-          completion_tokens: response.data.eval_count,
-          total_tokens: response.data.prompt_eval_count + response.data.eval_count
-        }
-      };
+      if (response.data.status === 'success') {
+        const assistantMessage = {
+          id: Date.now() + 1,
+          role: 'assistant',
+          content: response.data.response,
+          timestamp: new Date().toISOString(),
+          usage: {
+            prompt_tokens: response.data.prompt_tokens || 0,
+            completion_tokens: response.data.response_tokens || 0,
+            total_tokens: response.data.tokens_used || 0
+          }
+        };
 
-      setMessages(prev => [...prev, assistantMessage]);
+        setMessages(prev => [...prev, assistantMessage]);
+      } else {
+        throw new Error(response.data.response || 'Ошибка генерации ответа');
+      }
     } catch (error) {
       setError('Ошибка отправки сообщения');
       console.error('Error sending message:', error);
@@ -351,31 +323,30 @@ function App() {
         // Отправляем запрос к AI с содержимым файла
         const prompt = `Файл: ${fileName}\n\nСодержимое файла:\n${fileContent}\n\nЗапрос пользователя: ${formData.get('message') || 'Обработай этот файл'}`;
         
-        const response = await axios.post(`/ollama/api/generate`, {
-          model: selectedModel,
-          prompt: prompt,
-          stream: false
+        const response = await axios.post(`http://localhost:8005/chat`, {
+          message: prompt,
+          model: selectedModel
         }, {
-          headers: { 
-            Authorization: `Bearer ${authToken}`,
-            'Content-Type': 'application/json'
-          },
-          timeout: 300000 // 5 минут (300 секунд)
+          timeout: 120000 // 2 минуты
         });
 
-        const assistantMessage = {
-          id: Date.now() + 1,
-          role: 'assistant',
-          content: response.data.response,
-          timestamp: new Date().toISOString(),
-          usage: {
-            prompt_tokens: response.data.prompt_eval_count,
-            completion_tokens: response.data.eval_count,
-            total_tokens: response.data.prompt_eval_count + response.data.eval_count
-          }
-        };
+        if (response.data.status === 'success') {
+          const assistantMessage = {
+            id: Date.now() + 1,
+            role: 'assistant',
+            content: response.data.response,
+            timestamp: new Date().toISOString(),
+            usage: {
+              prompt_tokens: response.data.prompt_tokens || 0,
+              completion_tokens: response.data.response_tokens || 0,
+              total_tokens: response.data.tokens_used || 0
+            }
+          };
 
-        setMessages(prev => [...prev, assistantMessage]);
+          setMessages(prev => [...prev, assistantMessage]);
+        } else {
+          throw new Error(response.data.response || 'Ошибка генерации ответа');
+        }
       } else {
         throw new Error('Ошибка обработки файла');
       }
@@ -563,12 +534,12 @@ function App() {
         </main>
       </div>
 
-      {/* Модальное окно авторизации */}
-      <AuthModal
+      {/* Модальное окно авторизации отключено */}
+      {/* <AuthModal
         isOpen={showAuthModal}
         onClose={() => setShowAuthModal(false)}
         onAuthSuccess={handleAuthSuccess}
-      />
+      /> */}
     </div>
   );
 }
