@@ -85,10 +85,6 @@ services:
           cpus: '2.0'
     # Оптимизация для Apple Silicon
     platform: linux/arm64
-    environment:
-      - OLLAMA_HOST=0.0.0.0
-      - OLLAMA_ORIGINS=*
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
     # healthcheck:
     #   test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
     #   interval: 30s
@@ -367,13 +363,12 @@ services:
     environment:
       - POSTGRES_URL=postgresql://${POSTGRES_USER:-norms_user}:${POSTGRES_PASSWORD:-norms_password}@norms-db:5432/${POSTGRES_DB:-norms_db}
       - QDRANT_URL=http://qdrant:6333
-      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_URL=http://host.docker.internal:11434
       - REDIS_URL=redis://:${REDIS_PASSWORD:-redispass}@redis:6379/0
-    command: ["python", "main.py"]
+    command: ["python", "ollama_main.py"]
     depends_on:
       - norms-db
       - qdrant
-      - ollama
       - redis
     restart: unless-stopped
     deploy:

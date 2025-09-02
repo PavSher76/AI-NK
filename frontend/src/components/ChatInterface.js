@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Trash2, Loader2, Paperclip, FileText, X } from 'lucide-react';
+import { Send, Bot, User, Trash2, Loader2, Paperclip, FileText, X, AlertTriangle } from 'lucide-react';
 import ModelSelector from './ModelSelector';
 
 const ChatInterface = ({ 
@@ -112,20 +112,22 @@ const ChatInterface = ({
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         'application/msword',
-        'application/vnd.ms-excel'
+        'application/vnd.ms-excel',
+        'text/plain',
+        'text/markdown'
       ];
       
       if (allowedTypes.includes(file.type)) {
-        // Проверяем размер файла (максимум 10MB)
-        const maxSize = 10 * 1024 * 1024; // 10MB
+        // Проверяем размер файла (максимум 100MB)
+        const maxSize = 100 * 1024 * 1024; // 100MB
         if (file.size > maxSize) {
-          alert('Файл слишком большой. Максимальный размер: 10MB');
+          alert('Файл слишком большой. Максимальный размер: 100MB');
           return;
         }
         
         setSelectedFile(file);
       } else {
-        alert('Поддерживаются только файлы PDF, Word и Excel');
+        alert('Поддерживаются только файлы PDF, Word, Excel, TXT и Markdown');
       }
     }
   };
@@ -276,6 +278,28 @@ const ChatInterface = ({
               >
                 <X className="w-4 h-4" />
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* Предупреждение о больших файлах */}
+        {selectedFile && selectedFile.size > 10 * 1024 * 1024 && (
+          <div className="bg-yellow-50 border border-yellow-200 rounded-md p-3 mb-4">
+            <div className="flex">
+              <div className="flex-shrink-0">
+                <AlertTriangle className="h-5 w-5 text-yellow-400" />
+              </div>
+              <div className="ml-3">
+                <h3 className="text-sm font-medium text-yellow-800">
+                  ⚠️ Большие файлы
+                </h3>
+                <div className="mt-2 text-sm text-yellow-700">
+                  <p>
+                    Файлы размером более 10МБ могут обрабатываться дольше. 
+                    Система поддерживает файлы до 100МБ.
+                  </p>
+                </div>
+              </div>
             </div>
           </div>
         )}

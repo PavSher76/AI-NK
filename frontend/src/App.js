@@ -99,14 +99,14 @@ function App() {
 
   // Проверка статуса сервисов
   const checkSystemStatus = async () => {
-    console.log('🔍 [DEBUG] App.js: checkSystemStatus started');
     try {
-      // Проверка Gateway (всегда доступен)
+      // Проверка Gateway (авторизация отключена)
       try {
-        const gatewayResponse = await axios.get('/api/documents');
+        const gatewayResponse = await axios.get('/api/health', {
+          timeout: 10000
+        });
         setSystemStatus(prev => ({ ...prev, gateway: true }));
       } catch (error) {
-        // Gateway может требовать авторизации, но это нормально
         if (error.response && error.response.status === 401) {
           setSystemStatus(prev => ({ ...prev, gateway: true }));
         } else {
@@ -114,10 +114,10 @@ function App() {
         }
       }
 
-      // Проверка Ollama (авторизация отключена)
+      // Проверка Ollama через VLLM (авторизация отключена)
       try {
-        const ollamaResponse = await axios.get('/api/chat/health', {
-          timeout: 300000 // 5 минут (300 секунд)
+        const ollamaResponse = await axios.get('http://localhost:8005/health', {
+          timeout: 10000 // 10 секунд
         });
         setSystemStatus(prev => ({ ...prev, ollama: true }));
       } catch (error) {
@@ -307,52 +307,64 @@ function App() {
     setError(null);
 
     try {
-      // Сначала загружаем файл в document-parser
-      const uploadResponse = await axios.post(`/api/upload/chat`, formData, {
+      // Отправляем файл напрямую в VLLM сервис для обработки
+      const response = await axios.post(`http://localhost:8005/chat_with_document`, formData, {
         headers: { 
-          Authorization: `Bearer ${authToken}`,
           'Content-Type': 'multipart/form-data'
         },
-        timeout: 300000 // 5 минут (300 секунд)
+        timeout: 600000 // 10 минут для больших файлов
       });
 
-      if (uploadResponse.data.success) {
-        // Получаем содержимое файла
-        const fileContent = uploadResponse.data.content;
+      if (response.data.status === 'success') {
+        const assistantMessage = {
+          id: Date.now() + 1,
+          role: 'assistant',
+          content: response.data.ai_response.response,
+          timestamp: new Date().toISOString(),
+          usage: {
+            prompt_tokens: response.data.ai_response.prompt_tokens || 0,
+            completion_tokens: response.data.ai_response.response_tokens || 0,
+            total_tokens: response.data.ai_response.tokens_used || 0
+          },
+          document_info: {
+            document_id: response.data.document_id,
+            file_name: response.data.file_name,
+            chunks_count: response.data.chunks_count
+          }
+        };
+
+        setMessages(prev => [...prev, assistantMessage]);
         
-        // Отправляем запрос к AI с содержимым файла
-        const prompt = `Файл: ${fileName}\n\nСодержимое файла:\n${fileContent}\n\nЗапрос пользователя: ${formData.get('message') || 'Обработай этот файл'}`;
-        
-        const response = await axios.post(`http://localhost:8005/chat`, {
-          message: prompt,
-          model: selectedModel
-        }, {
-          timeout: 120000 // 2 минуты
+        // Показываем информацию об обработанном документе
+        console.log(`✅ Документ ${fileName} обработан успешно:`, {
+          document_id: response.data.document_id,
+          chunks_count: response.data.chunks_count
         });
-
-        if (response.data.status === 'success') {
-          const assistantMessage = {
-            id: Date.now() + 1,
-            role: 'assistant',
-            content: response.data.response,
-            timestamp: new Date().toISOString(),
-            usage: {
-              prompt_tokens: response.data.prompt_tokens || 0,
-              completion_tokens: response.data.response_tokens || 0,
-              total_tokens: response.data.tokens_used || 0
-            }
-          };
-
-          setMessages(prev => [...prev, assistantMessage]);
-        } else {
-          throw new Error(response.data.response || 'Ошибка генерации ответа');
-        }
       } else {
-        throw new Error('Ошибка обработки файла');
+        throw new Error(response.data.error || 'Ошибка обработки документа');
       }
     } catch (error) {
-      setError('Ошибка обработки файла');
-      console.error('Error processing file:', error);
+      console.error('Error processing document:', error);
+      
+      let errorMessage = 'Ошибка обработки документа';
+      if (error.response?.data?.error) {
+        errorMessage = error.response.data.error;
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      
+      setError(errorMessage);
+      
+      // Добавляем сообщение об ошибке в чат
+      const errorMessageObj = {
+        id: Date.now() + 1,
+        role: 'assistant',
+        content: `❌ Ошибка обработки документа: ${errorMessage}`,
+        timestamp: new Date().toISOString(),
+        isError: true
+      };
+      
+      setMessages(prev => [...prev, errorMessageObj]);
     } finally {
       setIsLoading(false);
     }
