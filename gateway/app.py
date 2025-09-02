@@ -36,6 +36,11 @@ def verify_token(authorization_header: str) -> bool:
             token = authorization_header[7:]  # Убираем "Bearer "
             print(f"🔍 [DEBUG] Gateway: Extracted token: {token[:20]}..." if len(token) > 20 else f"🔍 [DEBUG] Gateway: Extracted token: {token}")
             
+            # Специальный токен для разработки
+            if token == "disabled-auth":
+                print(f"🔍 [DEBUG] Gateway: Development token 'disabled-auth' accepted")
+                return True
+            
             # Проверяем JWT токены от Keycloak
             if token.startswith("eyJ") and KEYCLOAK_ENABLED:
                 try:
