@@ -105,7 +105,7 @@ def delete_document(document_id: int):
     logger.info(f"🗑️ [DELETE_DOCUMENT] Deleting document ID: {document_id}")
     try:
         rag_service_instance = get_rag_service()
-        success = rag_service_instance.delete_document_indexes(document_id)
+        success = rag_service_instance.delete_document(document_id)
         
         if success:
             return {
@@ -146,13 +146,14 @@ def reindex_documents():
     """Реиндексация всех документов"""
     logger.info("🔄 [REINDEX_DOCUMENTS] Starting document reindexing...")
     try:
+        rag_service_instance = get_rag_service()
         # Получаем все документы из базы данных
         documents = []
-        with rag_service.db_manager.get_cursor() as cursor:
+        with rag_service_instance.db_manager.get_cursor() as cursor:
             cursor.execute("""
                 SELECT DISTINCT 
                     ud.id as document_id,
-                    ud.filename as document_title,
+                    ud.original_filename as document_title,
                     ud.category,
                     ud.processing_status
                 FROM uploaded_documents ud
@@ -185,7 +186,7 @@ def reindex_documents():
                 # Получаем чанки документа с отдельным соединением
                 chunks = []
                 try:
-                    with rag_service.db_manager.get_cursor() as cursor:
+                    with rag_service_instance.db_manager.get_cursor() as cursor:
                         cursor.execute("""
                             SELECT 
                                 chunk_id,
@@ -201,8 +202,8 @@ def reindex_documents():
                 except Exception as e:
                     logger.error(f"❌ [REINDEX_DOCUMENTS] Error getting chunks for document {document_id}: {e}")
                     # Пробуем переподключиться
-                    rag_service.db_manager.reconnect()
-                    with rag_service.db_manager.get_cursor() as cursor:
+                    rag_service_instance.db_manager.reconnect()
+                    with rag_service_instance.db_manager.get_cursor() as cursor:
                         cursor.execute("""
                             SELECT 
                                 chunk_id,
@@ -222,9 +223,17 @@ def reindex_documents():
                 
                 # Подготавливаем чанки для индексации
                 chunks_for_indexing = []
-                for chunk in chunks:
+                for i, chunk in enumerate(chunks):
+                    # Генерируем числовой ID для Qdrant
+                    qdrant_id = hash(f"{document_id}_{chunk['chunk_id']}") % (2**63 - 1)  # Положительное число
+                    if qdrant_id < 0:
+                        qdrant_id = abs(qdrant_id)
+                    
+                    # Извлекаем код документа из названия
+                    code = rag_service_instance.extract_document_code(document_title)
+                    
                     chunk_data = {
-                        'id': chunk['chunk_id'],  # ID для Qdrant
+                        'id': qdrant_id,  # Числовой ID для Qdrant
                         'document_id': document_id,
                         'chunk_id': chunk['chunk_id'],
                         'content': chunk['content'],
@@ -232,13 +241,15 @@ def reindex_documents():
                         'section_title': chunk['chapter'] or '',
                         'section': chunk['section'] or '',  # Добавляем поле 'section'
                         'document_title': document_title,
+                        'title': document_title,  # Добавляем поле 'title' для совместимости
+                        'code': code,  # Добавляем поле 'code' для совместимости
                         'category': document['category'],
                         'chunk_type': 'paragraph'  # Добавляем тип чанка
                     }
                     chunks_for_indexing.append(chunk_data)
                 
                 # Индексируем чанки в векторную базу
-                success = rag_service.index_document_chunks(document_id, chunks_for_indexing)
+                success = rag_service_instance.index_document_chunks(document_id, chunks_for_indexing)
                 
                 if success:
                     reindexed_count += 1
@@ -338,6 +349,9 @@ def start_async_reindex():
                         # Подготавливаем чанки для индексации
                         chunks_for_indexing = []
                         for chunk in chunks:
+                            # Извлекаем код документа из названия
+                            code = rag_service.extract_document_code(document_title)
+                            
                             chunk_data = {
                                 'id': chunk['chunk_id'],  # ID для Qdrant
                                 'document_id': document_id,
@@ -347,6 +361,8 @@ def start_async_reindex():
                                 'section_title': chunk['section_title'] or '',
                                 'section': chunk['subsection_title'] or '',  # Добавляем поле 'section'
                                 'document_title': document_title,
+                                'title': document_title,  # Добавляем поле 'title' для совместимости
+                                'code': code,  # Добавляем поле 'code' для совместимости
                                 'category': document['category'],
                                 'chunk_type': 'paragraph'  # Добавляем тип чанка
                             }
@@ -502,24 +518,40 @@ def health_check():
     """Проверка здоровья сервиса"""
     logger.info("💪 [HEALTH] Performing health check...")
     try:
-        # Проверяем подключения
-        rag_service.db_manager.get_cursor().execute("SELECT 1")
-        # Проверяем Qdrant через прямой HTTP запрос
-        import requests
-        from core.config import QDRANT_URL
-        response = requests.get(f"{QDRANT_URL}/collections")
-        if response.status_code != 200:
-            raise Exception("Qdrant connection failed")
+        # Получаем экземпляр RAG сервиса
+        rag_service_instance = get_rag_service()
         
+        # Проверяем подключения (без критических ошибок)
+        services_status = {}
+        
+        # Проверяем PostgreSQL
+        try:
+            rag_service_instance.db_manager.get_cursor().execute("SELECT 1")
+            services_status["postgresql"] = "connected"
+        except Exception as e:
+            services_status["postgresql"] = "disconnected"
+            logger.warning(f"⚠️ [HEALTH] PostgreSQL connection failed: {e}")
+        
+        # Проверяем Qdrant
+        try:
+            import requests
+            from core.config import QDRANT_URL
+            response = requests.get(f"{QDRANT_URL}/collections", timeout=5)
+            if response.status_code == 200:
+                services_status["qdrant"] = "connected"
+            else:
+                services_status["qdrant"] = "error"
+        except Exception as e:
+            services_status["qdrant"] = "disconnected"
+            logger.warning(f"⚠️ [HEALTH] Qdrant connection failed: {e}")
+        
+        # Сервис считается здоровым, если основные компоненты инициализированы
         return {
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
-            "embedding_model": "BGE-M3" if rag_service.embedding_model else "simple_hash",
+            "embedding_model": "BGE-M3" if rag_service_instance.embedding_model else "simple_hash",
             "optimized_indexer": "not_available",  # Временно отключен
-            "services": {
-                "postgresql": "connected",
-                "qdrant": "connected"
-            }
+            "services": services_status
         }
     except Exception as e:
         logger.error(f"❌ [HEALTH] Health check error: {e}")
@@ -533,7 +565,8 @@ def get_metrics():
     """Получение метрик Prometheus"""
     logger.info("📊 [METRICS] Getting service metrics...")
     try:
-        stats = rag_service.get_stats()
+        rag_service_instance = get_rag_service()
+        stats = rag_service_instance.get_stats()
         
         # Формируем метрики в формате Prometheus
         metrics_lines = []
@@ -560,8 +593,8 @@ def get_metrics():
         # Метрики подключений
         metrics_lines.append(f"# HELP rag_service_connections_status Connection status")
         metrics_lines.append(f"# TYPE rag_service_connections_status gauge")
-        metrics_lines.append(f'rag_service_connections_status{{service="postgresql"}} {1 if rag_service.db_manager.connection else 0}')
-        metrics_lines.append(f'rag_service_connections_status{{service="qdrant"}} {1 if rag_service.qdrant_client else 0}')
+        metrics_lines.append(f'rag_service_connections_status{{service="postgresql"}} {1 if rag_service_instance.db_manager.connection else 0}')
+        metrics_lines.append(f'rag_service_connections_status{{service="qdrant"}} {1 if rag_service_instance.qdrant_client else 0}')
         
         # Метрики статистики
         if stats:

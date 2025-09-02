@@ -18,6 +18,7 @@ const DashboardMetrics = ({ authToken }) => {
   const [ollamaStatus, setOllamaStatus] = useState(null);
   const [ollamaPerformance, setOllamaPerformance] = useState(null);
   const [normcontrolAnalytics, setNormcontrolAnalytics] = useState(null);
+  const [availableModels, setAvailableModels] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -50,6 +51,13 @@ const DashboardMetrics = ({ authToken }) => {
       if (normcontrolResponse.ok) {
         const analyticsData = await normcontrolResponse.json();
         setNormcontrolAnalytics(analyticsData);
+      }
+
+      // Получаем доступные модели от VLLM сервиса
+      const modelsResponse = await fetch('http://localhost:8005/models');
+      if (modelsResponse.ok) {
+        const modelsData = await modelsResponse.json();
+        setAvailableModels(modelsData);
       }
 
     } catch (err) {
@@ -214,6 +222,54 @@ const DashboardMetrics = ({ authToken }) => {
           ) : (
             <div className="text-center py-4">
               <BarChart3 className="w-8 h-8 mx-auto text-gray-300 mb-2" />
+              <p className="text-sm text-gray-500">Данные недоступны</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Доступные модели VLLM */}
+      <div className="grid grid-cols-1 lg:grid-cols-1 gap-6 mb-8">
+        <div className="bg-white rounded-lg shadow p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-medium text-gray-900">Доступные модели</h3>
+            <Zap className="w-6 h-6 text-orange-600" />
+          </div>
+          {availableModels ? (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-600">Всего моделей:</span>
+                <span className="text-sm font-medium text-gray-900">{availableModels.total_count || 0}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-600">Статус Ollama:</span>
+                <div className="flex items-center">
+                  {getStatusIcon(availableModels.ollama_status?.status)}
+                  <span className={`ml-2 text-sm font-medium ${getStatusColor(availableModels.ollama_status?.status)}`}>
+                    {availableModels.ollama_status?.status === 'healthy' ? 'Работает' : 'Ошибка'}
+                  </span>
+                </div>
+              </div>
+              <div className="mt-4">
+                <h4 className="text-sm font-medium text-gray-700 mb-2">Список моделей:</h4>
+                <div className="space-y-2">
+                  {availableModels.models?.map((model, index) => (
+                    <div key={index} className="flex items-center justify-between p-2 bg-gray-50 rounded-lg">
+                      <div className="flex items-center">
+                        <CheckCircle className="w-4 h-4 text-green-500 mr-2" />
+                        <span className="text-sm font-medium text-gray-900">{model.name}</span>
+                      </div>
+                      <span className="text-xs text-gray-500 bg-green-100 px-2 py-1 rounded-full">
+                        {model.status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="text-center py-4">
+              <Zap className="w-8 h-8 mx-auto text-gray-300 mb-2" />
               <p className="text-sm text-gray-500">Данные недоступны</p>
             </div>
           )}

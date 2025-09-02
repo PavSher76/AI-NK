@@ -9,10 +9,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Конфигурация сервисов
-QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
-POSTGRES_URL = os.getenv("POSTGRES_URL", "postgresql://norms_user:norms_password@norms-db:5432/norms_db")
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://vllm:8000")  # Изменено на VLLM Adapter
+QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+POSTGRES_URL = os.getenv("POSTGRES_URL", "postgresql://norms_user:norms_password@localhost:5432/norms_db")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:8000")  # Изменено на VLLM Adapter
 VECTOR_COLLECTION = "normative_documents"
 CHECKABLE_COLLECTION = "checkable_documents"
 BM25_COLLECTION = "normative_bm25"

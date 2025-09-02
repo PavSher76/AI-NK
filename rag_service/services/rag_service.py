@@ -29,8 +29,8 @@ class RAGService:
     
     def __init__(self):
         # Конфигурация
-        self.QDRANT_URL = "http://qdrant:6333"
-        self.POSTGRES_URL = "postgresql://norms_user:norms_password@norms-db:5432/norms_db"
+        self.QDRANT_URL = "http://localhost:6333"
+        self.POSTGRES_URL = "postgresql://norms_user:norms_password@localhost:5432/norms_db"
         self.VECTOR_COLLECTION = "normative_documents"
         self.VECTOR_SIZE = 1024
         
@@ -344,9 +344,9 @@ class RAGService:
         try:
             with self.db_manager.get_cursor() as cursor:
                 cursor.execute("""
-                    SELECT id, original_filename, category, processing_status, created_at
+                    SELECT id, original_filename, category, processing_status, upload_date
                     FROM uploaded_documents
-                    ORDER BY created_at DESC
+                    ORDER BY upload_date DESC
                 """)
                 documents = cursor.fetchall()
                 return [dict(doc) for doc in documents]
@@ -359,11 +359,11 @@ class RAGService:
         try:
             with self.db_manager.get_cursor() as cursor:
                 cursor.execute("""
-                    SELECT id, original_filename, category, processing_status, created_at, 
+                    SELECT id, original_filename, category, processing_status, upload_date, 
                            file_size, COALESCE(token_count, 0) as token_count
                     FROM uploaded_documents
                     WHERE category = %s OR %s = 'all'
-                    ORDER BY created_at DESC
+                    ORDER BY upload_date DESC
                 """, (document_type, document_type))
                 documents = cursor.fetchall()
                 return [dict(doc) for doc in documents]
@@ -488,3 +488,77 @@ class RAGService:
                 "documents_used": 0,
                 "timestamp": datetime.now().isoformat()
             }
+
+    def delete_document_indexes(self, document_id: int) -> bool:
+        """Удаление индексов документа из Qdrant"""
+        try:
+            logger.info(f"🗑️ [DELETE_INDEXES] Deleting indexes for document {document_id}")
+            
+            # Получаем все чанки документа
+            chunks = self.get_document_chunks(document_id)
+            if not chunks:
+                logger.warning(f"⚠️ [DELETE_INDEXES] No chunks found for document {document_id}")
+                return True
+            
+            # Формируем список ID для удаления из Qdrant
+            point_ids = []
+            for chunk in chunks:
+                qdrant_id = hash(f"{document_id}_{chunk['chunk_id']}") % (2**63 - 1)
+                if qdrant_id < 0:
+                    qdrant_id = abs(qdrant_id)
+                point_ids.append(qdrant_id)
+            
+            # Удаляем точки из Qdrant
+            if point_ids:
+                self.qdrant_client.delete(
+                    collection_name=self.VECTOR_COLLECTION,
+                    points_selector=point_ids
+                )
+                logger.info(f"✅ [DELETE_INDEXES] Deleted {len(point_ids)} points from Qdrant for document {document_id}")
+            
+            # Удаляем чанки из PostgreSQL
+            with self.db_manager.get_cursor() as cursor:
+                cursor.execute("DELETE FROM normative_chunks WHERE document_id = %s", (document_id,))
+                deleted_chunks = cursor.rowcount
+                logger.info(f"✅ [DELETE_INDEXES] Deleted {deleted_chunks} chunks from PostgreSQL for document {document_id}")
+                # Фиксируем транзакцию
+                cursor.connection.commit()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ [DELETE_INDEXES] Error deleting indexes for document {document_id}: {e}")
+            return False
+
+    def delete_document(self, document_id: int) -> bool:
+        """Полное удаление документа и всех связанных данных"""
+        try:
+            logger.info(f"🗑️ [DELETE_DOCUMENT] Deleting document {document_id}")
+            
+            # 1. Удаляем индексы из Qdrant
+            indexes_deleted = self.delete_document_indexes(document_id)
+            
+            # 2. Удаляем извлеченные элементы и сам документ в одной транзакции
+            with self.db_manager.get_cursor() as cursor:
+                # Удаляем извлеченные элементы
+                cursor.execute("DELETE FROM extracted_elements WHERE uploaded_document_id = %s", (document_id,))
+                deleted_elements = cursor.rowcount
+                logger.info(f"✅ [DELETE_DOCUMENT] Deleted {deleted_elements} extracted elements for document {document_id}")
+                
+                # Удаляем сам документ
+                cursor.execute("DELETE FROM uploaded_documents WHERE id = %s", (document_id,))
+                deleted_documents = cursor.rowcount
+                logger.info(f"✅ [DELETE_DOCUMENT] Deleted {deleted_documents} documents for document {document_id}")
+                
+                # Фиксируем транзакцию
+                cursor.connection.commit()
+            
+            if deleted_documents == 0:
+                logger.warning(f"⚠️ [DELETE_DOCUMENT] Document {document_id} not found")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ [DELETE_DOCUMENT] Error deleting document {document_id}: {e}")
+            return False

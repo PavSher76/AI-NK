@@ -115,27 +115,27 @@ services:
     #   timeout: 10s
     #   retries: 3
 
-  # vLLM адаптер для Ollama (оптимизировано для 70b)
-  vllm:
-    build: 
-      context: ./ollama_adapter
-      dockerfile: Dockerfile.optimized
-    ports:
-      - "8000:8000"
-    environment:
-      - OLLAMA_BASE_URL=http://ollama:11434
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:70b}
-    depends_on:
-      - ollama
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: ${VLLM_MEMORY_LIMIT:-4G}
-          cpus: '2.0'
-        reservations:
-          memory: ${VLLM_MEMORY_RESERVATION:-2G}
-          cpus: '1.0'
+  # vLLM адаптер для Ollama (оптимизировано для 70b) - УДАЛЕН
+  # vllm:
+  #   build: 
+  #     context: ./ollama_adapter
+  #     dockerfile: Dockerfile.optimized
+  #   ports:
+  #     - "8000:8000"
+  #   environment:
+  #     - OLLAMA_BASE_URL=http://ollama:11434
+  #     - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:70b}
+  #   depends_on:
+  #     - ollama
+  #   restart: unless-stopped
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: ${VLLM_MEMORY_LIMIT:-4G}
+  #         cpus: '2.0'
+  #       reservations:
+  #         memory: ${VLLM_MEMORY_RESERVATION:-2G}
+  #         cpus: '1.0'
     # healthcheck:
     #   test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
     #   interval: 30s
@@ -150,7 +150,7 @@ services:
     ports:
       - "${GATEWAY_PORT:-8443}:8443"
     environment:
-      - "UPSTREAM_URL=http://vllm:8000/v1"
+      - "UPSTREAM_URL=http://localhost:8005"
       - "OIDC_ISSUER="
       - "OIDC_AUDIENCE="
       - "OIDC_JWKS_URL="
@@ -160,7 +160,6 @@ services:
     volumes:
       - ./ssl:/app/ssl:ro
     depends_on:
-      - vllm
       - redis
     restart: unless-stopped
     deploy:

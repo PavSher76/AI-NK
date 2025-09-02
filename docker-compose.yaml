@@ -71,70 +71,72 @@ services:
       timeout: 10s
       retries: 3
 
-  # Ollama для LLM моделей (оптимизированная конфигурация)
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - "${OLLAMA_PORT:-11434}:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
-    environment:
-      - OLLAMA_HOST=0.0.0.0
-      - OLLAMA_ORIGINS=*
-      # Оптимизация контекста и производительности
-      - OLLAMA_NUM_CTX=16384
-      - OLLAMA_FLASH_ATTN=1
-      - OLLAMA_NUM_BATCH=1024
-      - OLLAMA_NUM_THREAD=8
-      - OLLAMA_TEMPERATURE=0.1
-      - TZ=Europe/Moscow
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 8G
-          cpus: '6.0'
-        reservations:
-          memory: 6G
-          cpus: '3.0'
-    # healthcheck:
-    #   test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-    #   interval: 30s
-    #   timeout: 10s
-    #   retries: 3
+  # Ollama для LLM моделей (локально установлен)
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   ports:
+  #     - "${OLLAMA_PORT:-11434}:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #     - /etc/localtime:/etc/localtime:ro
+  #     - /etc/timezone:/etc/timezone:ro
+  #   environment:
+  #     - OLLAMA_HOST=0.0.0.0
+  #     - OLLAMA_ORIGINS=*
+  #     # Оптимизация контекста и производительности
+  #     - OLLAMA_NUM_CTX=16384
+  #     - OLLAMA_FLASH_ATTN=1
+  #     - OLLAMA_NUM_BATCH=1024
+  #     - OLLAMA_NUM_THREAD=8
+  #     - OLLAMA_TEMPERATURE=0.1
+  #     - TZ=Europe/Moscow
+  #   restart: unless-stopped
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 8G
+  #         cpus: '6.0'
+  #       reservations:
+  #         memory: 6G
+  #         cpus: '3.0'
+  #   # healthcheck:
+  #   #   test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+  #   #   interval: 30s
+  #   #   timeout: 10s
+  #   #   retries: 3
 
-  # vLLM адаптер для Ollama (оптимизированная конфигурация)
+  # VLLM + Ollama Integration Service
   vllm:
-    build: ./ollama_adapter
+    build: ./vllm_service
     ports:
-      - "8000:8000"
+      - "8005:8005"
     environment:
-      - OLLAMA_BASE_URL=http://ollama:11434
-      - OLLAMA_CPU_THREADS=2
-      - OLLAMA_GPU_LAYERS=0
-      - OLLAMA_BATCH_SIZE=1
+      - DOCKER_ENV=true
+      - OLLAMA_BASE_URL=http://10.112.123.18:11434
+      - OLLAMA_MAX_TOKENS=2048
+      - OLLAMA_TEMPERATURE=0.7
+      - OLLAMA_TOP_P=0.9
+      - OLLAMA_TIMEOUT=120
+      - OLLAMA_CACHE_DURATION=30
       - TZ=Europe/Moscow
+      - LOG_LEVEL=INFO
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
-    depends_on:
-      - ollama
     restart: unless-stopped
     deploy:
       resources:
         limits:
+          memory: 2G
+          cpus: '2.0'
+        reservations:
           memory: 1G
           cpus: '1.0'
-        reservations:
-          memory: 512M
-          cpus: '0.5'
-    # healthcheck:
-    #   test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-    #   interval: 30s
-    #   timeout: 10s
-    #   retries: 3
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # API Gateway
   gateway:
@@ -144,7 +146,7 @@ services:
     ports:
       - "${GATEWAY_PORT:-8443}:8443"
     environment:
-      - "UPSTREAM_URL=http://vllm:8000/v1"
+      - "UPSTREAM_URL=http://localhost:8005"
       - "OIDC_ISSUER="
       - "OIDC_AUDIENCE="
       - "OIDC_JWKS_URL="
@@ -157,7 +159,6 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
     depends_on:
-      - vllm
       - redis
     restart: unless-stopped
     deploy:
@@ -433,7 +434,7 @@ services:
     environment:
       - POSTGRES_URL=postgresql://${POSTGRES_USER:-norms_user}:${POSTGRES_PASSWORD:-norms_password}@norms-db:5432/${POSTGRES_DB:-norms_db}
       - QDRANT_URL=http://qdrant:6333
-      - OLLAMA_URL=http://vllm:8000
+      - OLLAMA_URL=http://localhost:11434
       - REDIS_URL=redis://:${REDIS_PASSWORD:-redispass}@redis:6379/0
       - TRANSFORMERS_CACHE=/app/models
       - HF_HOME=/app/models
@@ -445,7 +446,6 @@ services:
     depends_on:
       - norms-db
       - qdrant
-      - ollama
       - redis
     restart: unless-stopped
     deploy:
@@ -465,8 +465,8 @@ volumes:
     driver: local
   keycloak_db_data:
     driver: local
-  ollama_data:
-    driver: local
+  # ollama_data:
+  #   driver: local
   prometheus_data:
     driver: local
   grafana_data:

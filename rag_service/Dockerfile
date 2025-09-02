@@ -26,4 +26,4 @@ ENV TRANSFORMERS_CACHE=/app/models
 ENV HF_HOME=/app/models
 
 # Запуск сервиса с оптимизированными настройками
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8003", "--workers", "1"]
+CMD ["uvicorn", "ollama_main:app", "--host", "0.0.0.0", "--port", "8003", "--workers", "1"]
