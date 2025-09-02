@@ -9,18 +9,23 @@ from psycopg2.extras import RealDictCursor
 import re
 import requests
 import json
+import os
 
 # Настройка логирования
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 model_logger = logging.getLogger("model")
+
+# Получаем URL Ollama из переменной окружения
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
 
 class OllamaEmbeddingService:
     """Сервис для работы с эмбеддингами через Ollama BGE-M3"""
     
-    def __init__(self, ollama_url: str = "http://10.112.123.18:11434"):
-        self.ollama_url = ollama_url
+    def __init__(self, ollama_url: str = None):
+        self.ollama_url = ollama_url or OLLAMA_URL
         self.model_name = "bge-m3"
-        logger.info(f"🤖 [OLLAMA_EMBEDDING] Initialized with {self.model_name} at {ollama_url}")
+        logger.info(f"🤖 [OLLAMA_EMBEDDING] Initialized with {self.model_name} at {self.ollama_url}")
     
     def create_embedding(self, text: str) -> List[float]:
         """Создание эмбеддинга для текста с использованием Ollama BGE-M3"""
@@ -94,14 +99,31 @@ class OllamaRAGService:
         Извлекает код документа из названия (ГОСТ, СП, СНиП и т.д.)
         """
         try:
+            # Убираем расширение файла
+            title_without_ext = re.sub(r'\.(pdf|txt|doc|docx)$', '', document_title, flags=re.IGNORECASE)
+            
             patterns = [
-                r'ГОСТ\s+[\d\.-]+', r'СП\s+[\d\.-]+', r'СНиП\s+[\d\.-]+',
-                r'ТР\s+ТС\s+[\d\.-]+', r'СТО\s+[\d\.-]+', r'РД\s+[\d\.-]+',
+                r'ГОСТ\s+[\d\.-]+', 
+                r'СП\s+[\d\.-]+', 
+                r'СНиП\s+[\d\.-]+',
+                r'ТР\s+ТС\s+[\d\.-]+', 
+                r'СТО\s+[\d\.-]+', 
+                r'РД\s+[\d\.-]+',
+                r'ТУ\s+[\d\.-]+',
+                r'ПБ\s+[\d\.-]+',
+                r'НПБ\s+[\d\.-]+',
+                r'СПб\s+[\d\.-]+',
+                r'МГСН\s+[\d\.-]+'
             ]
+            
             for pattern in patterns:
-                match = re.search(pattern, document_title, re.IGNORECASE)
+                match = re.search(pattern, title_without_ext, re.IGNORECASE)
                 if match:
-                    return match.group(0).strip()
+                    code = match.group(0).strip()
+                    logger.info(f"🔍 [CODE_EXTRACTION] Extracted code '{code}' from title '{document_title}'")
+                    return code
+            
+            logger.warning(f"⚠️ [CODE_EXTRACTION] No code pattern found in title: '{document_title}'")
             return ""
         except Exception as e:
             logger.warning(f"⚠️ [CODE_EXTRACTION] Error extracting document code: {e}")
@@ -131,6 +153,8 @@ class OllamaRAGService:
                     # Извлекаем код документа
                     document_title = chunk.get('document_title', '')
                     code = self.extract_document_code(document_title)
+                    
+                    logger.info(f"🔍 [INDEXING] Document title: '{document_title}', extracted code: '{code}'")
                     
                     # Создаем точку для Qdrant
                     point = PointStruct(
@@ -242,8 +266,12 @@ class OllamaRAGService:
         try:
             logger.info(f"💬 [NTD_CONSULTATION] Processing consultation request: '{message[:100]}...'")
             
+            # Извлекаем код документа из запроса
+            document_code = self.extract_document_code_from_query(message)
+            logger.info(f"🔍 [NTD_CONSULTATION] Extracted document code: {document_code}")
+            
             # Выполняем поиск по запросу
-            search_results = self.hybrid_search(message, k=5)
+            search_results = self.hybrid_search(message, k=10)
             
             if not search_results:
                 return {
@@ -255,9 +283,48 @@ class OllamaRAGService:
                     "timestamp": datetime.now().isoformat()
                 }
             
-            # Формируем ответ на основе найденных документов
-            top_result = search_results[0]
-            confidence = min(top_result['score'], 1.0) if top_result['score'] > 0 else 0.0
+            # Если запрашивается конкретный документ, проверяем его наличие
+            if document_code:
+                # Ищем точное соответствие по коду документа
+                exact_match = None
+                for result in search_results:
+                    if result.get('code') == document_code:
+                        exact_match = result
+                        break
+                
+                if exact_match:
+                    logger.info(f"✅ [NTD_CONSULTATION] Found exact match for {document_code}")
+                    top_result = exact_match
+                    confidence = 1.0  # Высокая уверенность для точного совпадения
+                else:
+                    logger.warning(f"⚠️ [NTD_CONSULTATION] Document {document_code} not found in system")
+                    # Возвращаем предупреждение о том, что запрашиваемый документ отсутствует
+                    return {
+                        "status": "warning",
+                        "response": f"⚠️ **Внимание!** Запрашиваемый документ **{document_code}** отсутствует в системе.\n\n"
+                                  f"Вот наиболее релевантная информация из доступных документов:\n\n"
+                                  f"**{search_results[0]['document_title']}**\n"
+                                  f"Раздел: {search_results[0]['section']}\n\n"
+                                  f"{search_results[0]['content'][:500]}...\n\n"
+                                  f"**Рекомендация:** Загрузите документ {document_code} в систему для получения точной консультации.",
+                        "sources": [{
+                            'document_code': search_results[0]['code'],
+                            'document_title': search_results[0]['document_title'],
+                            'section': search_results[0]['section'],
+                            'page': search_results[0]['page'],
+                            'content_preview': search_results[0]['content'][:200] + "..." if len(search_results[0]['content']) > 200 else search_results[0]['content'],
+                            'relevance_score': search_results[0]['score'],
+                            'note': 'Документ найден по семантическому поиску, но не является запрашиваемым'
+                        }],
+                        "confidence": 0.5,
+                        "documents_used": 1,
+                        "missing_document": document_code,
+                        "timestamp": datetime.now().isoformat()
+                    }
+            else:
+                # Если код документа не указан, используем обычный поиск
+                top_result = search_results[0]
+                confidence = min(top_result['score'], 1.0) if top_result['score'] > 0 else 0.0
             
             # Формируем источники
             sources = []
@@ -298,6 +365,48 @@ class OllamaRAGService:
                 "documents_used": 0,
                 "timestamp": datetime.now().isoformat()
             }
+    
+    def extract_document_code_from_query(self, query: str) -> Optional[str]:
+        """Извлекает код документа из запроса пользователя"""
+        try:
+            # Паттерны для поиска кодов документов
+            patterns = [
+                r'СП\s+(\d+\.\d+\.\d+)',  # СП 22.13330.2016
+                r'СНиП\s+(\d+\.\d+\.\d+)',  # СНиП 2.01.01-82
+                r'ГОСТ\s+(\d+\.\d+\.\d+)',  # ГОСТ 27751-2014
+                r'ТУ\s+(\d+\.\d+\.\d+)',   # ТУ 3812-001-12345678-2016
+                r'ПБ\s+(\d+\.\d+\.\d+)',   # ПБ 03-428-02
+                r'НПБ\s+(\d+\.\d+\.\d+)',  # НПБ 5-2000
+                r'СПб\s+(\d+\.\d+\.\d+)',  # СПб 70.13330.2012
+                r'МГСН\s+(\d+\.\d+\.\d+)'  # МГСН 4.19-2005
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, query, re.IGNORECASE)
+                if match:
+                    # Восстанавливаем полный код документа
+                    if 'СП' in pattern:
+                        return f"СП {match.group(1)}"
+                    elif 'СНиП' in pattern:
+                        return f"СНиП {match.group(1)}"
+                    elif 'ГОСТ' in pattern:
+                        return f"ГОСТ {match.group(1)}"
+                    elif 'ТУ' in pattern:
+                        return f"ТУ {match.group(1)}"
+                    elif 'ПБ' in pattern:
+                        return f"ПБ {match.group(1)}"
+                    elif 'НПБ' in pattern:
+                        return f"НПБ {match.group(1)}"
+                    elif 'СПб' in pattern:
+                        return f"СПб {match.group(1)}"
+                    elif 'МГСН' in pattern:
+                        return f"МГСН {match.group(1)}"
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ [DOCUMENT_CODE_EXTRACTION] Error extracting document code: {e}")
+            return None
     
     def get_documents(self) -> List[Dict[str, Any]]:
         """Получение списка документов из базы данных"""
@@ -386,6 +495,16 @@ class OllamaRAGService:
         """Получение чанков документа"""
         try:
             with self.db_manager.get_cursor() as cursor:
+                # Получаем название документа
+                cursor.execute("""
+                    SELECT original_filename 
+                    FROM uploaded_documents 
+                    WHERE id = %s
+                """, (document_id,))
+                document_result = cursor.fetchone()
+                document_title = document_result['original_filename'] if document_result else f"Document_{document_id}"
+                
+                # Получаем чанки документа
                 cursor.execute("""
                     SELECT chunk_id, content, chapter as section_title, chunk_type, page_number as page, section
                     FROM normative_chunks
@@ -402,9 +521,11 @@ class OllamaRAGService:
                         'section_title': chunk['section_title'],
                         'chunk_type': chunk['chunk_type'],
                         'page': chunk['page'],
-                        'section': chunk['section']
+                        'section': chunk['section'],
+                        'document_title': document_title  # Добавляем название документа
                     })
                 
+                logger.info(f"📋 [GET_DOCUMENT_CHUNKS] Retrieved {len(result)} chunks for document {document_id} ({document_title})")
                 return result
                 
         except Exception as e:
@@ -683,7 +804,6 @@ class OllamaRAGService:
         """Извлечение текста из документа"""
         try:
             import tempfile
-            import os
             
             # Создаем временный файл
             with tempfile.NamedTemporaryFile(delete=False, suffix=f".{filename.split('.')[-1]}") as temp_file:

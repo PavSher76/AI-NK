@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
@@ -15,8 +15,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Импорт сервиса
+# Импорт сервисов
 from vllm_ollama_service import OllamaService
+from chat_document_service import ChatDocumentService
 
 # Модели Pydantic
 class ChatRequest(BaseModel):
@@ -32,6 +33,14 @@ class ChatResponse(BaseModel):
     timestamp: str
     tokens_used: Optional[int] = None
     generation_time_ms: Optional[float] = None
+
+class DocumentUploadResponse(BaseModel):
+    status: str
+    message: str
+    document_id: Optional[str] = None
+    file_name: Optional[str] = None
+    chunks_count: Optional[int] = None
+    error: Optional[str] = None
 
 # Создание FastAPI приложения
 app = FastAPI(
@@ -49,8 +58,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Инициализация сервиса
+# Инициализация сервисов
 ollama_service = OllamaService()
+chat_document_service = ChatDocumentService()
 
 # ============================================================================
 # API эндпоинты
@@ -67,13 +77,16 @@ async def root_endpoint():
             "health": "/health",
             "models": "/models",
             "chat": "/chat",
-            "stats": "/stats"
+            "stats": "/stats",
+            "upload_document": "/upload_document",
+            "chat_documents_stats": "/chat_documents_stats"
         },
         "configuration": {
             "ollama_url": os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
             "max_tokens": os.getenv("OLLAMA_MAX_TOKENS", "2048"),
             "temperature": os.getenv("OLLAMA_TEMPERATURE", "0.7"),
-            "timeout": os.getenv("OLLAMA_TIMEOUT", "120")
+            "timeout": os.getenv("OLLAMA_TIMEOUT", "120"),
+            "max_file_size": "100MB"
         },
         "timestamp": datetime.now().isoformat()
     }
@@ -119,6 +132,104 @@ async def chat_endpoint(request: ChatRequest):
         
     except Exception as e:
         logger.error(f"❌ [CHAT] Error in chat endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/upload_document")
+async def upload_document_endpoint(
+    file: UploadFile = File(...),
+    message: str = Form("")
+):
+    """Загрузка и обработка документа для чата"""
+    try:
+        logger.info(f"📄 [UPLOAD_DOCUMENT] Processing document: {file.filename}")
+        
+        # Читаем содержимое файла
+        file_content = await file.read()
+        
+        # Обрабатываем документ
+        result = chat_document_service.process_document(
+            file_content=file_content,
+            file_type=file.content_type or "application/octet-stream",
+            file_name=file.filename or "unknown",
+            user_message=message
+        )
+        
+        if result["success"]:
+            return DocumentUploadResponse(
+                status="success",
+                message=f"Документ {file.filename} успешно обработан",
+                document_id=result["document_id"],
+                file_name=result["file_name"],
+                chunks_count=result["chunks_count"]
+            )
+        else:
+            return DocumentUploadResponse(
+                status="error",
+                message="Ошибка обработки документа",
+                error=result["error"]
+            )
+            
+    except Exception as e:
+        logger.error(f"❌ [UPLOAD_DOCUMENT] Error processing document: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/chat_with_document")
+async def chat_with_document_endpoint(
+    file: UploadFile = File(...),
+    message: str = Form(""),
+    model: str = Form("gpt-oss:20b")
+):
+    """Чат с ИИ с загруженным документом"""
+    try:
+        logger.info(f"💬📄 [CHAT_WITH_DOCUMENT] Processing document: {file.filename}")
+        
+        # Читаем содержимое файла
+        file_content = await file.read()
+        
+        # Обрабатываем документ
+        result = chat_document_service.process_document(
+            file_content=file_content,
+            file_type=file.content_type or "application/octet-stream",
+            file_name=file.filename or "unknown",
+            user_message=message
+        )
+        
+        if not result["success"]:
+            logger.error(f"❌ [CHAT_WITH_DOCUMENT] Document processing failed: {result['error']}")
+            raise HTTPException(status_code=400, detail=result["error"])
+        
+        # Отправляем запрос к ИИ с контекстом документа
+        ai_response = ollama_service.generate_response_with_ollama(
+            message=result["ai_context"],
+            model_name=model,
+            history=None,
+            max_tokens=None
+        )
+        
+        return {
+            "status": "success",
+            "document_processed": True,
+            "document_id": result["document_id"],
+            "file_name": result["file_name"],
+            "chunks_count": result["chunks_count"],
+            "ai_response": ai_response
+        }
+        
+    except HTTPException as e:
+        logger.error(f"❌ [CHAT_WITH_DOCUMENT] HTTP Error: {e.detail}")
+        raise e
+    except Exception as e:
+        logger.error(f"❌ [CHAT_WITH_DOCUMENT] Unexpected error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/chat_documents_stats")
+async def chat_documents_stats_endpoint():
+    """Получение статистики документов чата"""
+    try:
+        stats = chat_document_service.get_chat_documents_stats()
+        return stats
+    except Exception as e:
+        logger.error(f"❌ [CHAT_DOCUMENTS_STATS] Error getting stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/stats")

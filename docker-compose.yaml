@@ -112,7 +112,7 @@ services:
       - "8005:8005"
     environment:
       - DOCKER_ENV=true
-      - OLLAMA_BASE_URL=http://10.112.123.18:11434
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - OLLAMA_MAX_TOKENS=2048
       - OLLAMA_TEMPERATURE=0.7
       - OLLAMA_TOP_P=0.9
@@ -434,7 +434,7 @@ services:
     environment:
       - POSTGRES_URL=postgresql://${POSTGRES_USER:-norms_user}:${POSTGRES_PASSWORD:-norms_password}@norms-db:5432/${POSTGRES_DB:-norms_db}
       - QDRANT_URL=http://qdrant:6333
-      - OLLAMA_URL=http://localhost:11434
+      - OLLAMA_URL=http://host.docker.internal:11434
       - REDIS_URL=redis://:${REDIS_PASSWORD:-redispass}@redis:6379/0
       - TRANSFORMERS_CACHE=/app/models
       - HF_HOME=/app/models
@@ -452,8 +452,10 @@ services:
       resources:
         limits:
           memory: 6G
+          cpus: '5.0'
         reservations:
           memory: 4G
+          cpus: '2.0'
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
       interval: 30s

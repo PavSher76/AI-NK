@@ -8,6 +8,7 @@ import time
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -19,6 +20,9 @@ import numpy as np
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 model_logger = logging.getLogger("model")
+
+# Получаем URL Ollama из переменной окружения
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
 
 # Импорт Ollama RAG сервиса
 from services.ollama_rag_service import OllamaRAGService
@@ -57,6 +61,15 @@ class ChatResponse(BaseModel):
     timestamp: str
     tokens_used: Optional[int] = None
     generation_time_ms: Optional[float] = None
+
+class EmbeddingRequest(BaseModel):
+    text: str
+
+class EmbeddingResponse(BaseModel):
+    status: str
+    embedding: List[float]
+    text_length: int
+    timestamp: str
 
 # Создание FastAPI приложения
 app = FastAPI(
@@ -543,7 +556,6 @@ async def chat_endpoint(request: ChatRequest):
         start_time = time.time()
         
         # Формируем запрос к Ollama
-        ollama_url = "http://10.112.123.18:11434"
         payload = {
             "model": request.model,
             "prompt": request.message,
@@ -560,7 +572,7 @@ async def chat_endpoint(request: ChatRequest):
             context = "\n".join([f"User: {msg.get('user', '')}\nAssistant: {msg.get('assistant', '')}" for msg in request.history])
             payload["prompt"] = f"{context}\nUser: {request.message}\nAssistant:"
         
-        response = requests.post(f"{ollama_url}/api/generate", json=payload, timeout=120)
+        response = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=120)
         
         if response.status_code == 200:
             result = response.json()
@@ -591,9 +603,8 @@ async def models_endpoint():
         logger.info("🔍 [MODELS] Getting available Ollama models")
         
         import requests
-        ollama_url = "http://10.112.123.18:11434"
         
-        response = requests.get(f"{ollama_url}/api/tags", timeout=10)
+        response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=10)
         
         if response.status_code == 200:
             models_data = response.json()
@@ -628,6 +639,86 @@ async def models_endpoint():
         logger.error(f"❌ [MODELS] Error getting models: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/chat_documents_stats")
+async def chat_documents_stats_endpoint():
+    """Получение статистики документов чата"""
+    try:
+        # Получаем статистику коллекции chat_documents из Qdrant
+        import requests
+        
+        qdrant_url = "http://qdrant:6333"
+        collection_name = "chat_documents"
+        
+        try:
+            response = requests.get(f"{qdrant_url}/collections/{collection_name}", timeout=10)
+            if response.status_code == 200:
+                result = response.json()
+                return {
+                    "total_documents": result['result']['points_count'],
+                    "indexed_vectors": result['result']['indexed_vectors_count'],
+                    "collection_status": result['result']['status'],
+                    "timestamp": datetime.now().isoformat()
+                }
+            else:
+                return {
+                    "total_documents": 0,
+                    "indexed_vectors": 0,
+                    "collection_status": "not_found",
+                    "timestamp": datetime.now().isoformat()
+                }
+        except Exception as e:
+            return {
+                "total_documents": 0,
+                "indexed_vectors": 0,
+                "collection_status": "error",
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+            
+    except Exception as e:
+        logger.error(f"❌ [CHAT_DOCUMENTS_STATS] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/embeddings")
+async def create_embedding_endpoint(request: EmbeddingRequest):
+    """Создание эмбеддинга для текста"""
+    try:
+        logger.info(f"🔍 [EMBEDDINGS] Creating embedding for text: '{request.text[:100]}...'")
+        
+        rag_service = get_ollama_rag_service()
+        embedding = rag_service.embedding_service.create_embedding(request.text)
+        
+        return EmbeddingResponse(
+            status="success",
+            embedding=embedding,
+            text_length=len(request.text),
+            timestamp=datetime.now().isoformat()
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ [EMBEDDINGS] Error creating embedding: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/embeddings")
+async def create_embedding_get_endpoint(text: str):
+    """Создание эмбеддинга для текста (GET запрос)"""
+    try:
+        logger.info(f"🔍 [EMBEDDINGS] Creating embedding for text: '{text[:100]}...'")
+        
+        rag_service = get_ollama_rag_service()
+        embedding = rag_service.embedding_service.create_embedding(text)
+        
+        return EmbeddingResponse(
+            status="success",
+            embedding=embedding,
+            text_length=len(text),
+            timestamp=datetime.now().isoformat()
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ [EMBEDDINGS] Error creating embedding: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ============================================================================
 # Системные эндпоинты
 # ============================================================================
@@ -638,7 +729,7 @@ async def health_endpoint():
     try:
         # Проверяем подключение к Ollama
         import requests
-        ollama_response = requests.get("http://10.112.123.18:11434/api/tags", timeout=5)
+        ollama_response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
         ollama_status = "healthy" if ollama_response.status_code == 200 else "unhealthy"
         
         # Проверяем подключение к Qdrant
@@ -737,7 +828,7 @@ if __name__ == "__main__":
     # Проверяем доступность Ollama
     try:
         import requests
-        response = requests.get("http://10.112.123.18:11434/api/tags", timeout=5)
+        response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
         if response.status_code == 200:
             models = response.json().get("models", [])
             bge_m3_available = any("bge-m3" in model.get("name", "") for model in models)
