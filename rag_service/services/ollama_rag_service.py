@@ -10,6 +10,7 @@ import re
 import requests
 import json
 import os
+from qdrant_client.models import Filter, FieldCondition, MatchAny
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -92,7 +93,37 @@ class OllamaRAGService:
         self.db_manager = DatabaseManager(self.POSTGRES_URL)
         self.embedding_service = OllamaEmbeddingService()
         
+        # Создаем коллекцию, если она не существует
+        self._ensure_collection_exists()
+        
         logger.info("🚀 [OLLAMA_RAG_SERVICE] Ollama RAG Service initialized")
+    
+    def _ensure_collection_exists(self):
+        """Создание коллекции Qdrant, если она не существует"""
+        try:
+            # Проверяем, существует ли коллекция
+            collections = self.qdrant_client.get_collections()
+            collection_names = [col.name for col in collections.collections]
+            
+            if self.VECTOR_COLLECTION not in collection_names:
+                logger.info(f"📝 [COLLECTION] Creating collection '{self.VECTOR_COLLECTION}'...")
+                
+                # Создаем коллекцию
+                self.qdrant_client.create_collection(
+                    collection_name=self.VECTOR_COLLECTION,
+                    vectors_config=qdrant_client.models.VectorParams(
+                        size=self.VECTOR_SIZE,
+                        distance=qdrant_client.models.Distance.COSINE
+                    )
+                )
+                
+                logger.info(f"✅ [COLLECTION] Collection '{self.VECTOR_COLLECTION}' created successfully")
+            else:
+                logger.info(f"✅ [COLLECTION] Collection '{self.VECTOR_COLLECTION}' already exists")
+                
+        except Exception as e:
+            logger.error(f"❌ [COLLECTION] Error ensuring collection exists: {e}")
+            raise e
     
     def extract_document_code(self, document_title: str) -> str:
         """
@@ -864,42 +895,63 @@ class OllamaRAGService:
             return ""
 
     def create_chunks(self, text: str, document_id: int, filename: str) -> List[Dict[str, Any]]:
-        """Создание чанков из текста"""
+        """Создание чанков из текста документа с правильной нумерацией страниц"""
         try:
+            logger.info(f"📝 [CREATE_CHUNKS] Creating chunks for document {document_id}")
+            
+            # Разбиваем текст на страницы по маркерам "Страница X из Y"
+            page_pattern = r'Страница\s+(\d+)\s+из\s+(\d+)'
+            page_matches = list(re.finditer(page_pattern, text))
+            
             chunks = []
-            sentences = text.split('.')
-            chunk_size = 1000  # Примерный размер чанка в символах
-            current_chunk = ""
             chunk_id = 1
             
-            for sentence in sentences:
-                sentence = sentence.strip()
-                if not sentence:
-                    continue
+            if page_matches:
+                # Если найдены маркеры страниц, разбиваем по ним
+                logger.info(f"📄 [CREATE_CHUNKS] Found {len(page_matches)} page markers in document")
                 
-                if len(current_chunk) + len(sentence) > chunk_size and current_chunk:
-                    # Сохраняем текущий чанк
+                for i, match in enumerate(page_matches):
+                    page_num = int(match.group(1))
+                    start_pos = match.end()
+                    
+                    # Определяем конец страницы (начало следующей или конец текста)
+                    if i + 1 < len(page_matches):
+                        end_pos = page_matches[i + 1].start()
+                    else:
+                        end_pos = len(text)
+                    
+                    # Извлекаем текст страницы
+                    page_text = text[start_pos:end_pos].strip()
+                    
+                    if page_text:
+                        # Разбиваем страницу на чанки
+                        page_chunks = self._split_page_into_chunks(page_text, chunk_size=1000)
+                        
+                        for chunk_text in page_chunks:
+                            chunks.append({
+                                'chunk_id': f"doc_{document_id}_page_{page_num}_chunk_{chunk_id}",
+                                'document_id': document_id,
+                                'document_title': filename,
+                                'content': chunk_text.strip(),
+                                'chunk_type': 'paragraph',
+                                'page': page_num
+                            })
+                            chunk_id += 1
+            else:
+                # Если маркеры страниц не найдены, разбиваем весь текст на чанки
+                logger.info(f"📄 [CREATE_CHUNKS] No page markers found, treating as single page document")
+                page_chunks = self._split_page_into_chunks(text, chunk_size=1000)
+                
+                for chunk_text in page_chunks:
                     chunks.append({
-                        'chunk_id': f"doc_{document_id}_chunk_{chunk_id}",
+                        'chunk_id': f"doc_{document_id}_page_1_chunk_{chunk_id}",
                         'document_id': document_id,
                         'document_title': filename,
-                        'content': current_chunk.strip(),
-                        'chunk_type': 'paragraph'
+                        'content': chunk_text.strip(),
+                        'chunk_type': 'paragraph',
+                        'page': 1
                     })
-                    current_chunk = sentence
                     chunk_id += 1
-                else:
-                    current_chunk += sentence + ". "
-            
-            # Добавляем последний чанк
-            if current_chunk.strip():
-                chunks.append({
-                    'chunk_id': f"doc_{document_id}_chunk_{chunk_id}",
-                    'document_id': document_id,
-                    'document_title': filename,
-                    'content': current_chunk.strip(),
-                    'chunk_type': 'paragraph'
-                })
             
             logger.info(f"✅ [CREATE_CHUNKS] Created {len(chunks)} chunks for document {document_id}")
             return chunks
@@ -907,6 +959,29 @@ class OllamaRAGService:
         except Exception as e:
             logger.error(f"❌ [CREATE_CHUNKS] Error creating chunks: {e}")
             return []
+    
+    def _split_page_into_chunks(self, text: str, chunk_size: int = 1000) -> List[str]:
+        """Разбиение текста страницы на чанки"""
+        chunks = []
+        sentences = re.split(r'[.!?]+', text)
+        current_chunk = ""
+        
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            
+            if len(current_chunk) + len(sentence) > chunk_size and current_chunk:
+                chunks.append(current_chunk.strip())
+                current_chunk = sentence
+            else:
+                current_chunk += sentence + ". "
+        
+        # Добавляем последний чанк
+        if current_chunk.strip():
+            chunks.append(current_chunk.strip())
+        
+        return chunks
 
     async def index_chunks_async(self, chunks: List[Dict[str, Any]], document_id: int) -> bool:
         """Асинхронная индексация чанков"""
@@ -916,15 +991,16 @@ class OllamaRAGService:
                 for chunk in chunks:
                     cursor.execute("""
                         INSERT INTO normative_chunks 
-                        (chunk_id, clause_id, document_id, document_title, chunk_type, content)
-                        VALUES (%s, %s, %s, %s, %s, %s)
+                        (chunk_id, clause_id, document_id, document_title, chunk_type, content, page_number)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """, (
                         chunk['chunk_id'],
                         chunk['chunk_id'],  # Используем chunk_id как clause_id
                         chunk['document_id'],
                         chunk['document_title'],
                         chunk['chunk_type'],
-                        chunk['content']
+                        chunk['content'],
+                        chunk.get('page', 1)  # Добавляем page_number
                     ))
                 cursor.connection.commit()
             
@@ -955,7 +1031,8 @@ class OllamaRAGService:
                         'document_id': chunk['document_id'],
                         'document_title': chunk['document_title'],
                         'content': chunk['content'],
-                        'chunk_type': chunk['chunk_type']
+                        'chunk_type': chunk['chunk_type'],
+                        'page': chunk.get('page', 1)  # Добавляем page в payload
                     }
                 )
                 
@@ -969,4 +1046,29 @@ class OllamaRAGService:
             
         except Exception as e:
             logger.error(f"❌ [INDEX_CHUNKS] Error indexing chunks: {e}")
+            return False
+
+    def clear_collection(self) -> bool:
+        """Очистка всей коллекции Qdrant"""
+        try:
+            logger.info("🧹 [CLEAR_COLLECTION] Clearing entire collection...")
+            
+            # Очищаем коллекцию
+            self.qdrant_client.delete(
+                collection_name=self.VECTOR_COLLECTION,
+                points_selector=Filter(
+                    must=[
+                        FieldCondition(
+                            key="document_id",
+                            match=MatchAny(any=list(range(1, 100000000)))  # Удаляем все точки
+                        )
+                    ]
+                )
+            )
+            
+            logger.info("✅ [CLEAR_COLLECTION] Collection cleared successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ [CLEAR_COLLECTION] Error clearing collection: {e}")
             return False

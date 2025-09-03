@@ -793,6 +793,32 @@ async def metrics_endpoint():
         logger.error(f"❌ [METRICS] Error getting metrics: {e}")
         return f"# Error getting metrics: {e}"
 
+@app.post("/clear-collection")
+async def clear_collection_endpoint():
+    """Очистка всей коллекции Qdrant"""
+    try:
+        logger.info("🧹 [CLEAR_COLLECTION] Starting collection cleanup...")
+        
+        # Получаем RAG сервис
+        rag_service = get_ollama_rag_service()
+        
+        # Очищаем коллекцию
+        success = rag_service.clear_collection()
+        
+        if success:
+            logger.info("✅ [CLEAR_COLLECTION] Collection cleared successfully")
+            return {
+                "status": "success",
+                "message": "Collection cleared successfully",
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to clear collection")
+            
+    except Exception as e:
+        logger.error(f"❌ [CLEAR_COLLECTION] Error clearing collection: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ============================================================================
 # Корневой эндпоинт
 # ============================================================================
