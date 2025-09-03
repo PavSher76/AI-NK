@@ -2,15 +2,13 @@ import logging
 import numpy as np
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-import qdrant_client
-from qdrant_client.models import Distance, VectorParams, PointStruct
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import re
 import requests
 import json
 import os
-from qdrant_client.models import Filter, FieldCondition, MatchAny
+from .qdrant_service import QdrantService
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -89,41 +87,13 @@ class OllamaRAGService:
         self.VECTOR_SIZE = 1024  # Размер эмбеддинга BGE-M3
         
         # Инициализация клиентов
-        self.qdrant_client = qdrant_client.QdrantClient(self.QDRANT_URL)
+        self.qdrant_service = QdrantService(self.QDRANT_URL, self.VECTOR_COLLECTION, self.VECTOR_SIZE)
         self.db_manager = DatabaseManager(self.POSTGRES_URL)
         self.embedding_service = OllamaEmbeddingService()
         
-        # Создаем коллекцию, если она не существует
-        self._ensure_collection_exists()
-        
         logger.info("🚀 [OLLAMA_RAG_SERVICE] Ollama RAG Service initialized")
     
-    def _ensure_collection_exists(self):
-        """Создание коллекции Qdrant, если она не существует"""
-        try:
-            # Проверяем, существует ли коллекция
-            collections = self.qdrant_client.get_collections()
-            collection_names = [col.name for col in collections.collections]
-            
-            if self.VECTOR_COLLECTION not in collection_names:
-                logger.info(f"📝 [COLLECTION] Creating collection '{self.VECTOR_COLLECTION}'...")
-                
-                # Создаем коллекцию
-                self.qdrant_client.create_collection(
-                    collection_name=self.VECTOR_COLLECTION,
-                    vectors_config=qdrant_client.models.VectorParams(
-                        size=self.VECTOR_SIZE,
-                        distance=qdrant_client.models.Distance.COSINE
-                    )
-                )
-                
-                logger.info(f"✅ [COLLECTION] Collection '{self.VECTOR_COLLECTION}' created successfully")
-            else:
-                logger.info(f"✅ [COLLECTION] Collection '{self.VECTOR_COLLECTION}' already exists")
-                
-        except Exception as e:
-            logger.error(f"❌ [COLLECTION] Error ensuring collection exists: {e}")
-            raise e
+
     
     def extract_document_code(self, document_title: str) -> str:
         """
@@ -188,8 +158,8 @@ class OllamaRAGService:
                     logger.info(f"🔍 [INDEXING] Document title: '{document_title}', extracted code: '{code}'")
                     
                     # Создаем точку для Qdrant
-                    point = PointStruct(
-                        id=qdrant_id,
+                    point = self.qdrant_service.create_point(
+                        point_id=qdrant_id,
                         vector=embedding,
                         payload={
                             'document_id': document_id,
@@ -212,10 +182,7 @@ class OllamaRAGService:
             
             if points:
                 # Добавляем точки в Qdrant
-                self.qdrant_client.upsert(
-                    collection_name=self.VECTOR_COLLECTION,
-                    points=points
-                )
+                self.qdrant_service.upsert_points_batch(points)
                 logger.info(f"✅ [INDEXING] Successfully indexed {len(points)} chunks for document {document_id}")
                 return True
             else:
@@ -257,31 +224,28 @@ class OllamaRAGService:
                 })
             
             # Выполняем поиск в Qdrant
-            search_result = self.qdrant_client.search(
-                collection_name=self.VECTOR_COLLECTION,
+            search_result = self.qdrant_service.search_similar(
                 query_vector=query_embedding,
-                query_filter={"must": must_conditions} if must_conditions else None,
                 limit=k,
-                with_payload=True,
-                with_vectors=False
+                filters={"must": must_conditions} if must_conditions else None
             )
             
             # Формируем результаты
             results = []
             for point in search_result:
                 result = {
-                    'id': point.id,
-                    'score': point.score,
-                    'document_id': point.payload.get('document_id'),
-                    'chunk_id': point.payload.get('chunk_id'),
-                    'code': point.payload.get('code'),
-                    'document_title': point.payload.get('title'),
-                    'section_title': point.payload.get('section_title'),
-                    'content': point.payload.get('content'),
-                    'chunk_type': point.payload.get('chunk_type'),
-                    'page': point.payload.get('page'),
-                    'section': point.payload.get('section'),
-                    'metadata': point.payload.get('metadata', {})
+                    'id': point['id'],
+                    'score': point['score'],
+                    'document_id': point['payload'].get('document_id'),
+                    'chunk_id': point['payload'].get('chunk_id'),
+                    'code': point['payload'].get('code'),
+                    'document_title': point['payload'].get('title'),
+                    'section_title': point['payload'].get('section_title'),
+                    'content': point['payload'].get('content'),
+                    'chunk_type': point['payload'].get('chunk_type'),
+                    'page': point['payload'].get('page'),
+                    'section': point['payload'].get('section'),
+                    'metadata': point['payload'].get('metadata', {})
                 }
                 results.append(result)
             
@@ -584,11 +548,9 @@ class OllamaRAGService:
             
             # Удаляем точки из Qdrant
             if point_ids:
-                self.qdrant_client.delete(
-                    collection_name=self.VECTOR_COLLECTION,
-                    points_selector=point_ids
-                )
-                logger.info(f"✅ [DELETE_INDEXES] Deleted {len(point_ids)} points from Qdrant for document {document_id}")
+                # Удаляем точки из Qdrant
+                self.qdrant_service.delete_points_by_document(document_id)
+                logger.info(f"✅ [DELETE_INDEXES] Deleted points from Qdrant for document {document_id}")
             
             # Удаляем чанки из PostgreSQL
             with self.db_manager.get_cursor() as cursor:
@@ -640,24 +602,14 @@ class OllamaRAGService:
     def get_stats(self) -> Dict[str, Any]:
         """Получение статистики сервиса"""
         try:
-            # Статистика Qdrant через прямой HTTP запрос
-            import requests
-            qdrant_response = requests.get(f"{self.QDRANT_URL}/collections/{self.VECTOR_COLLECTION}", timeout=5)
+            # Статистика Qdrant через сервис
+            qdrant_info = self.qdrant_service.get_collection_info()
             qdrant_stats = {
                 'collection_name': self.VECTOR_COLLECTION,
-                'vectors_count': 0,
-                'indexed_vectors': 0,
-                'status': 'unknown'
+                'vectors_count': qdrant_info.get('points_count', 0),
+                'indexed_vectors': qdrant_info.get('points_count', 0),
+                'status': 'ok' if qdrant_info else 'unknown'
             }
-            
-            if qdrant_response.status_code == 200:
-                qdrant_data = qdrant_response.json()
-                result = qdrant_data.get('result', {})
-                qdrant_stats.update({
-                    'vectors_count': result.get('points_count', 0),
-                    'indexed_vectors': result.get('indexed_vectors_count', 0),
-                    'status': result.get('status', 'unknown')
-                })
             
             # Статистика PostgreSQL
             with self.db_manager.get_cursor() as cursor:
@@ -961,7 +913,264 @@ class OllamaRAGService:
             return []
     
     def _split_page_into_chunks(self, text: str, chunk_size: int = 1000) -> List[str]:
-        """Разбиение текста страницы на чанки"""
+        """Разбиение текста страницы на гранулярные чанки с улучшенной логикой"""
+        try:
+            # Импортируем конфигурацию
+            from config.chunking_config import get_chunking_config, validate_chunking_config
+            
+            # Получаем конфигурацию чанкования
+            config = get_chunking_config('default')
+            
+            # Валидируем конфигурацию
+            if not validate_chunking_config(config):
+                logger.warning("⚠️ [CHUNKING] Invalid chunking config, using fallback")
+                return self._simple_split_into_chunks(text, chunk_size)
+            
+            # Параметры гранулярного чанкования из конфигурации
+            target_tokens = config['target_tokens']
+            min_tokens = config['min_tokens']
+            max_tokens = config['max_tokens']
+            overlap_ratio = config['overlap_ratio']
+            
+            logger.info(f"📝 [CHUNKING] Using config: target={target_tokens}, min={min_tokens}, max={max_tokens}, overlap={overlap_ratio}")
+            logger.info(f"📝 [CHUNKING] Input text length: {len(text)} characters")
+            
+            # Разбиваем текст на предложения
+            sentences = self._split_into_sentences(text, config)
+            logger.info(f"📝 [CHUNKING] Split into {len(sentences)} sentences")
+            
+            if not sentences:
+                logger.warning("⚠️ [CHUNKING] No sentences found, using fallback")
+                return self._simple_split_into_chunks(text, chunk_size)
+            
+            chunks = []
+            current_chunk = []
+            current_tokens = 0
+            
+            logger.info(f"📝 [CHUNKING] Starting chunk creation process...")
+            
+            # Обрабатываем каждое предложение
+            for i, sentence in enumerate(sentences):
+                sentence_tokens = self._estimate_tokens(sentence, config)
+                logger.info(f"📝 [CHUNKING] Sentence {i+1}: {sentence_tokens} tokens, length: {len(sentence)}")
+                
+                # Проверяем, нужно ли начать новый чанк
+                if current_tokens + sentence_tokens > max_tokens and current_chunk:
+                    logger.info(f"📝 [CHUNKING] Max tokens exceeded ({current_tokens + sentence_tokens} > {max_tokens}), creating chunk")
+                    # Создаем чанк
+                    chunk_text = ' '.join(current_chunk)
+                    chunks.append(chunk_text.strip())
+                    logger.info(f"📝 [CHUNKING] Created chunk {len(chunks)}: {len(chunk_text)} chars, {current_tokens} tokens")
+                    
+                    # Начинаем новый чанк с перекрытием
+                    overlap_sentences = self._get_overlap_sentences(current_chunk, overlap_ratio, config)
+                    current_chunk = overlap_sentences
+                    current_tokens = sum(self._estimate_tokens(s, config) for s in overlap_sentences)
+                    logger.info(f"📝 [CHUNKING] Started new chunk with {len(overlap_sentences)} overlap sentences, {current_tokens} tokens")
+                
+                # Добавляем предложение к текущему чанку
+                current_chunk.append(sentence)
+                current_tokens += sentence_tokens
+                logger.info(f"📝 [CHUNKING] Added sentence to current chunk: {current_tokens} tokens total")
+                
+                # Проверяем, достигли ли целевого размера
+                if current_tokens >= target_tokens and current_tokens >= min_tokens:
+                    logger.info(f"📝 [CHUNKING] Target size reached ({current_tokens} >= {target_tokens}), creating chunk")
+                    # Создаем чанк
+                    chunk_text = ' '.join(current_chunk)
+                    chunks.append(chunk_text.strip())
+                    logger.info(f"📝 [CHUNKING] Created chunk {len(chunks)}: {len(chunk_text)} chars, {current_tokens} tokens")
+                    
+                    # Начинаем новый чанк с перекрытием
+                    overlap_sentences = self._get_overlap_sentences(current_chunk, overlap_ratio, config)
+                    current_chunk = overlap_sentences
+                    current_tokens = sum(self._estimate_tokens(s, config) for s in overlap_sentences)
+                    logger.info(f"📝 [CHUNKING] Started new chunk with {len(overlap_sentences)} overlap sentences, {current_tokens} tokens")
+            
+            # Добавляем последний чанк, если он не пустой
+            if current_chunk and current_tokens >= min_tokens:
+                logger.info(f"📝 [CHUNKING] Adding final chunk: {current_tokens} tokens")
+                chunk_text = ' '.join(current_chunk)
+                chunks.append(chunk_text.strip())
+                logger.info(f"📝 [CHUNKING] Created final chunk {len(chunks)}: {len(chunk_text)} chars, {current_tokens} tokens")
+            elif current_chunk:
+                logger.info(f"📝 [CHUNKING] Final chunk too small ({current_tokens} < {min_tokens}), merging with previous")
+                if chunks:
+                    # Объединяем с последним чанком
+                    last_chunk = chunks[-1]
+                    merged_chunk = last_chunk + ' ' + ' '.join(current_chunk)
+                    chunks[-1] = merged_chunk
+                    logger.info(f"📝 [CHUNKING] Merged final chunk with previous: {len(merged_chunk)} chars")
+                else:
+                    # Если нет предыдущих чанков, создаем один
+                    chunk_text = ' '.join(current_chunk)
+                    chunks.append(chunk_text.strip())
+                    logger.info(f"📝 [CHUNKING] Created single chunk: {len(chunk_text)} chars, {current_tokens} tokens")
+            
+            # Проверяем, что у нас есть чанки перед применением логики склейки
+            if not chunks:
+                logger.warning("⚠️ [CHUNKING] No chunks created, using fallback")
+                return self._simple_split_into_chunks(text, chunk_size)
+            
+            # Применяем логику склейки с заголовками если включена
+            if config.get('merge_enabled', True):
+                logger.info(f"📝 [CHUNKING] Applying header merging logic to {len(chunks)} chunks...")
+                chunks = self._merge_chunks_with_headers(chunks, config)
+                logger.info(f"📝 [CHUNKING] After merging: {len(chunks)} chunks")
+            
+            logger.info(f"✅ [CHUNKING] Created {len(chunks)} granular chunks")
+            return chunks
+            
+        except Exception as e:
+            logger.error(f"❌ [GRANULAR_CHUNKS] Error creating granular chunks: {e}")
+            import traceback
+            logger.error(f"❌ [GRANULAR_CHUNKS] Traceback: {traceback.format_exc()}")
+            # Fallback к простому разбиению
+            return self._simple_split_into_chunks(text, chunk_size)
+
+    def _split_into_sentences(self, text: str, config: dict) -> List[str]:
+        """Разбиение текста на предложения с учетом нормативных документов"""
+        try:
+            # Получаем паттерны из конфигурации
+            sentence_patterns = config.get('sentence_patterns', [
+                r'[.!?]+(?=\s+[А-ЯЁ\d])',  # Обычные предложения
+                r'[.!?]+(?=\s+\d+\.)',      # Перед номерами пунктов
+                r'[.!?]+(?=\s+[А-ЯЁ]\s)',  # Перед заголовками
+                r'[.!?]+(?=\s*$)'           # В конце текста
+            ])
+            
+            # Объединяем все паттерны
+            combined_pattern = '|'.join(sentence_patterns)
+            
+            # Разбиваем текст
+            sentences = re.split(combined_pattern, text)
+            
+            # Очищаем и фильтруем предложения
+            min_length = config.get('min_sentence_length', 10)
+            cleaned_sentences = []
+            for sentence in sentences:
+                sentence = sentence.strip()
+                if sentence and len(sentence) > min_length:
+                    cleaned_sentences.append(sentence)
+            
+            return cleaned_sentences
+            
+        except Exception as e:
+            logger.error(f"❌ [SENTENCE_SPLIT] Error splitting into sentences: {e}")
+            # Fallback: простое разбиение по точкам
+            return [s.strip() for s in text.split('.') if s.strip()]
+    
+    def _estimate_tokens(self, text: str, config: dict) -> int:
+        """Оценка количества токенов в тексте"""
+        try:
+            # Получаем коэффициент из конфигурации
+            tokens_per_char = config.get('tokens_per_char', 4)
+            return max(1, len(text) // tokens_per_char)
+        except Exception as e:
+            logger.error(f"❌ [TOKEN_ESTIMATION] Error estimating tokens: {e}")
+            return len(text) // 4
+    
+    def _get_overlap_sentences(self, sentences: List[str], overlap_ratio: float, config: dict) -> List[str]:
+        """Получение предложений для перекрытия между чанками"""
+        try:
+            if not sentences:
+                return []
+            
+            # Выбираем последние предложения для перекрытия
+            min_overlap = config.get('min_overlap_sentences', 1)
+            overlap_count = max(min_overlap, int(len(sentences) * overlap_ratio))
+            return sentences[-overlap_count:]
+            
+        except Exception as e:
+            logger.error(f"❌ [OVERLAP] Error getting overlap sentences: {e}")
+            return sentences[-1:] if sentences else []
+    
+    def _merge_chunks_with_headers(self, chunks: List[str], config: dict) -> List[str]:
+        """Склейка чанков с заголовками для предотвращения обрыва цитат"""
+        try:
+            if len(chunks) <= 1:
+                return chunks
+            
+            merged_chunks = []
+            current_chunk = chunks[0]
+            
+            for i in range(1, len(chunks)):
+                next_chunk = chunks[i]
+                
+                # Проверяем, нужно ли объединить чанки
+                should_merge = self._should_merge_chunks(current_chunk, next_chunk, config)
+                
+                if should_merge:
+                    # Объединяем чанки
+                    current_chunk = current_chunk + ' ' + next_chunk
+                else:
+                    # Добавляем текущий чанк и начинаем новый
+                    merged_chunks.append(current_chunk)
+                    current_chunk = next_chunk
+            
+            # Добавляем последний чанк
+            merged_chunks.append(current_chunk)
+            
+            logger.info(f"📝 [MERGE_HEADERS] Merged {len(chunks)} chunks into {len(merged_chunks)} chunks")
+            return merged_chunks
+            
+        except Exception as e:
+            logger.error(f"❌ [MERGE_HEADERS] Error merging chunks: {e}")
+            return chunks
+    
+    def _should_merge_chunks(self, chunk1: str, chunk2: str, config: dict) -> bool:
+        """Определение необходимости объединения чанков"""
+        try:
+            # Проверяем размер объединенного чанка
+            combined_tokens = self._estimate_tokens(chunk1, config) + self._estimate_tokens(chunk2, config)
+            
+            # Если объединенный чанк слишком большой, не объединяем
+            max_merged = config.get('max_merged_tokens', 1200)
+            if combined_tokens > max_merged:
+                return False
+            
+            # Получаем паттерны заголовков из конфигурации
+            header_patterns = config.get('header_patterns', ['глава', 'раздел', 'часть', 'пункт'])
+            
+            # Проверяем, заканчивается ли первый чанк заголовком
+            if any(pattern in chunk1.lower() for pattern in header_patterns):
+                return True
+            
+            # Проверяем, начинается ли второй чанк с продолжения предложения
+            if chunk2 and not chunk2[0].isupper():
+                return True
+            
+            # Проверяем, есть ли незавершенные конструкции
+            unfinished_patterns = config.get('unfinished_patterns', {})
+            
+            # Проверяем кавычки
+            quotes = unfinished_patterns.get('quotes', ['"', '«', '»'])
+            if any(chunk1.count(q) % 2 != 0 for q in quotes):
+                return True
+            
+            # Проверяем скобки
+            brackets = unfinished_patterns.get('brackets', ['(', '[', '{'])
+            if any(chunk1.count(b) != chunk1.count(self._get_closing_bracket(b)) for b in brackets):
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ [MERGE_LOGIC] Error in merge logic: {e}")
+            return False
+    
+    def _get_closing_bracket(self, opening_bracket: str) -> str:
+        """Получение закрывающей скобки для открывающей"""
+        bracket_pairs = {
+            '(': ')',
+            '[': ']',
+            '{': '}',
+            '<': '>'
+        }
+        return bracket_pairs.get(opening_bracket, '')
+
+    def _simple_split_into_chunks(self, text: str, chunk_size: int = 1000) -> List[str]:
+        """Простое разбиение текста на чанки, используя регулярные выражения."""
         chunks = []
         sentences = re.split(r'[.!?]+', text)
         current_chunk = ""
@@ -1023,23 +1232,16 @@ class OllamaRAGService:
                 else:
                     vector = list(embedding)
                 
-                point = PointStruct(
-                    id=point_id,
-                    vector=vector,
-                    payload={
-                        'chunk_id': chunk['chunk_id'],
-                        'document_id': chunk['document_id'],
-                        'document_title': chunk['document_title'],
-                        'content': chunk['content'],
-                        'chunk_type': chunk['chunk_type'],
-                        'page': chunk.get('page', 1)  # Добавляем page в payload
-                    }
-                )
+                payload = {
+                    'chunk_id': chunk['chunk_id'],
+                    'document_id': chunk['document_id'],
+                    'document_title': chunk['document_title'],
+                    'content': chunk['content'],
+                    'chunk_type': chunk['chunk_type'],
+                    'page': chunk.get('page', 1)  # Добавляем page в payload
+                }
                 
-                self.qdrant_client.upsert(
-                    collection_name=self.VECTOR_COLLECTION,
-                    points=[point]
-                )
+                self.qdrant_service.upsert_point(point_id, vector, payload)
             
             logger.info(f"✅ [INDEX_CHUNKS] Indexed {len(chunks)} chunks for document {document_id}")
             return True
@@ -1054,20 +1256,14 @@ class OllamaRAGService:
             logger.info("🧹 [CLEAR_COLLECTION] Clearing entire collection...")
             
             # Очищаем коллекцию
-            self.qdrant_client.delete(
-                collection_name=self.VECTOR_COLLECTION,
-                points_selector=Filter(
-                    must=[
-                        FieldCondition(
-                            key="document_id",
-                            match=MatchAny(any=list(range(1, 100000000)))  # Удаляем все точки
-                        )
-                    ]
-                )
-            )
+            success = self.qdrant_service.clear_collection()
             
-            logger.info("✅ [CLEAR_COLLECTION] Collection cleared successfully")
-            return True
+            if success:
+                logger.info("✅ [CLEAR_COLLECTION] Collection cleared successfully")
+                return True
+            else:
+                logger.error("❌ [CLEAR_COLLECTION] Failed to clear collection")
+                return False
             
         except Exception as e:
             logger.error(f"❌ [CLEAR_COLLECTION] Error clearing collection: {e}")

@@ -719,6 +719,136 @@ async def create_embedding_get_endpoint(text: str):
         logger.error(f"❌ [EMBEDDINGS] Error creating embedding: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/test-chunking")
+async def test_chunking_endpoint():
+    """Тестовый эндпоинт для проверки гранулярного чанкования"""
+    try:
+        logger.info("🧪 [TEST_CHUNKING] Testing granular chunking functionality...")
+        
+        # Тестовый текст
+        test_text = """
+        Страница 1 из 2
+        
+        СП 22.13330.2016 "Основания зданий и сооружений"
+        
+        Глава 1. Общие положения
+        
+        1.1. Настоящий свод правил устанавливает требования к проектированию оснований зданий и сооружений.
+        
+        1.2. Основания должны обеспечивать надежность и долговечность зданий и сооружений.
+        
+        1.3. При проектировании оснований следует учитывать:
+        - инженерно-геологические условия;
+        - конструктивные особенности зданий;
+        - технологические требования.
+        
+        Глава 2. Инженерно-геологические изыскания
+        
+        2.1. Инженерно-геологические изыскания должны выполняться в соответствии с требованиями СП 47.13330.
+        
+        2.2. Объем изысканий определяется сложностью инженерно-геологических условий.
+        
+        Страница 2 из 2
+        
+        Глава 3. Расчет оснований
+        
+        3.1. Расчет оснований выполняется по предельным состояниям.
+        
+        3.2. При расчете учитываются:
+        - нагрузки от зданий и сооружений;
+        - собственный вес грунтов;
+        - гидродинамические воздействия.
+        
+        3.3. Коэффициент надежности по нагрузке принимается не менее 1,2.
+        
+        Глава 4. Конструктивные решения
+        
+        4.1. Конструктивные решения оснований должны обеспечивать:
+        - равномерность осадок;
+        - устойчивость откосов;
+        - защиту от подтопления.
+        
+        4.2. При устройстве фундаментов следует предусматривать:
+        - гидроизоляцию;
+        - дренаж;
+        - вентиляцию подполий.
+        
+        4.3. Материалы фундаментов должны соответствовать требованиям по прочности и долговечности.
+        """
+        
+        logger.info(f"📄 [TEST_CHUNKING] Test text length: {len(test_text)} characters")
+        
+        # Создаем чанки с помощью новой логики
+        rag_service = get_ollama_rag_service()
+        
+        # Тестируем разбиение на предложения
+        try:
+            from config.chunking_config import get_chunking_config
+            config = get_chunking_config('default')
+            logger.info(f"🔧 [TEST_CHUNKING] Using config: {config}")
+            
+            sentences = rag_service._split_into_sentences(test_text, config)
+            logger.info(f"🔤 [TEST_CHUNKING] Split into {len(sentences)} sentences")
+            
+            if sentences:
+                logger.info(f"📝 [TEST_CHUNKING] First sentence: {sentences[0][:100]}...")
+                logger.info(f"📝 [TEST_CHUNKING] Last sentence: {sentences[-1][:100]}...")
+            
+        except Exception as e:
+            logger.error(f"❌ [TEST_CHUNKING] Error in sentence splitting: {e}")
+            sentences = []
+        
+        # Тестируем создание чанков
+        try:
+            chunks = rag_service._split_page_into_chunks(test_text, 1000)
+            logger.info(f"📝 [TEST_CHUNKING] Created {len(chunks)} chunks")
+            
+            if chunks:
+                logger.info(f"📝 [TEST_CHUNKING] First chunk: {chunks[0][:100]}...")
+                logger.info(f"📝 [TEST_CHUNKING] Last chunk: {chunks[-1][:100]}...")
+            
+        except Exception as e:
+            logger.error(f"❌ [TEST_CHUNKING] Error in chunk creation: {e}")
+            chunks = []
+        
+        # Анализируем результаты
+        chunk_analysis = []
+        for i, chunk in enumerate(chunks):
+            try:
+                # Оцениваем количество токенов
+                estimated_tokens = rag_service._estimate_tokens(chunk, {'tokens_per_char': 4})
+                
+                chunk_info = {
+                    'chunk_id': i + 1,
+                    'content_length': len(chunk),
+                    'estimated_tokens': estimated_tokens,
+                    'content_preview': chunk[:100] + '...' if len(chunk) > 100 else chunk,
+                    'sentences_count': len(chunk.split('.')),
+                    'has_headers': any(word in chunk.lower() for word in ['глава', 'раздел', 'часть', 'пункт'])
+                }
+                chunk_analysis.append(chunk_info)
+            except Exception as e:
+                logger.error(f"❌ [TEST_CHUNKING] Error analyzing chunk {i}: {e}")
+        
+        logger.info(f"✅ [TEST_CHUNKING] Created {len(chunks)} chunks successfully")
+        
+        return {
+            "status": "success",
+            "message": "Granular chunking test completed",
+            "total_chunks": len(chunks),
+            "chunks": chunk_analysis,
+            "test_text_length": len(test_text),
+            "sentences_count": len(sentences),
+            "config_used": config if 'config' in locals() else None,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [TEST_CHUNKING] Error in chunking test: {e}")
+        import traceback
+        logger.error(f"❌ [TEST_CHUNKING] Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ============================================================================
 # Системные эндпоинты
 # ============================================================================
