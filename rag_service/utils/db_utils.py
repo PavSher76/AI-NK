@@ -30,6 +30,12 @@ class DatabaseManager:
             logger.error(f"❌ [DB] Reconnection error: {e}")
             raise
     
+    def get_connection(self):
+        """Получение соединения с базой данных"""
+        if not self.connection or self.connection.closed:
+            self.connect()
+        return self.connection
+    
     def get_cursor(self):
         """Получение курсора с RealDictCursor"""
         if not self.connection or self.connection.closed:

@@ -8,11 +8,10 @@ import os
 from datetime import datetime
 
 # Настройка логирования
-log_level = os.getenv("LOG_LEVEL", "INFO")
-logging.basicConfig(
-    level=getattr(logging, log_level.upper()),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+from logging_config import setup_general_logging, get_log_stats
+
+# Настраиваем общее логирование
+setup_general_logging()
 logger = logging.getLogger(__name__)
 
 # Импорт сервисов
@@ -22,7 +21,7 @@ from chat_document_service import ChatDocumentService
 # Модели Pydantic
 class ChatRequest(BaseModel):
     message: str
-    model: str = "gpt-oss:20b"
+    model: str = "llama3.1:8b"
     history: Optional[List[Dict[str, str]]] = None
     max_tokens: Optional[int] = None
 
@@ -78,6 +77,7 @@ async def root_endpoint():
             "models": "/models",
             "chat": "/chat",
             "stats": "/stats",
+            "logs_stats": "/logs/stats",
             "upload_document": "/upload_document",
             "chat_documents_stats": "/chat_documents_stats"
         },
@@ -177,7 +177,7 @@ async def upload_document_endpoint(
 async def chat_with_document_endpoint(
     file: UploadFile = File(...),
     message: str = Form(""),
-    model: str = Form("gpt-oss:20b")
+    model: str = Form("llama3.1:8b")
 ):
     """Чат с ИИ с загруженным документом"""
     try:
@@ -242,6 +242,20 @@ async def stats_endpoint():
         logger.error(f"❌ [STATS] Error getting stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/logs/stats")
+async def logs_stats_endpoint():
+    """Получение статистики логов"""
+    try:
+        log_stats = get_log_stats()
+        return {
+            "status": "success",
+            "log_statistics": log_stats,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"❌ [LOGS_STATS] Error getting log stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ============================================================================
 # Запуск сервиса
 # ============================================================================
@@ -279,6 +293,7 @@ if __name__ == "__main__":
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8005"))
     reload = os.getenv("RELOAD", "false").lower() == "true"
+    log_level = os.getenv("LOG_LEVEL", "INFO")
     
     logger.info(f"🔧 [VLLM_OLLAMA_SERVICE] Configuration: host={host}, port={port}, reload={reload}")
     

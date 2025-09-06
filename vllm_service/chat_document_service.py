@@ -8,6 +8,25 @@ import hashlib
 import re
 import io
 
+# Импорты для обработки документов
+try:
+    from docx import Document as DocxDocument
+    DOCX_AVAILABLE = True
+except ImportError:
+    DOCX_AVAILABLE = False
+
+try:
+    import PyPDF2
+    PDF_AVAILABLE = True
+except ImportError:
+    PDF_AVAILABLE = False
+
+try:
+    from openpyxl import load_workbook
+    EXCEL_AVAILABLE = True
+except ImportError:
+    EXCEL_AVAILABLE = False
+
 # Настройка логирования
 logger = logging.getLogger(__name__)
 
@@ -47,13 +66,6 @@ class ChatDocumentService:
                     "error": f"Файл слишком большой. Максимальный размер: {self.MAX_FILE_SIZE // (1024*1024)}MB"
                 }
             
-            # Проверяем тип файла
-            if file_type not in self.SUPPORTED_FORMATS:
-                return {
-                    "valid": False,
-                    "error": f"Неподдерживаемый тип файла: {file_type}"
-                }
-            
             # Проверяем расширение файла
             file_extension = os.path.splitext(file_name)[1].lower()
             allowed_extensions = ['.pdf', '.docx', '.doc', '.xlsx', '.xls', '.txt', '.md']
@@ -61,6 +73,29 @@ class ChatDocumentService:
                 return {
                     "valid": False,
                     "error": f"Неподдерживаемое расширение файла: {file_extension}"
+                }
+            
+            # Определяем правильный MIME тип по расширению файла
+            extension_to_mime = {
+                '.pdf': 'application/pdf',
+                '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                '.doc': 'application/msword',
+                '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                '.xls': 'application/vnd.ms-excel',
+                '.txt': 'text/plain',
+                '.md': 'text/markdown'
+            }
+            
+            # Если MIME тип неопределен или неправильный, используем тип по расширению
+            if file_type == 'application/octet-stream' or file_type not in self.SUPPORTED_FORMATS:
+                file_type = extension_to_mime.get(file_extension, file_type)
+                logger.info(f"🔍 [FILE_VALIDATION] Auto-detected MIME type for {file_name}: {file_type}")
+            
+            # Проверяем тип файла
+            if file_type not in self.SUPPORTED_FORMATS:
+                return {
+                    "valid": False,
+                    "error": f"Неподдерживаемый тип файла: {file_type}"
                 }
             
             return {
@@ -138,64 +173,40 @@ class ChatDocumentService:
             }
     
     def _extract_text_from_document(self, file_content: bytes, file_type: str, file_name: str) -> Dict[str, Any]:
-        """Извлечение текста из документа через Document Parser или прямую обработку"""
+        """Извлечение текста из документа через прямую обработку"""
         try:
-            # Для TXT файлов обрабатываем напрямую
-            if file_type == 'text/plain' or file_name.lower().endswith('.txt'):
+            file_extension = os.path.splitext(file_name)[1].lower()
+            
+            # Для TXT файлов
+            if file_type == 'text/plain' or file_extension == '.txt':
                 logger.info(f"🔍 [TEXT_EXTRACTION] Processing TXT file directly: {file_name}")
-                
-                # Декодируем содержимое файла
-                try:
-                    text = file_content.decode('utf-8')
-                except UnicodeDecodeError:
-                    try:
-                        text = file_content.decode('cp1251')  # Попытка с Windows-1251
-                    except UnicodeDecodeError:
-                        text = file_content.decode('latin-1')  # Fallback
-                
-                # Создаем простые чанки
-                chunk_size = 500
-                chunks = []
-                for i in range(0, len(text), chunk_size):
-                    chunk_text = text[i:i + chunk_size]
-                    chunks.append({
-                        'content': chunk_text,
-                        'page': 1,
-                        'section': f'chunk_{i//chunk_size + 1}'
-                    })
-                
-                logger.info(f"✅ [TEXT_EXTRACTION] TXT file processed directly: {len(chunks)} chunks")
-                return {
-                    "success": True,
-                    "text": text,
-                    "chunks": chunks,
-                    "pages": 1
-                }
+                return self._extract_text_from_txt(file_content)
             
-            # Для других файлов используем Document Parser
-            logger.info(f"🔍 [TEXT_EXTRACTION] Using Document Parser for: {file_name}")
-            files = {'file': (file_name, io.BytesIO(file_content), file_type)}
-            data = {'extract_text': 'true', 'chunk_size': '500'}
+            # Для DOCX файлов
+            elif file_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' or file_extension == '.docx':
+                logger.info(f"🔍 [TEXT_EXTRACTION] Processing DOCX file directly: {file_name}")
+                return self._extract_text_from_docx(file_content)
             
-            response = requests.post(
-                f"{self.DOCUMENT_PARSER_URL}/upload/checkable",
-                files=files,
-                data=data,
-                timeout=300  # 5 минут
-            )
+            # Для PDF файлов
+            elif file_type == 'application/pdf' or file_extension == '.pdf':
+                logger.info(f"🔍 [TEXT_EXTRACTION] Processing PDF file directly: {file_name}")
+                return self._extract_text_from_pdf(file_content)
             
-            if response.status_code == 200:
-                result = response.json()
-                return {
-                    "success": True,
-                    "text": result.get("extracted_text", ""),
-                    "chunks": result.get("chunks", []),
-                    "pages": result.get("pages", 1)
-                }
+            # Для Excel файлов
+            elif file_type in ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-excel'] or file_extension in ['.xlsx', '.xls']:
+                logger.info(f"🔍 [TEXT_EXTRACTION] Processing Excel file directly: {file_name}")
+                return self._extract_text_from_excel(file_content)
+            
+            # Для Markdown файлов
+            elif file_type == 'text/markdown' or file_extension == '.md':
+                logger.info(f"🔍 [TEXT_EXTRACTION] Processing Markdown file directly: {file_name}")
+                return self._extract_text_from_txt(file_content)
+            
             else:
+                logger.error(f"❌ [TEXT_EXTRACTION] Unsupported file type: {file_type}")
                 return {
                     "success": False,
-                    "error": f"Document Parser error: {response.status_code} - {response.text}"
+                    "error": f"Unsupported file type: {file_type}"
                 }
                 
         except Exception as e:
@@ -204,6 +215,210 @@ class ChatDocumentService:
                 "success": False,
                 "error": str(e)
             }
+    
+    def _extract_text_from_txt(self, file_content: bytes) -> Dict[str, Any]:
+        """Извлечение текста из TXT файла"""
+        try:
+            # Декодируем содержимое файла
+            try:
+                text = file_content.decode('utf-8')
+            except UnicodeDecodeError:
+                try:
+                    text = file_content.decode('cp1251')  # Попытка с Windows-1251
+                except UnicodeDecodeError:
+                    text = file_content.decode('latin-1')  # Fallback
+            
+            # Создаем простые чанки
+            chunk_size = 500
+            chunks = []
+            for i in range(0, len(text), chunk_size):
+                chunk_text = text[i:i + chunk_size]
+                chunks.append({
+                    'content': chunk_text,
+                    'page': 1,
+                    'section': f'chunk_{i//chunk_size + 1}'
+                })
+            
+            logger.info(f"✅ [TEXT_EXTRACTION] TXT file processed: {len(chunks)} chunks")
+            return {
+                "success": True,
+                "text": text,
+                "chunks": chunks,
+                "pages": 1
+            }
+        except Exception as e:
+            logger.error(f"❌ [TEXT_EXTRACTION] Error processing TXT: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def _extract_text_from_docx(self, file_content: bytes) -> Dict[str, Any]:
+        """Извлечение текста из DOCX файла"""
+        try:
+            if not DOCX_AVAILABLE:
+                return {"success": False, "error": "python-docx library not available"}
+            
+            # Создаем временный файл в памяти
+            docx_file = io.BytesIO(file_content)
+            doc = DocxDocument(docx_file)
+            
+            # Извлекаем весь текст
+            full_text = []
+            chunks = []
+            chunk_index = 0
+            
+            for paragraph in doc.paragraphs:
+                if paragraph.text.strip():
+                    full_text.append(paragraph.text)
+                    
+                    # Создаем чанки из параграфов
+                    if len(paragraph.text) > 100:
+                        # Разбиваем длинные параграфы
+                        words = paragraph.text.split()
+                        for i in range(0, len(words), 50):  # 50 слов на чанк
+                            chunk_text = ' '.join(words[i:i+50])
+                            chunks.append({
+                                'content': chunk_text,
+                                'page': 1,
+                                'section': f'paragraph_{chunk_index}'
+                            })
+                            chunk_index += 1
+                    else:
+                        chunks.append({
+                            'content': paragraph.text,
+                            'page': 1,
+                            'section': f'paragraph_{chunk_index}'
+                        })
+                        chunk_index += 1
+            
+            # Обрабатываем таблицы
+            for table in doc.tables:
+                table_text = []
+                for row in table.rows:
+                    row_text = []
+                    for cell in row.cells:
+                        if cell.text.strip():
+                            row_text.append(cell.text.strip())
+                    if row_text:
+                        table_text.append(' | '.join(row_text))
+                
+                if table_text:
+                    table_content = '\n'.join(table_text)
+                    full_text.append(f"\n[ТАБЛИЦА]\n{table_content}\n")
+                    chunks.append({
+                        'content': table_content,
+                        'page': 1,
+                        'section': f'table_{chunk_index}'
+                    })
+                    chunk_index += 1
+            
+            extracted_text = '\n\n'.join(full_text)
+            
+            logger.info(f"✅ [TEXT_EXTRACTION] DOCX file processed: {len(chunks)} chunks")
+            return {
+                "success": True,
+                "text": extracted_text,
+                "chunks": chunks,
+                "pages": 1
+            }
+        except Exception as e:
+            logger.error(f"❌ [TEXT_EXTRACTION] Error processing DOCX: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def _extract_text_from_pdf(self, file_content: bytes) -> Dict[str, Any]:
+        """Извлечение текста из PDF файла"""
+        try:
+            if not PDF_AVAILABLE:
+                return {"success": False, "error": "PyPDF2 library not available"}
+            
+            pdf_file = io.BytesIO(file_content)
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            
+            full_text = []
+            chunks = []
+            
+            for page_num, page in enumerate(pdf_reader.pages, 1):
+                page_text = page.extract_text()
+                if page_text.strip():
+                    full_text.append(page_text)
+                    
+                    # Создаем чанки по страницам
+                    if len(page_text) > 1000:
+                        # Разбиваем длинные страницы
+                        words = page_text.split()
+                        for i in range(0, len(words), 100):  # 100 слов на чанк
+                            chunk_text = ' '.join(words[i:i+100])
+                            chunks.append({
+                                'content': chunk_text,
+                                'page': page_num,
+                                'section': f'page_{page_num}_chunk_{i//100 + 1}'
+                            })
+                    else:
+                        chunks.append({
+                            'content': page_text,
+                            'page': page_num,
+                            'section': f'page_{page_num}'
+                        })
+            
+            extracted_text = '\n\n'.join(full_text)
+            
+            logger.info(f"✅ [TEXT_EXTRACTION] PDF file processed: {len(chunks)} chunks")
+            return {
+                "success": True,
+                "text": extracted_text,
+                "chunks": chunks,
+                "pages": len(pdf_reader.pages)
+            }
+        except Exception as e:
+            logger.error(f"❌ [TEXT_EXTRACTION] Error processing PDF: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def _extract_text_from_excel(self, file_content: bytes) -> Dict[str, Any]:
+        """Извлечение текста из Excel файла"""
+        try:
+            if not EXCEL_AVAILABLE:
+                return {"success": False, "error": "openpyxl library not available"}
+            
+            excel_file = io.BytesIO(file_content)
+            workbook = load_workbook(excel_file, data_only=True)
+            
+            full_text = []
+            chunks = []
+            chunk_index = 0
+            
+            for sheet_name in workbook.sheetnames:
+                sheet = workbook[sheet_name]
+                sheet_text = [f"[ЛИСТ: {sheet_name}]"]
+                
+                for row in sheet.iter_rows(values_only=True):
+                    row_data = []
+                    for cell in row:
+                        if cell is not None and str(cell).strip():
+                            row_data.append(str(cell).strip())
+                    if row_data:
+                        sheet_text.append(' | '.join(row_data))
+                
+                if len(sheet_text) > 1:  # Есть данные кроме заголовка
+                    sheet_content = '\n'.join(sheet_text)
+                    full_text.append(sheet_content)
+                    
+                    chunks.append({
+                        'content': sheet_content,
+                        'page': 1,
+                        'section': f'sheet_{sheet_name}'
+                    })
+                    chunk_index += 1
+            
+            extracted_text = '\n\n'.join(full_text)
+            
+            logger.info(f"✅ [TEXT_EXTRACTION] Excel file processed: {len(chunks)} chunks")
+            return {
+                "success": True,
+                "text": extracted_text,
+                "chunks": chunks,
+                "pages": 1
+            }
+        except Exception as e:
+            logger.error(f"❌ [TEXT_EXTRACTION] Error processing Excel: {e}")
+            return {"success": False, "error": str(e)}
     
     def _index_document_in_qdrant(self, document_id: str, file_name: str, text: str, chunks: List[Dict], user_message: str) -> Dict[str, Any]:
         """Индексация документа в Qdrant коллекцию chat_documents"""

@@ -9,6 +9,12 @@ import requests
 import json
 import os
 from .qdrant_service import QdrantService
+from .reranker_service import BGERerankerService
+from .bge_reranker_service import BGERankingService
+from .hybrid_search_service import HybridSearchService
+from .mmr_service import MMRService
+from .intent_classifier_service import IntentClassifierService
+from .context_builder_service import ContextBuilderService
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -70,6 +76,13 @@ class DatabaseManager:
     
     def __init__(self, connection_string: str):
         self.connection_string = connection_string
+        self.connection = None
+    
+    def get_connection(self):
+        """Получение соединения с базой данных"""
+        if not self.connection or self.connection.closed:
+            self.connection = psycopg2.connect(self.connection_string)
+        return self.connection
     
     def get_cursor(self):
         """Получение курсора для работы с базой данных"""
@@ -90,9 +103,114 @@ class OllamaRAGService:
         self.qdrant_service = QdrantService(self.QDRANT_URL, self.VECTOR_COLLECTION, self.VECTOR_SIZE)
         self.db_manager = DatabaseManager(self.POSTGRES_URL)
         self.embedding_service = OllamaEmbeddingService()
+        self.reranker_service = BGERerankerService()  # Старый реранкер для fallback
+        self.bge_reranker_service = BGERankingService()  # Новый BGE реранкер
         
-        logger.info("🚀 [OLLAMA_RAG_SERVICE] Ollama RAG Service initialized")
+        # Инициализация гибридного поиска
+        self.hybrid_search_service = HybridSearchService(
+            db_connection=self.db_manager.get_connection(),
+            embedding_service=self.embedding_service,
+            qdrant_service=self.qdrant_service,
+            alpha=0.6,  # Больше веса для dense поиска
+            use_rrf=True,
+            rrf_k=60
+        )
+        
+        # Инициализация MMR сервиса
+        self.mmr_service = MMRService(
+            lambda_param=0.7,  # Баланс релевантности и разнообразия
+            similarity_threshold=0.8
+        )
+        
+        # Инициализация классификатора намерений
+        self.intent_classifier = IntentClassifierService()
+        
+        # Инициализация сервиса построения контекста
+        self.context_builder = ContextBuilderService()
+        
+        logger.info("🚀 [OLLAMA_RAG_SERVICE] Ollama RAG Service initialized with hybrid search and structured context")
     
+    def get_structured_context(self, query: str, k: int = 8, document_filter: Optional[str] = None, 
+                              chapter_filter: Optional[str] = None, chunk_type_filter: Optional[str] = None,
+                              use_reranker: bool = True, fast_mode: bool = False, use_mmr: bool = True,
+                              use_intent_classification: bool = True) -> Dict[str, Any]:
+        """
+        Получение структурированного контекста для запроса
+        
+        Args:
+            query: Поисковый запрос
+            k: Количество результатов для анализа
+            document_filter: Фильтр по типу документа
+            chapter_filter: Фильтр по главе
+            chunk_type_filter: Фильтр по типу чанка
+            use_reranker: Использовать ли реранкинг
+            fast_mode: Быстрый режим
+            use_mmr: Использовать ли MMR
+            use_intent_classification: Использовать ли классификацию намерений
+            
+        Returns:
+            Структурированный контекст с мета-сводкой
+        """
+        try:
+            logger.info(f"🏗️ [STRUCTURED_CONTEXT] Building structured context for query: '{query[:50]}...'")
+            
+            # Выполняем гибридный поиск
+            search_results = self.hybrid_search(
+                query=query,
+                k=k,
+                document_filter=document_filter,
+                chapter_filter=chapter_filter,
+                chunk_type_filter=chunk_type_filter,
+                use_reranker=use_reranker,
+                fast_mode=fast_mode,
+                use_mmr=use_mmr,
+                use_intent_classification=use_intent_classification
+            )
+            
+            if not search_results:
+                logger.warning(f"⚠️ [STRUCTURED_CONTEXT] No search results found for query: '{query}'")
+                return {
+                    "query": query,
+                    "timestamp": datetime.now().isoformat(),
+                    "context": [],
+                    "meta_summary": {
+                        "query_type": "no_results",
+                        "documents_found": 0,
+                        "sections_covered": 0,
+                        "avg_relevance": 0.0,
+                        "coverage_quality": "нет результатов",
+                        "key_documents": [],
+                        "key_sections": []
+                    },
+                    "total_candidates": 0,
+                    "avg_score": 0.0
+                }
+            
+            # Строим структурированный контекст
+            structured_context = self.context_builder.build_structured_context(search_results, query)
+            
+            logger.info(f"✅ [STRUCTURED_CONTEXT] Structured context built with {structured_context['total_candidates']} candidates")
+            return structured_context
+            
+        except Exception as e:
+            logger.error(f"❌ [STRUCTURED_CONTEXT] Error building structured context: {e}")
+            return {
+                "query": query,
+                "timestamp": datetime.now().isoformat(),
+                "context": [],
+                "meta_summary": {
+                    "query_type": "error",
+                    "documents_found": 0,
+                    "sections_covered": 0,
+                    "avg_relevance": 0.0,
+                    "coverage_quality": "ошибка",
+                    "key_documents": [],
+                    "key_sections": []
+                },
+                "total_candidates": 0,
+                "avg_score": 0.0,
+                "error": str(e)
+            }
 
     
     def extract_document_code(self, document_title: str) -> str:
@@ -135,6 +253,11 @@ class OllamaRAGService:
         try:
             logger.info(f"📝 [INDEXING] Starting indexing for document {document_id} with {len(chunks)} chunks")
             
+            # Получаем метаданные документа
+            logger.info(f"🔍 [INDEXING] Getting metadata for document_id: {document_id}")
+            document_metadata = self._get_document_metadata(document_id)
+            logger.info(f"🔍 [INDEXING] Retrieved metadata: {document_metadata}")
+            
             points = []
             
             for chunk in chunks:
@@ -157,6 +280,9 @@ class OllamaRAGService:
                     
                     logger.info(f"🔍 [INDEXING] Document title: '{document_title}', extracted code: '{code}'")
                     
+                    # Создаем метаданные чанка
+                    chunk_metadata = self._create_chunk_metadata(chunk, document_metadata)
+                    
                     # Создаем точку для Qdrant
                     point = self.qdrant_service.create_point(
                         point_id=qdrant_id,
@@ -171,7 +297,7 @@ class OllamaRAGService:
                             'chunk_type': chunk.get('chunk_type', ''),
                             'page': chunk.get('page', 1),
                             'section': chunk.get('section', ''),
-                            'metadata': chunk.get('metadata', {})
+                            'metadata': chunk_metadata
                         }
                     )
                     points.append(point)
@@ -194,10 +320,207 @@ class OllamaRAGService:
             return False
     
     def hybrid_search(self, query: str, k: int = 8, document_filter: Optional[str] = None, 
-                     chapter_filter: Optional[str] = None, chunk_type_filter: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Гибридный поиск по нормативным документам"""
+                     chapter_filter: Optional[str] = None, chunk_type_filter: Optional[str] = None, 
+                     use_reranker: bool = True, fast_mode: bool = False, use_mmr: bool = True, 
+                     use_intent_classification: bool = True) -> List[Dict[str, Any]]:
+        """
+        Гибридный поиск по нормативным документам с опциональным реранкингом
+        
+        Args:
+            query: Поисковый запрос
+            k: Количество финальных результатов
+            document_filter: Фильтр по типу документа
+            chapter_filter: Фильтр по главе
+            chunk_type_filter: Фильтр по типу чанка
+            use_reranker: Использовать ли реранкинг (по умолчанию True)
+            fast_mode: Быстрый режим (отключает некоторые оптимизации)
+            use_mmr: Использовать ли MMR для разнообразия (по умолчанию True)
+            use_intent_classification: Использовать ли классификацию намерений (по умолчанию True)
+        """
         try:
-            logger.info(f"🔍 [HYBRID_SEARCH] Performing hybrid search for query: '{query}' with k={k}")
+            logger.info(f"🔍 [HYBRID_SEARCH] Performing advanced hybrid search for query: '{query}' with k={k}")
+            
+            # Классификация намерения и переписывание запроса
+            intent_classification = None
+            query_rewriting = None
+            enhanced_queries = [query]
+            enhanced_filters = {
+                'document_filter': document_filter,
+                'chapter_filter': chapter_filter,
+                'chunk_type_filter': chunk_type_filter
+            }
+            
+            if use_intent_classification and not fast_mode:
+                try:
+                    logger.info(f"🎯 [HYBRID_SEARCH] Classifying intent for query: '{query[:50]}...'")
+                    intent_classification = self.intent_classifier.classify_intent(query)
+                    query_rewriting = self.intent_classifier.rewrite_query(query, intent_classification)
+                    
+                    # Используем переписанные запросы
+                    enhanced_queries = query_rewriting.rewritten_queries
+                    
+                    # Обновляем фильтры на основе намерения
+                    if query_rewriting.section_filters:
+                        enhanced_filters['chapter_filter'] = query_rewriting.section_filters[0]  # Используем первый фильтр
+                    if query_rewriting.chunk_type_filters:
+                        enhanced_filters['chunk_type_filter'] = query_rewriting.chunk_type_filters[0]
+                    
+                    logger.info(f"✅ [HYBRID_SEARCH] Intent classified as: {intent_classification.intent_type.value} "
+                              f"(confidence: {intent_classification.confidence:.3f})")
+                    logger.info(f"🔄 [HYBRID_SEARCH] Generated {len(enhanced_queries)} enhanced queries")
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ [HYBRID_SEARCH] Intent classification failed: {e}")
+                    # Продолжаем с исходным запросом
+            
+            # Используем новый гибридный поиск
+            # Ищем больше результатов для реранкинга и MMR
+            search_k = 50 if use_reranker else (k * 2 if use_mmr else k)
+            
+            # Выполняем поиск с лучшим запросом
+            best_query = enhanced_queries[0]  # Используем первый (лучший) запрос
+            search_results = self.hybrid_search_service.search(
+                query=best_query,
+                k=search_k,
+                document_filter=enhanced_filters['document_filter'],
+                chapter_filter=enhanced_filters['chapter_filter'],
+                chunk_type_filter=enhanced_filters['chunk_type_filter'],
+                use_alpha_blending=True,
+                use_rrf=True
+            )
+            
+            # Преобразуем SearchResult в старый формат
+            results = []
+            for result in search_results:
+                formatted_result = {
+                    'id': result.id,
+                    'score': result.score,
+                    'document_id': result.document_id,
+                    'chunk_id': result.chunk_id,
+                    'code': result.code,
+                    'document_title': result.document_title,
+                    'section_title': result.section_title,
+                    'content': result.content,
+                    'chunk_type': result.chunk_type,
+                    'page': result.page,
+                    'section': result.section,
+                    'metadata': result.metadata,
+                    'search_type': result.search_type,
+                    'rank': result.rank
+                }
+                
+                # Добавляем информацию о намерении
+                if intent_classification:
+                    formatted_result['intent_type'] = intent_classification.intent_type.value
+                    formatted_result['intent_confidence'] = intent_classification.confidence
+                    formatted_result['intent_keywords'] = intent_classification.keywords
+                    formatted_result['intent_reasoning'] = intent_classification.reasoning
+                
+                if query_rewriting:
+                    formatted_result['enhanced_queries'] = query_rewriting.rewritten_queries
+                    formatted_result['section_filters'] = query_rewriting.section_filters
+                    formatted_result['chunk_type_filters'] = query_rewriting.chunk_type_filters
+                
+                results.append(formatted_result)
+            
+            logger.info(f"✅ [HYBRID_SEARCH] Found {len(results)} hybrid results")
+            
+            # Применяем реранкинг, если включен и не быстрый режим
+            if use_reranker and not fast_mode and len(results) > k:
+                logger.info(f"🔄 [HYBRID_SEARCH] Applying BGE reranking to {len(results)} results → {k} final results")
+                try:
+                    # Используем новый BGE реранкер с fallback
+                    reranked_results = self.bge_reranker_service.rerank_with_fallback(
+                        query=query,
+                        search_results=results,
+                        top_k=k,
+                        initial_top_k=len(results)
+                    )
+                    
+                    if reranked_results:
+                        logger.info(f"✅ [HYBRID_SEARCH] BGE reranking completed successfully")
+                        final_results = reranked_results
+                    else:
+                        logger.warning("⚠️ [HYBRID_SEARCH] BGE reranking failed, trying fallback")
+                        # Fallback к старому реранкеру
+                        reranked_results = self.reranker_service.rerank_search_results(
+                            query=query,
+                            search_results=results,
+                            top_k=k,
+                            initial_top_k=len(results)
+                        )
+                        if reranked_results:
+                            logger.info(f"✅ [HYBRID_SEARCH] Fallback reranking completed")
+                            final_results = reranked_results
+                        else:
+                            logger.warning("⚠️ [HYBRID_SEARCH] All reranking failed, using original results")
+                            final_results = results[:k]
+                    
+                    # Применяем MMR для разнообразия
+                    if use_mmr and not fast_mode and len(final_results) > k:
+                        logger.info(f"🔄 [HYBRID_SEARCH] Applying MMR diversification to {len(final_results)} results → {k}")
+                        try:
+                            mmr_results = self.mmr_service.diversify_results(
+                                results=final_results,
+                                k=k,
+                                query=query,
+                                use_semantic_similarity=True
+                            )
+                            
+                            # Конвертируем MMR результаты обратно в старый формат
+                            diversified_results = []
+                            for mmr_result in mmr_results:
+                                formatted_result = {
+                                    'id': mmr_result.id,
+                                    'score': mmr_result.mmr_score,
+                                    'document_id': mmr_result.document_id,
+                                    'chunk_id': mmr_result.chunk_id,
+                                    'code': mmr_result.code,
+                                    'document_title': mmr_result.document_title,
+                                    'section_title': mmr_result.section_title,
+                                    'content': mmr_result.content,
+                                    'chunk_type': mmr_result.chunk_type,
+                                    'page': mmr_result.page,
+                                    'section': mmr_result.section,
+                                    'metadata': mmr_result.metadata,
+                                    'search_type': mmr_result.search_type,
+                                    'rank': mmr_result.rank,
+                                    'mmr_score': mmr_result.mmr_score,
+                                    'relevance_score': mmr_result.relevance_score,
+                                    'diversity_score': mmr_result.diversity_score
+                                }
+                                diversified_results.append(formatted_result)
+                            
+                            logger.info(f"✅ [HYBRID_SEARCH] MMR diversification completed")
+                            return diversified_results
+                            
+                        except Exception as e:
+                            logger.error(f"❌ [HYBRID_SEARCH] Error during MMR diversification: {e}")
+                            logger.info("🔄 [HYBRID_SEARCH] Falling back to reranked results")
+                            return final_results[:k]
+                    else:
+                        return final_results[:k]
+                        
+                except Exception as e:
+                    logger.error(f"❌ [HYBRID_SEARCH] Error during BGE reranking: {e}")
+                    logger.info("🔄 [HYBRID_SEARCH] Falling back to original results")
+                    return results[:k]
+            else:
+                # Если реранкинг не используется, быстрый режим или результатов мало
+                if fast_mode:
+                    logger.info(f"⚡ [HYBRID_SEARCH] Fast mode: returning top {k} results without reranking")
+                return results[:k]
+            
+        except Exception as e:
+            logger.error(f"❌ [HYBRID_SEARCH] Error during hybrid search: {e}")
+            # Fallback к старому методу при ошибке
+            return self._fallback_hybrid_search(query, k, document_filter, chapter_filter, chunk_type_filter)
+    
+    def _fallback_hybrid_search(self, query: str, k: int, document_filter: Optional[str] = None, 
+                               chapter_filter: Optional[str] = None, chunk_type_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Fallback метод для гибридного поиска (старая реализация)"""
+        try:
+            logger.info(f"🔄 [FALLBACK] Using fallback hybrid search for query: '{query}'")
             
             # Создаем эмбеддинг для запроса
             query_embedding = self.embedding_service.create_embedding(query)
@@ -245,19 +568,44 @@ class OllamaRAGService:
                     'chunk_type': point['payload'].get('chunk_type'),
                     'page': point['payload'].get('page'),
                     'section': point['payload'].get('section'),
-                    'metadata': point['payload'].get('metadata', {})
+                    'metadata': point['payload'].get('metadata', {}),
+                    'search_type': 'fallback'
                 }
                 results.append(result)
             
-            logger.info(f"✅ [HYBRID_SEARCH] Found {len(results)} results")
+            logger.info(f"✅ [FALLBACK] Found {len(results)} fallback results")
             return results
             
         except Exception as e:
-            logger.error(f"❌ [HYBRID_SEARCH] Error during hybrid search: {e}")
-            raise e
+            logger.error(f"❌ [FALLBACK] Error during fallback search: {e}")
+            return []
+    
+    def get_hybrid_search_stats(self) -> Dict[str, Any]:
+        """Получение статистики гибридного поиска"""
+        try:
+            stats = self.hybrid_search_service.get_search_stats()
+            bge_reranker_stats = self.bge_reranker_service.get_reranking_stats()
+            mmr_stats = self.mmr_service.get_mmr_stats()
+            intent_classifier_stats = self.intent_classifier.get_intent_stats()
+            
+            return {
+                "status": "success",
+                "stats": stats,
+                "bge_reranker": bge_reranker_stats,
+                "mmr": mmr_stats,
+                "intent_classifier": intent_classifier_stats,
+                "timestamp": datetime.now().isoformat()
+            }
+        except Exception as e:
+            logger.error(f"❌ [HYBRID_STATS] Error getting hybrid search stats: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
     
     def get_ntd_consultation(self, message: str, user_id: str, history: List[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Получение консультации по НТД"""
+        """Получение консультации по НТД с использованием структурированного контекста"""
         try:
             logger.info(f"💬 [NTD_CONSULTATION] Processing consultation request: '{message[:100]}...'")
             
@@ -265,8 +613,33 @@ class OllamaRAGService:
             document_code = self.extract_document_code_from_query(message)
             logger.info(f"🔍 [NTD_CONSULTATION] Extracted document code: {document_code}")
             
-            # Выполняем поиск по запросу
-            search_results = self.hybrid_search(message, k=10)
+            # Получаем структурированный контекст
+            structured_context = self.get_structured_context(message, k=10)
+            
+            if not structured_context.get('context'):
+                return {
+                    "status": "success",
+                    "response": "К сожалению, я не нашел релевантной информации в базе нормативных документов. Попробуйте переформулировать ваш вопрос или обратитесь к актуальным нормативным документам.",
+                    "sources": [],
+                    "confidence": 0.0,
+                    "documents_used": 0,
+                    "structured_context": structured_context,
+                    "timestamp": datetime.now().isoformat()
+                }
+            
+            # Получаем результаты поиска для совместимости
+            search_results = []
+            for context_item in structured_context['context']:
+                search_results.append({
+                    'code': context_item['doc'],
+                    'document_title': context_item['document_title'],
+                    'section': context_item['section'],
+                    'page': context_item['page'],
+                    'content': context_item.get('snippet', ''),
+                    'score': context_item['score'],
+                    'chunk_type': context_item.get('chunk_type', ''),
+                    'metadata': context_item.get('metadata', {})
+                })
             
             if not search_results:
                 return {
@@ -321,25 +694,22 @@ class OllamaRAGService:
                 top_result = search_results[0]
                 confidence = min(top_result['score'], 1.0) if top_result['score'] > 0 else 0.0
             
-            # Формируем источники
+            # Формируем источники с правильной информацией
             sources = []
             for result in search_results[:3]:  # Топ-3 результата
                 source = {
-                    'document_code': result['code'],
-                    'document_title': result['document_title'],
-                    'section': result['section'],
-                    'page': result['page'],
+                    'title': result['document_title'],
+                    'filename': result['document_title'],
+                    'page': result.get('page', 'Не указана'),
+                    'section': result.get('section', 'Не указан'),
+                    'document_code': result.get('code', ''),
                     'content_preview': result['content'][:200] + "..." if len(result['content']) > 200 else result['content'],
                     'relevance_score': result['score']
                 }
                 sources.append(source)
             
-            # Формируем ответ
-            response = f"На основе найденных документов, вот ответ на ваш вопрос:\n\n"
-            response += f"**{top_result['document_title']}**\n"
-            response += f"Раздел: {top_result['section']}\n\n"
-            response += f"{top_result['content']}\n\n"
-            response += f"Для получения дополнительной информации обратитесь к полному тексту документа."
+            # Формируем структурированный ответ с использованием нового контекста
+            response = self._format_consultation_response_with_context(message, structured_context, top_result)
             
             return {
                 "status": "success",
@@ -347,6 +717,7 @@ class OllamaRAGService:
                 "sources": sources,
                 "confidence": confidence,
                 "documents_used": len(search_results),
+                "structured_context": structured_context,
                 "timestamp": datetime.now().isoformat()
             }
             
@@ -402,6 +773,203 @@ class OllamaRAGService:
         except Exception as e:
             logger.error(f"❌ [DOCUMENT_CODE_EXTRACTION] Error extracting document code: {e}")
             return None
+    
+    def _format_consultation_response(self, message: str, search_results: List[Dict], top_result: Dict) -> str:
+        """Форматирование ответа консультации с правильной структурой"""
+        try:
+            # Анализируем запрос для определения типа ответа
+            query_lower = message.lower()
+            
+            # Определяем тип ответа
+            if any(word in query_lower for word in ['какой', 'что', 'как', 'где', 'когда']):
+                response_type = "информационный"
+            elif any(word in query_lower for word in ['регламентирует', 'определяет', 'устанавливает']):
+                response_type = "нормативный"
+            else:
+                response_type = "общий"
+            
+            # Формируем структурированный ответ
+            response_parts = []
+            
+            # Заголовок ответа
+            if response_type == "нормативный":
+                response_parts.append("## 📋 Нормативное регулирование")
+            elif response_type == "информационный":
+                response_parts.append("## 💡 Информация по вашему вопросу")
+            else:
+                response_parts.append("## 📖 Ответ на основе нормативных документов")
+            
+            # Основной ответ
+            response_parts.append("")
+            response_parts.append(f"**{top_result['document_title']}**")
+            response_parts.append(f"*Раздел: {top_result['section']}*")
+            response_parts.append("")
+            
+            # Форматируем содержимое в абзацы
+            content = top_result['content']
+            if content:
+                # Разбиваем на предложения и группируем в абзацы
+                sentences = content.split('. ')
+                paragraphs = []
+                current_paragraph = []
+                
+                for sentence in sentences:
+                    if sentence.strip():
+                        current_paragraph.append(sentence.strip())
+                        # Если абзац стал достаточно длинным, начинаем новый
+                        if len(' '.join(current_paragraph)) > 200:
+                            paragraphs.append(' '.join(current_paragraph))
+                            current_paragraph = []
+                
+                # Добавляем последний абзац
+                if current_paragraph:
+                    paragraphs.append(' '.join(current_paragraph))
+                
+                # Добавляем абзацы в ответ
+                for paragraph in paragraphs:
+                    if paragraph.strip():
+                        response_parts.append(paragraph.strip())
+                        response_parts.append("")
+            
+            # Дополнительная информация из других результатов
+            if len(search_results) > 1:
+                response_parts.append("---")
+                response_parts.append("## 📚 Дополнительная информация")
+                response_parts.append("")
+                
+                for i, result in enumerate(search_results[1:3], 1):  # Берем еще 2 результата
+                    if result['document_title'] != top_result['document_title']:
+                        response_parts.append(f"**{result['document_title']}**")
+                        response_parts.append(f"*Раздел: {result['section']}*")
+                        response_parts.append("")
+                        
+                        # Краткое содержание
+                        preview = result['content'][:300] + "..." if len(result['content']) > 300 else result['content']
+                        response_parts.append(preview)
+                        response_parts.append("")
+            
+            # Заключение
+            response_parts.append("---")
+            response_parts.append("## 📝 Рекомендации")
+            response_parts.append("")
+            response_parts.append("Для получения полной информации обратитесь к полному тексту указанных нормативных документов.")
+            
+            return "\n".join(response_parts)
+            
+        except Exception as e:
+            logger.error(f"❌ [FORMAT_RESPONSE] Error formatting response: {e}")
+            # Fallback к простому формату
+            return f"**{top_result['document_title']}**\n\n{top_result['content']}"
+    
+    def _format_consultation_response_with_context(self, message: str, structured_context: Dict[str, Any], top_result: Dict) -> str:
+        """Форматирование ответа консультации с использованием структурированного контекста"""
+        try:
+            # Анализируем запрос для определения типа ответа
+            query_lower = message.lower()
+            
+            # Определяем тип ответа
+            if any(word in query_lower for word in ['какой', 'что', 'как', 'где', 'когда']):
+                response_type = "информационный"
+            elif any(word in query_lower for word in ['регламентирует', 'определяет', 'устанавливает']):
+                response_type = "нормативный"
+            else:
+                response_type = "общий"
+            
+            # Формируем структурированный ответ
+            response_parts = []
+            
+            # Заголовок ответа
+            if response_type == "нормативный":
+                response_parts.append("## 📋 Нормативное регулирование")
+            elif response_type == "информационный":
+                response_parts.append("## 💡 Информация по вашему вопросу")
+            else:
+                response_parts.append("## 📖 Ответ на основе нормативных документов")
+            
+            # Мета-сводка
+            meta_summary = structured_context.get('meta_summary', {})
+            if meta_summary:
+                response_parts.append("")
+                response_parts.append(f"**📊 Анализ запроса:** {meta_summary.get('query_type', 'общая информация')}")
+                response_parts.append(f"**📚 Найдено документов:** {meta_summary.get('documents_found', 0)}")
+                response_parts.append(f"**📑 Разделов:** {meta_summary.get('sections_covered', 0)}")
+                response_parts.append(f"**⭐ Качество покрытия:** {meta_summary.get('coverage_quality', 'неизвестно')}")
+                
+                if meta_summary.get('key_documents'):
+                    response_parts.append(f"**🔑 Ключевые документы:** {', '.join(meta_summary['key_documents'][:3])}")
+            
+            response_parts.append("")
+            response_parts.append("---")
+            response_parts.append("")
+            
+            # Основной ответ на основе структурированного контекста
+            context_items = structured_context.get('context', [])
+            
+            for i, item in enumerate(context_items[:3], 1):  # Показываем топ-3
+                response_parts.append(f"### {i}. {item['doc']} - {item['document_title']}")
+                response_parts.append(f"**Раздел:** {item['section']} - {item['section_title']}")
+                response_parts.append(f"**Страница:** {item['page']}")
+                response_parts.append(f"**Релевантность:** {item['score']:.2f} ({item['why']})")
+                
+                # Добавляем сводку, если есть
+                if 'summary' in item:
+                    summary = item['summary']
+                    response_parts.append("")
+                    response_parts.append(f"**📝 О разделе:** {summary['topic']}")
+                    response_parts.append(f"**⚖️ Тип нормы:** {summary['norm_type']}")
+                    
+                    if summary['key_points']:
+                        response_parts.append("**🔑 Ключевые моменты:**")
+                        for point in summary['key_points'][:3]:  # Показываем до 3 ключевых моментов
+                            response_parts.append(f"• {point}")
+                    
+                    response_parts.append(f"**🎯 Релевантность:** {summary['relevance_reason']}")
+                
+                response_parts.append("")
+                response_parts.append(f"**Содержание:**")
+                
+                # Форматируем содержимое в абзацы
+                content = item.get('snippet', '')
+                if content:
+                    # Разбиваем на предложения и группируем в абзацы
+                    sentences = content.split('. ')
+                    paragraphs = []
+                    current_paragraph = []
+                    
+                    for sentence in sentences:
+                        if sentence.strip():
+                            current_paragraph.append(sentence.strip())
+                            # Если абзац стал достаточно длинным, начинаем новый
+                            if len(' '.join(current_paragraph)) > 200:
+                                paragraphs.append(' '.join(current_paragraph))
+                                current_paragraph = []
+                    
+                    # Добавляем последний абзац
+                    if current_paragraph:
+                        paragraphs.append(' '.join(current_paragraph))
+                    
+                    # Добавляем абзацы в ответ
+                    for paragraph in paragraphs:
+                        response_parts.append(paragraph)
+                        response_parts.append("")
+                else:
+                    response_parts.append("Содержимое недоступно")
+                
+                response_parts.append("---")
+                response_parts.append("")
+            
+            # Итоговая информация
+            response_parts.append(f"**📈 Статистика поиска:**")
+            response_parts.append(f"• Всего найдено: {structured_context.get('total_candidates', 0)} релевантных фрагментов")
+            response_parts.append(f"• Средняя релевантность: {structured_context.get('avg_score', 0):.2f}")
+            response_parts.append(f"• Время обработки: {structured_context.get('timestamp', 'неизвестно')}")
+            
+            return "\n".join(response_parts)
+            
+        except Exception as e:
+            logger.error(f"❌ [CONSULTATION_FORMAT] Error formatting response: {e}")
+            # Fallback к простому форматированию
+            return self._format_consultation_response(message, [top_result], top_result)
     
     def get_documents(self) -> List[Dict[str, Any]]:
         """Получение списка документов из базы данных"""
@@ -847,7 +1415,7 @@ class OllamaRAGService:
             return ""
 
     def create_chunks(self, text: str, document_id: int, filename: str) -> List[Dict[str, Any]]:
-        """Создание чанков из текста документа с правильной нумерацией страниц"""
+        """Создание чанков из текста документа с правильной нумерацией страниц и структурой"""
         try:
             logger.info(f"📝 [CREATE_CHUNKS] Creating chunks for document {document_id}")
             
@@ -876,17 +1444,25 @@ class OllamaRAGService:
                     page_text = text[start_pos:end_pos].strip()
                     
                     if page_text:
+                        # Извлекаем структуру страницы (главы, разделы)
+                        page_structure = self._extract_page_structure(page_text, page_num)
+                        
                         # Разбиваем страницу на чанки
                         page_chunks = self._split_page_into_chunks(page_text, chunk_size=1000)
                         
                         for chunk_text in page_chunks:
+                            # Определяем к какой главе/разделу относится чанк
+                            chunk_structure = self._identify_chunk_structure(chunk_text, page_structure)
+                            
                             chunks.append({
                                 'chunk_id': f"doc_{document_id}_page_{page_num}_chunk_{chunk_id}",
                                 'document_id': document_id,
                                 'document_title': filename,
                                 'content': chunk_text.strip(),
                                 'chunk_type': 'paragraph',
-                                'page': page_num
+                                'page': page_num,
+                                'chapter': chunk_structure.get('chapter', ''),
+                                'section': chunk_structure.get('section', '')
                             })
                             chunk_id += 1
             else:
@@ -894,14 +1470,22 @@ class OllamaRAGService:
                 logger.info(f"📄 [CREATE_CHUNKS] No page markers found, treating as single page document")
                 page_chunks = self._split_page_into_chunks(text, chunk_size=1000)
                 
+                # Извлекаем общую структуру документа
+                document_structure = self._extract_document_structure(text)
+                
                 for chunk_text in page_chunks:
+                    # Определяем к какой главе/разделу относится чанк
+                    chunk_structure = self._identify_chunk_structure(chunk_text, document_structure)
+                    
                     chunks.append({
                         'chunk_id': f"doc_{document_id}_page_1_chunk_{chunk_id}",
                         'document_id': document_id,
                         'document_title': filename,
                         'content': chunk_text.strip(),
                         'chunk_type': 'paragraph',
-                        'page': 1
+                        'page': 1,
+                        'chapter': chunk_structure.get('chapter', ''),
+                        'section': chunk_structure.get('section', '')
                     })
                     chunk_id += 1
             
@@ -1195,13 +1779,18 @@ class OllamaRAGService:
     async def index_chunks_async(self, chunks: List[Dict[str, Any]], document_id: int) -> bool:
         """Асинхронная индексация чанков"""
         try:
+            # Получаем метаданные документа
+            logger.info(f"🔍 [INDEX_CHUNKS_ASYNC] Getting metadata for document_id: {document_id}")
+            document_metadata = self._get_document_metadata(document_id)
+            logger.info(f"🔍 [INDEX_CHUNKS_ASYNC] Retrieved metadata: {document_metadata}")
+            
             # Сохраняем чанки в PostgreSQL
             with self.db_manager.get_cursor() as cursor:
                 for chunk in chunks:
                     cursor.execute("""
                         INSERT INTO normative_chunks 
-                        (chunk_id, clause_id, document_id, document_title, chunk_type, content, page_number)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        (chunk_id, clause_id, document_id, document_title, chunk_type, content, page_number, chapter, section)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
                         chunk['chunk_id'],
                         chunk['chunk_id'],  # Используем chunk_id как clause_id
@@ -1209,7 +1798,9 @@ class OllamaRAGService:
                         chunk['document_title'],
                         chunk['chunk_type'],
                         chunk['content'],
-                        chunk.get('page', 1)  # Добавляем page_number
+                        chunk.get('page', 1),  # page_number
+                        chunk.get('chapter', ''),  # chapter
+                        chunk.get('section', '')   # section
                     ))
                 cursor.connection.commit()
             
@@ -1232,13 +1823,19 @@ class OllamaRAGService:
                 else:
                     vector = list(embedding)
                 
+                # Создаем метаданные чанка
+                chunk_metadata = self._create_chunk_metadata(chunk, document_metadata)
+                
                 payload = {
                     'chunk_id': chunk['chunk_id'],
                     'document_id': chunk['document_id'],
                     'document_title': chunk['document_title'],
                     'content': chunk['content'],
                     'chunk_type': chunk['chunk_type'],
-                    'page': chunk.get('page', 1)  # Добавляем page в payload
+                    'page': chunk.get('page', 1),
+                    'chapter': chunk.get('chapter', ''),
+                    'section': chunk.get('section', ''),
+                    'metadata': chunk_metadata
                 }
                 
                 self.qdrant_service.upsert_point(point_id, vector, payload)
@@ -1268,3 +1865,479 @@ class OllamaRAGService:
         except Exception as e:
             logger.error(f"❌ [CLEAR_COLLECTION] Error clearing collection: {e}")
             return False
+    
+    def _extract_page_structure(self, page_text: str, page_num: int) -> Dict[str, Any]:
+        """Извлечение структуры страницы (главы, разделы)"""
+        try:
+            structure = {
+                'page': page_num,
+                'chapters': [],
+                'sections': [],
+                'headers': []
+            }
+            
+            # Паттерны для поиска заголовков глав и разделов
+            chapter_patterns = [
+                r'^ГЛАВА\s+(\d+)\s*[\.\-]?\s*(.+)$',
+                r'^Глава\s+(\d+)\s*[\.\-]?\s*(.+)$',
+                r'^РАЗДЕЛ\s+(\d+)\s*[\.\-]?\s*(.+)$',
+                r'^Раздел\s+(\d+)\s*[\.\-]?\s*(.+)$',
+                r'^ЧАСТЬ\s+(\d+)\s*[\.\-]?\s*(.+)$',
+                r'^Часть\s+(\d+)\s*[\.\-]?\s*(.+)$'
+            ]
+            
+            section_patterns = [
+                r'^(\d+\.\d+)\s+(.+)$',
+                r'^(\d+\.\d+\.\d+)\s+(.+)$',
+                r'^(\d+\.\d+\.\d+\.\d+)\s+(.+)$',
+                r'^(\d+)\s+(.+)$'
+            ]
+            
+            lines = page_text.split('\n')
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Проверяем паттерны глав
+                for pattern in chapter_patterns:
+                    match = re.match(pattern, line, re.IGNORECASE)
+                    if match:
+                        structure['chapters'].append({
+                            'number': match.group(1),
+                            'title': match.group(2).strip(),
+                            'line': line
+                        })
+                        break
+                
+                # Проверяем паттерны разделов
+                for pattern in section_patterns:
+                    match = re.match(pattern, line)
+                    if match:
+                        structure['sections'].append({
+                            'number': match.group(1),
+                            'title': match.group(2).strip(),
+                            'line': line
+                        })
+                        break
+                
+                # Проверяем на заголовки (строки в верхнем регистре)
+                if line.isupper() and len(line) > 5 and len(line) < 100:
+                    structure['headers'].append(line)
+            
+            return structure
+            
+        except Exception as e:
+            logger.error(f"❌ [EXTRACT_PAGE_STRUCTURE] Error extracting page structure: {e}")
+            return {'page': page_num, 'chapters': [], 'sections': [], 'headers': []}
+    
+    def _extract_document_structure(self, text: str) -> Dict[str, Any]:
+        """Извлечение общей структуры документа"""
+        try:
+            structure = {
+                'chapters': [],
+                'sections': [],
+                'headers': []
+            }
+            
+            # Паттерны для поиска заголовков
+            chapter_patterns = [
+                r'^ГЛАВА\s+(\d+)\s*[\.\-]?\s*(.+)$',
+                r'^Глава\s+(\d+)\s*[\.\-]?\s*(.+)$',
+                r'^РАЗДЕЛ\s+(\d+)\s*[\.\-]?\s*(.+)$',
+                r'^Раздел\s+(\d+)\s*[\.\-]?\s*(.+)$'
+            ]
+            
+            section_patterns = [
+                r'^(\d+\.\d+)\s+(.+)$',
+                r'^(\d+\.\d+\.\d+)\s+(.+)$',
+                r'^(\d+\.\d+\.\d+\.\d+)\s+(.+)$'
+            ]
+            
+            lines = text.split('\n')
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Проверяем паттерны глав
+                for pattern in chapter_patterns:
+                    match = re.match(pattern, line, re.IGNORECASE)
+                    if match:
+                        structure['chapters'].append({
+                            'number': match.group(1),
+                            'title': match.group(2).strip(),
+                            'line': line
+                        })
+                        break
+                
+                # Проверяем паттерны разделов
+                for pattern in section_patterns:
+                    match = re.match(pattern, line)
+                    if match:
+                        structure['sections'].append({
+                            'number': match.group(1),
+                            'title': match.group(2).strip(),
+                            'line': line
+                        })
+                        break
+            
+            return structure
+            
+        except Exception as e:
+            logger.error(f"❌ [EXTRACT_DOCUMENT_STRUCTURE] Error extracting document structure: {e}")
+            return {'chapters': [], 'sections': [], 'headers': []}
+    
+    def _identify_chunk_structure(self, chunk_text: str, structure: Dict[str, Any]) -> Dict[str, str]:
+        """Определение к какой главе/разделу относится чанк"""
+        try:
+            result = {'chapter': '', 'section': ''}
+            
+            if not structure or not chunk_text:
+                return result
+            
+            # Ищем ближайший заголовок раздела в чанке
+            section_patterns = [
+                r'(\d+\.\d+\.\d+\.\d+)\s+(.+)',
+                r'(\d+\.\d+\.\d+)\s+(.+)',
+                r'(\d+\.\d+)\s+(.+)',
+                r'(\d+)\s+(.+)'
+            ]
+            
+            for pattern in section_patterns:
+                match = re.search(pattern, chunk_text)
+                if match:
+                    section_number = match.group(1)
+                    section_title = match.group(2).strip()
+                    
+                    # Ищем соответствующую главу
+                    chapter_num = section_number.split('.')[0]
+                    for chapter in structure.get('chapters', []):
+                        if chapter['number'] == chapter_num:
+                            result['chapter'] = f"Глава {chapter_num}. {chapter['title']}"
+                            break
+                    
+                    result['section'] = f"{section_number}. {section_title}"
+                    break
+            
+            # Если не нашли раздел, ищем главу
+            if not result['section']:
+                chapter_patterns = [
+                    r'ГЛАВА\s+(\d+)\s*[\.\-]?\s*(.+)',
+                    r'Глава\s+(\d+)\s*[\.\-]?\s*(.+)',
+                    r'РАЗДЕЛ\s+(\d+)\s*[\.\-]?\s*(.+)',
+                    r'Раздел\s+(\d+)\s*[\.\-]?\s*(.+)'
+                ]
+                
+                for pattern in chapter_patterns:
+                    match = re.search(pattern, chunk_text, re.IGNORECASE)
+                    if match:
+                        chapter_num = match.group(1)
+                        chapter_title = match.group(2).strip()
+                        result['chapter'] = f"Глава {chapter_num}. {chapter_title}"
+                        break
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ [IDENTIFY_CHUNK_STRUCTURE] Error identifying chunk structure: {e}")
+            return {'chapter': '', 'section': ''}
+    
+    def _extract_document_metadata(self, filename: str, document_id: int, file_path: str = None) -> Dict[str, Any]:
+        """Извлечение метаданных документа из названия файла"""
+        try:
+            import hashlib
+            from datetime import datetime
+            
+            logger.info(f"🔍 [EXTRACT_DOCUMENT_METADATA] Called with: filename='{filename}', document_id={document_id}, file_path='{file_path}'")
+            
+            # Базовые метаданные
+            metadata = {
+                "doc_id": f"doc_{document_id}",
+                "doc_type": "OTHER",
+                "doc_number": "",
+                "doc_title": filename,
+                "edition_year": None,
+                "status": "unknown",
+                "replaced_by": None,
+                "section": None,
+                "paragraph": None,
+                "page": None,
+                "source_path": file_path or "",
+                "source_url": None,
+                "ingested_at": datetime.now().strftime("%Y-%m-%d"),
+                "lang": "ru",
+                "tags": [],
+                "checksum": ""
+            }
+            
+            # Извлекаем тип документа и номер
+            logger.info(f"🔍 [EXTRACT_DOCUMENT_METADATA] Parsing filename: '{filename}'")
+            doc_type, doc_number, edition_year = self._parse_document_name(filename)
+            logger.info(f"🔍 [EXTRACT_DOCUMENT_METADATA] Parsed: doc_type='{doc_type}', doc_number='{doc_number}', edition_year='{edition_year}'")
+            metadata["doc_type"] = doc_type
+            metadata["doc_number"] = doc_number
+            metadata["edition_year"] = edition_year
+            
+            # Генерируем уникальный doc_id
+            if doc_number and edition_year:
+                metadata["doc_id"] = f"{doc_type.lower()}_{doc_number}_{edition_year}"
+            
+            # Определяем статус документа
+            metadata["status"] = self._determine_document_status(filename, doc_type, doc_number)
+            
+            # Извлекаем теги на основе типа документа
+            metadata["tags"] = self._extract_document_tags(doc_type, doc_number, filename)
+            
+            # Вычисляем checksum если есть путь к файлу
+            if file_path:
+                metadata["checksum"] = self._calculate_file_checksum(file_path)
+            
+            return metadata
+            
+        except Exception as e:
+            logger.error(f"❌ [EXTRACT_DOCUMENT_METADATA] Error extracting metadata: {e}")
+            return {
+                "doc_id": f"doc_{document_id}",
+                "doc_type": "OTHER",
+                "doc_number": "",
+                "doc_title": filename,
+                "edition_year": None,
+                "status": "unknown",
+                "replaced_by": None,
+                "section": None,
+                "paragraph": None,
+                "page": None,
+                "source_path": file_path or "",
+                "source_url": None,
+                "ingested_at": datetime.now().strftime("%Y-%m-%d"),
+                "lang": "ru",
+                "tags": [],
+                "checksum": ""
+            }
+    
+    def _parse_document_name(self, filename: str) -> tuple[str, str, int]:
+        """Парсинг названия документа для извлечения типа, номера и года"""
+        try:
+            import re
+            
+            # Убираем расширение файла
+            name = filename.replace('.pdf', '').replace('.docx', '').replace('.doc', '')
+            
+            # Паттерны для различных типов документов
+            patterns = [
+                # ГОСТ
+                (r'ГОСТ\s+(\d+(?:\.\d+)*)-(\d{4})', 'GOST'),
+                (r'ГОСТ\s+(\d+(?:\.\d+)*)', 'GOST'),
+                
+                # СП (Свод правил)
+                (r'СП\s+(\d+(?:\.\d+)*)\.(\d{4})', 'SP'),
+                (r'СП\s+(\d+(?:\.\d+)*)', 'SP'),
+                
+                # СНиП
+                (r'СНиП\s+(\d+(?:\.\d+)*)-(\d{4})', 'SNiP'),
+                (r'СНиП\s+(\d+(?:\.\d+)*)\.(\d{4})', 'SNiP'),
+                (r'СНиП\s+(\d+(?:\.\d+)*)-(\d{2})(?:\.|$)', 'SNiP'),
+                (r'СНиП\s+(\d+(?:\.\d+)*)', 'SNiP'),
+                
+                # ФНП
+                (r'ФНП\s+(\d+(?:\.\d+)*)-(\d{4})', 'FNP'),
+                (r'ФНП\s+(\d+(?:\.\d+)*)', 'FNP'),
+                
+                # ПБ (Правила безопасности)
+                (r'ПБ\s+(\d+(?:\.\d+)*)-(\d{4})', 'CORP_STD'),
+                (r'ПБ\s+(\d+(?:\.\d+)*)', 'CORP_STD'),
+                
+                # А (Альбом)
+                (r'А(\d+(?:\.\d+)*)\.(\d{4})', 'CORP_STD'),
+                (r'А(\d+(?:\.\d+)*)', 'CORP_STD'),
+            ]
+            
+            for pattern, doc_type in patterns:
+                match = re.search(pattern, name, re.IGNORECASE)
+                if match:
+                    groups = match.groups()
+                    if len(groups) == 2:
+                        # Есть год
+                        doc_number = groups[0]
+                        year_str = groups[1]
+                        # Если год двухзначный, добавляем 19 или 20
+                        if len(year_str) == 2:
+                            year_int = int(year_str)
+                            if year_int >= 0 and year_int <= 30:  # 2000-2030
+                                edition_year = 2000 + year_int
+                            else:  # 1930-1999
+                                edition_year = 1900 + year_int
+                        else:
+                            edition_year = int(year_str)
+                        return doc_type, doc_number, edition_year
+                    else:
+                        # Нет года, пытаемся найти его отдельно
+                        doc_number = groups[0]
+                        year_match = re.search(r'(\d{4})', name)
+                        edition_year = int(year_match.group(1)) if year_match else None
+                        return doc_type, doc_number, edition_year
+            
+            # Если не нашли стандартный паттерн, пытаемся извлечь год
+            year_match = re.search(r'(\d{4})', name)
+            edition_year = int(year_match.group(1)) if year_match else None
+            
+            return "OTHER", "", edition_year
+            
+        except Exception as e:
+            logger.error(f"❌ [PARSE_DOCUMENT_NAME] Error parsing document name: {e}")
+            return "OTHER", "", None
+    
+    def _determine_document_status(self, filename: str, doc_type: str, doc_number: str) -> str:
+        """Определение статуса документа"""
+        try:
+            # Ключевые слова для определения статуса
+            if any(word in filename.lower() for word in ['отменен', 'отменен', 'недействителен', 'repealed']):
+                return "repealed"
+            elif any(word in filename.lower() for word in ['заменен', 'заменяет', 'replaced', 'изм']):
+                return "replaced"
+            elif any(word in filename.lower() for word in ['действующий', 'актуальный', 'active']):
+                return "active"
+            else:
+                return "unknown"
+                
+        except Exception as e:
+            logger.error(f"❌ [DETERMINE_DOCUMENT_STATUS] Error determining status: {e}")
+            return "unknown"
+    
+    def _extract_document_tags(self, doc_type: str, doc_number: str, filename: str) -> List[str]:
+        """Извлечение тегов на основе типа и содержания документа"""
+        try:
+            tags = []
+            
+            # Теги на основе типа документа
+            type_tags = {
+                "GOST": ["государственный стандарт", "гост"],
+                "SP": ["свод правил", "строительство"],
+                "SNiP": ["строительные нормы", "строительство"],
+                "FNP": ["федеральные нормы", "промышленность"],
+                "CORP_STD": ["корпоративный стандарт", "внутренний стандарт"]
+            }
+            
+            if doc_type in type_tags:
+                tags.extend(type_tags[doc_type])
+            
+            # Теги на основе содержания в названии
+            content_keywords = {
+                "электр": ["электроснабжение", "электротехника"],
+                "пожар": ["пожарная безопасность", "пожар"],
+                "строит": ["строительство", "конструкции"],
+                "безопасн": ["охрана труда", "безопасность"],
+                "проект": ["проектирование", "проектная документация"],
+                "конструкц": ["конструкции", "строительные конструкции"],
+                "стальн": ["стальные конструкции", "металлоконструкции"],
+                "документац": ["документооборот", "документация"]
+            }
+            
+            filename_lower = filename.lower()
+            for keyword, tag_list in content_keywords.items():
+                if keyword in filename_lower:
+                    tags.extend(tag_list)
+            
+            # Убираем дубликаты
+            return list(set(tags))
+            
+        except Exception as e:
+            logger.error(f"❌ [EXTRACT_DOCUMENT_TAGS] Error extracting tags: {e}")
+            return []
+    
+    def _calculate_file_checksum(self, file_path: str) -> str:
+        """Вычисление SHA256 checksum файла"""
+        try:
+            import hashlib
+            
+            hash_sha256 = hashlib.sha256()
+            with open(file_path, "rb") as f:
+                for chunk in iter(lambda: f.read(4096), b""):
+                    hash_sha256.update(chunk)
+            return hash_sha256.hexdigest()
+            
+        except Exception as e:
+            logger.error(f"❌ [CALCULATE_FILE_CHECKSUM] Error calculating checksum: {e}")
+            return ""
+    
+    def _get_document_metadata(self, document_id: int) -> Dict[str, Any]:
+        """Получение метаданных документа из базы данных"""
+        try:
+            with self.db_manager.get_cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, filename, original_filename, file_path, document_hash, document_type
+                    FROM uploaded_documents 
+                    WHERE id = %s
+                """, (document_id,))
+                
+                result = cursor.fetchone()
+                if result:
+                    logger.info(f"🔍 [GET_DOCUMENT_METADATA] Raw result: {result}")
+                    logger.info(f"🔍 [GET_DOCUMENT_METADATA] Result type: {type(result)}")
+                    logger.info(f"🔍 [GET_DOCUMENT_METADATA] Result length: {len(result) if result else 0}")
+                    
+                    # Проверяем, что result - это кортеж
+                    if isinstance(result, tuple) and len(result) >= 6:
+                        doc_id, filename, original_filename, file_path, document_hash, document_type = result
+                        logger.info(f"🔍 [GET_DOCUMENT_METADATA] Retrieved from DB: doc_id={doc_id}, filename={filename}, original_filename={original_filename}, file_path={file_path}")
+                        # Используем original_filename для извлечения метаданных
+                        return self._extract_document_metadata(original_filename, doc_id, file_path)
+                    else:
+                        logger.error(f"❌ [GET_DOCUMENT_METADATA] Invalid result format: {result}")
+                        return self._extract_document_metadata(f"error_doc_{document_id}", document_id)
+                else:
+                    logger.warning(f"⚠️ [GET_DOCUMENT_METADATA] Document {document_id} not found")
+                    return self._extract_document_metadata(f"unknown_doc_{document_id}", document_id)
+                    
+        except Exception as e:
+            logger.error(f"❌ [GET_DOCUMENT_METADATA] Error getting document metadata: {e}")
+            return self._extract_document_metadata(f"error_doc_{document_id}", document_id)
+    
+    def _create_chunk_metadata(self, chunk: Dict[str, Any], document_metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """Создание метаданных для чанка на основе метаданных документа"""
+        try:
+            # Копируем метаданные документа
+            chunk_metadata = document_metadata.copy()
+            
+            # Обновляем специфичные для чанка поля
+            chunk_metadata.update({
+                "section": chunk.get('section', ''),
+                "paragraph": self._extract_paragraph_from_chunk(chunk.get('content', '')),
+                "page": chunk.get('page', 1),
+                "chunk_id": chunk.get('chunk_id', ''),
+                "chunk_type": chunk.get('chunk_type', 'paragraph')
+            })
+            
+            return chunk_metadata
+            
+        except Exception as e:
+            logger.error(f"❌ [CREATE_CHUNK_METADATA] Error creating chunk metadata: {e}")
+            return document_metadata
+    
+    def _extract_paragraph_from_chunk(self, content: str) -> str:
+        """Извлечение номера параграфа из содержимого чанка"""
+        try:
+            import re
+            
+            # Паттерны для поиска номеров параграфов
+            paragraph_patterns = [
+                r'(\d+\.\d+\.\d+\.\d+)',  # 5.2.1.1
+                r'(\d+\.\d+\.\d+)',       # 5.2.1
+                r'(\d+\.\d+)',            # 5.2
+                r'п\.\s*(\d+\.\d+)',      # п.5.2
+                r'пункт\s*(\d+\.\d+)',    # пункт 5.2
+            ]
+            
+            for pattern in paragraph_patterns:
+                match = re.search(pattern, content)
+                if match:
+                    return match.group(1)
+            
+            return ""
+            
+        except Exception as e:
+            logger.error(f"❌ [EXTRACT_PARAGRAPH_FROM_CHUNK] Error extracting paragraph: {e}")
+            return ""

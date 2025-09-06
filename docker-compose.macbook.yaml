@@ -63,33 +63,7 @@ services:
       timeout: 10s
       retries: 3
 
-  # Ollama для LLM моделей (оптимизировано для MacBook Pro)
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - "${OLLAMA_PORT:-11434}:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    environment:
-      - OLLAMA_HOST=0.0.0.0
-      - OLLAMA_ORIGINS=*
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: ${OLLAMA_MEMORY_LIMIT:-12G}
-          cpus: '4.0'
-        reservations:
-          memory: ${OLLAMA_MEMORY_RESERVATION:-8G}
-          cpus: '2.0'
-    # Оптимизация для Apple Silicon
-    platform: linux/arm64
-    # healthcheck:
-    #   test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-    #   interval: 30s
-    #   timeout: 10s
-    #   retries: 3
+  # Ollama вынесена на хост - контейнер удален
 
   # vLLM адаптер для Ollama (оптимизировано) - УДАЛЕН
   # vllm:
@@ -389,8 +363,6 @@ volumes:
   redis_data:
     driver: local
   keycloak_db_data:
-    driver: local
-  ollama_data:
     driver: local
   prometheus_data:
     driver: local

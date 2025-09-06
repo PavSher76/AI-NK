@@ -440,7 +440,7 @@ def ntd_consultation_chat(message: str, user_id: str):
     logger.info("💬 [NTD_CONSULTATION] Chat request received")
     try:
         rag_service_instance = get_rag_service()
-        response = rag_service_instance.get_ntd_consultation(message, [])
+        response = rag_service_instance.get_ntd_consultation(message, user_id, [])
         
         logger.info(f"✅ [NTD_CONSULTATION] Response generated successfully")
         return response
@@ -449,6 +449,71 @@ def ntd_consultation_chat(message: str, user_id: str):
         raise
     except Exception as e:
         logger.error(f"❌ [NTD_CONSULTATION] Chat error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+def get_structured_context(message: str, k: int = 8, document_filter: str = None, 
+                          chapter_filter: str = None, chunk_type_filter: str = None,
+                          use_reranker: bool = True, fast_mode: bool = False, 
+                          use_mmr: bool = True, use_intent_classification: bool = True):
+    """Получение структурированного контекста для запроса"""
+    logger.info("🏗️ [STRUCTURED_CONTEXT] Structured context request received")
+    try:
+        rag_service_instance = get_rag_service()
+        
+        # Проверяем, что это OllamaRAGService
+        if hasattr(rag_service_instance, 'get_structured_context'):
+            response = rag_service_instance.get_structured_context(
+                query=message,
+                k=k,
+                document_filter=document_filter,
+                chapter_filter=chapter_filter,
+                chunk_type_filter=chunk_type_filter,
+                use_reranker=use_reranker,
+                fast_mode=fast_mode,
+                use_mmr=use_mmr,
+                use_intent_classification=use_intent_classification
+            )
+        else:
+            # Fallback для старого RAG сервиса
+            search_results = rag_service_instance.hybrid_search(message, k=k)
+            response = {
+                "query": message,
+                "timestamp": datetime.now().isoformat(),
+                "context": [
+                    {
+                        "doc": result.get('code', ''),
+                        "section": result.get('section', ''),
+                        "page": result.get('page', 1),
+                        "snippet": result.get('content', '')[:200] + '...' if len(result.get('content', '')) > 200 else result.get('content', ''),
+                        "why": "fallback",
+                        "score": result.get('score', 0.0),
+                        "document_title": result.get('document_title', ''),
+                        "section_title": result.get('section_title', ''),
+                        "chunk_type": result.get('chunk_type', ''),
+                        "metadata": result.get('metadata', {})
+                    }
+                    for result in search_results
+                ],
+                "meta_summary": {
+                    "query_type": "fallback",
+                    "documents_found": len(search_results),
+                    "sections_covered": len(set(result.get('section', '') for result in search_results)),
+                    "avg_relevance": sum(result.get('score', 0) for result in search_results) / len(search_results) if search_results else 0,
+                    "coverage_quality": "fallback",
+                    "key_documents": list(set(result.get('code', '') for result in search_results[:3] if result.get('code'))),
+                    "key_sections": list(set(result.get('section', '') for result in search_results[:3] if result.get('section')))
+                },
+                "total_candidates": len(search_results),
+                "avg_score": sum(result.get('score', 0) for result in search_results) / len(search_results) if search_results else 0
+            }
+        
+        logger.info(f"✅ [STRUCTURED_CONTEXT] Structured context generated successfully")
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ [STRUCTURED_CONTEXT] Context generation error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 def ntd_consultation_stats():

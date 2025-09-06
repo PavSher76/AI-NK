@@ -835,6 +835,53 @@ async def download_report(document_id: int):
         logger.error(f"Download report error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# Скачивание отчета в формате DOCX
+@app.get("/checkable-documents/{document_id}/download-report-docx")
+async def download_report_docx(document_id: int):
+    """Скачивание отчета о проверке в формате DOCX"""
+    try:
+        # Проверяем существование документа
+        document = get_checkable_document(document_id)
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        # Получаем отчет
+        report_response = await get_report(document_id)
+        
+        # Генерируем DOCX отчет
+        try:
+            from utils.docx_generator import DOCXReportGenerator
+            
+            docx_generator = DOCXReportGenerator()
+            docx_content = docx_generator.generate_report_docx(report_response)
+            
+            # Формируем имя файла
+            filename = f"report_{document_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+            
+            # Возвращаем DOCX файл
+            from fastapi.responses import Response
+            return Response(
+                content=docx_content,
+                media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                headers={
+                    "Content-Disposition": f"attachment; filename={filename}",
+                    "Content-Length": str(len(docx_content))
+                }
+            )
+            
+        except ImportError as e:
+            logger.error(f"DOCX generator import error: {e}")
+            raise HTTPException(status_code=500, detail="DOCX generation not available")
+        except Exception as e:
+            logger.error(f"DOCX generation error: {e}")
+            raise HTTPException(status_code=500, detail=f"DOCX generation failed: {str(e)}")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Download DOCX report error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     uvicorn.run(
         "app:app",

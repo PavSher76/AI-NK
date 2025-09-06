@@ -171,35 +171,80 @@ class QdrantService:
     
     def get_collection_info(self) -> Dict[str, Any]:
         """Получение информации о коллекции"""
+        # Используем HTTP API напрямую для избежания Pydantic ошибок
         try:
-            info = self.client.get_collection(self.collection_name)
-            return {
-                "name": info.name,
-                "vector_size": info.config.params.vectors.size,
-                "distance": info.config.params.vectors.distance,
-                "points_count": info.points_count
-            }
+            import requests
+            response = requests.get(f"{self.qdrant_url}/collections/{self.collection_name}")
+            if response.status_code == 200:
+                data = response.json()
+                result = data.get('result', {})
+                return {
+                    "name": self.collection_name,
+                    "vector_size": result.get('config', {}).get('params', {}).get('vectors', {}).get('size', 1024),
+                    "distance": result.get('config', {}).get('params', {}).get('vectors', {}).get('distance', 'Cosine'),
+                    "points_count": result.get('points_count', 0),
+                    "indexed_vectors_count": result.get('indexed_vectors_count', 0),
+                    "vectors_count": result.get('indexed_vectors_count', result.get('points_count', 0))
+                }
+            else:
+                logger.error(f"❌ [QDRANT] HTTP API error: {response.status_code}")
+                return {}
         except Exception as e:
-            logger.error(f"❌ [QDRANT] Error getting collection info: {e}")
+            logger.error(f"❌ [QDRANT] Error getting collection info via HTTP API: {e}")
+            # Fallback: попробуем через клиент (может работать частично)
+            try:
+                info = self.client.get_collection(self.collection_name)
+                return {
+                    "name": getattr(info, 'name', self.collection_name),
+                    "vector_size": getattr(info.config.params.vectors, 'size', 1024),
+                    "distance": getattr(info.config.params.vectors, 'distance', 'Cosine'),
+                    "points_count": getattr(info, 'points_count', 0),
+                    "indexed_vectors_count": getattr(info, 'indexed_vectors_count', getattr(info, 'points_count', 0)),
+                    "vectors_count": getattr(info, 'indexed_vectors_count', getattr(info, 'points_count', 0))
+                }
+            except Exception as fallback_error:
+                logger.error(f"❌ [QDRANT] Fallback client error: {fallback_error}")
             return {}
     
     def get_points_count(self) -> int:
         """Получение количества точек в коллекции"""
         try:
-            info = self.client.get_collection(self.collection_name)
-            return info.points_count
+            # Используем HTTP API для избежания Pydantic ошибок
+            import requests
+            response = requests.get(f"{self.qdrant_url}/collections/{self.collection_name}")
+            if response.status_code == 200:
+                data = response.json()
+                result = data.get('result', {})
+                return result.get('points_count', 0)
+            else:
+                logger.error(f"❌ [QDRANT] HTTP API error: {response.status_code}")
+                return 0
         except Exception as e:
             logger.error(f"❌ [QDRANT] Error getting points count: {e}")
-            return 0
+            # Fallback через клиент
+            try:
+                info = self.client.get_collection(self.collection_name)
+                return getattr(info, 'points_count', 0)
+            except Exception as fallback_error:
+                logger.error(f"❌ [QDRANT] Fallback client error: {fallback_error}")
+                return 0
     
     def health_check(self) -> bool:
         """Проверка здоровья Qdrant"""
         try:
-            collections = self.client.get_collections()
-            return True
+            # Используем HTTP API для проверки здоровья
+            import requests
+            response = requests.get(f"{self.qdrant_url}/collections")
+            return response.status_code == 200
         except Exception as e:
             logger.error(f"❌ [QDRANT] Health check failed: {e}")
-            return False
+            # Fallback через клиент
+            try:
+                collections = self.client.get_collections()
+                return True
+            except Exception as fallback_error:
+                logger.error(f"❌ [QDRANT] Fallback health check failed: {fallback_error}")
+                return False
     
     def create_point(self, point_id: int, vector: List[float], payload: Dict[str, Any]) -> PointStruct:
         """Создание точки для Qdrant"""

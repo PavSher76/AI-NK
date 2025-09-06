@@ -222,6 +222,54 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
     }
   };
 
+  const downloadReportDocx = async (documentId) => {
+    console.log('🔍 [DEBUG] CheckableDocuments.js: downloadReportDocx started for document:', documentId);
+    
+    // Проверка авторизации
+    if (!isAuthenticated || !authToken) {
+      console.log('🔍 [DEBUG] CheckableDocuments.js: downloadReportDocx - not authenticated');
+      setError('Требуется авторизация для скачивания отчета');
+      return;
+    }
+    
+    try {
+      const response = await fetch(`${API_BASE}/checkable-documents/${documentId}/download-report-docx`, {
+        headers: {
+          'Authorization': `Bearer ${authToken}`
+        }
+      });
+      
+      if (response.ok) {
+        // Получаем blob из ответа
+        const blob = await response.blob();
+        
+        // Создаем URL для blob
+        const url = window.URL.createObjectURL(blob);
+        
+        // Создаем временную ссылку и кликаем по ней
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `norm_control_report_${documentId}.docx`;
+        document.body.appendChild(link);
+        link.click();
+        
+        // Очищаем
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(url);
+        
+        console.log('🔍 [DEBUG] CheckableDocuments.js: DOCX report downloaded successfully');
+      } else {
+        console.error('🔍 [DEBUG] CheckableDocuments.js: downloadReportDocx failed with status:', response.status);
+        const errorData = await response.json();
+        console.error('🔍 [DEBUG] CheckableDocuments.js: downloadReportDocx error data:', errorData);
+        setError('Ошибка скачивания DOCX отчета');
+      }
+    } catch (error) {
+      console.error('🔍 [DEBUG] CheckableDocuments.js: downloadReportDocx error:', error);
+      setError('Ошибка скачивания DOCX отчета');
+    }
+  };
+
   // Обработка выбора файла
   const handleFileSelect = (e) => {
     const file = e.target.files[0];
@@ -957,6 +1005,19 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
                       disabled={doc.processing_status !== 'completed'}
                     >
                       <Download className="w-4 h-4" />
+                    </button>
+                    
+                    <button
+                      onClick={() => downloadReportDocx(doc.id)}
+                      className={`p-2 transition-colors ${
+                        doc.processing_status === 'completed' 
+                          ? 'text-gray-400 hover:text-green-600' 
+                          : 'text-gray-300 cursor-not-allowed'
+                      }`}
+                      title={doc.processing_status === 'completed' ? 'Скачать отчет DOCX' : 'Отчет недоступен'}
+                      disabled={doc.processing_status !== 'completed'}
+                    >
+                      <FileText className="w-4 h-4" />
                     </button>
                     
                     <button

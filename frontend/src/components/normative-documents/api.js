@@ -26,7 +26,7 @@ export const fetchDocuments = async (authToken) => {
 export const fetchStats = async (authToken) => {
   try {
     // Получаем статистику напрямую от RAG сервиса
-    const response = await fetch('http://localhost:8003/documents/stats');
+    const response = await fetch('/rag/documents/stats');
     
     if (response.ok) {
       const data = await response.json();
