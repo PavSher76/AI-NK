@@ -189,6 +189,8 @@ class DatabaseManager:
                 import re
                 original_filename = document_result['original_filename'] if document_result else f"Document_{document_id}"
                 document_title = re.sub(r'\.(pdf|txt|doc|docx)$', '', original_filename, flags=re.IGNORECASE)
+                # log document_title
+                logger.info(f"🔍 [GET_DOCUMENT_CHUNKS] Document title: {document_title}")
                 
                 # Получаем чанки документа
                 cursor.execute("""
