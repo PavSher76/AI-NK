@@ -278,8 +278,75 @@ class OllamaRAGServiceMethods:
             logger.info(f"🔍 [NTD_CONSULTATION] Hybrid search service instance: {id(self.rag_service.hybrid_search_service)}")
             logger.info(f"🔍 [NTD_CONSULTATION] Qdrant service instance: {id(self.rag_service.hybrid_search_service.qdrant_service)}")
             
-            # Получаем структурированный контекст
-            structured_context = self.rag_service.get_structured_context(search_query, k=10)
+            # Получаем структурированный контекст через прямой вызов hybrid search
+            try:
+                # Используем прямой вызов hybrid search для обхода проблем с instance
+                from services.ollama_rag_service_refactored import get_global_qdrant_service, get_global_db_manager, get_global_embedding_service
+                from services.hybrid_search_service import HybridSearchService
+                
+                # Создаем новый instance hybrid search с глобальными сервисами
+                global_qdrant = get_global_qdrant_service()
+                global_db = get_global_db_manager()
+                global_embedding = get_global_embedding_service()
+                
+                direct_hybrid_search = HybridSearchService(
+                    db_connection=global_db.get_connection(),
+                    embedding_service=global_embedding,
+                    qdrant_service=global_qdrant,
+                    alpha=0.6,
+                    use_rrf=True,
+                    rrf_k=60
+                )
+                
+                logger.info(f"🔍 [NTD_CONSULTATION] Using direct hybrid search with global services")
+                search_results = direct_hybrid_search.search(search_query, k=10)
+                
+                # Формируем структурированный контекст
+                if search_results:
+                    structured_context = {
+                        "query": search_query,
+                        "timestamp": datetime.now().isoformat(),
+                        "context": [
+                            {
+                                "id": getattr(result, 'id', None),
+                                "score": getattr(result, 'score', 0.0),
+                                "document_id": getattr(result, 'document_id', None),
+                                "chunk_id": getattr(result, 'chunk_id', None),
+                                "content": getattr(result, 'content', ''),
+                                "metadata": getattr(result, 'metadata', {}),
+                                "document_title": getattr(result, 'document_title', ''),
+                                "chapter": getattr(result, 'chapter', None),
+                                "section": getattr(result, 'section', None),
+                                "page": getattr(result, 'page', None),
+                                "doc": getattr(result, 'document_id', None),  # Добавляем поле 'doc' для совместимости
+                                "snippet": getattr(result, 'content', '')  # Добавляем поле 'snippet' для совместимости
+                            }
+                            for result in search_results
+                        ],
+                        "meta_summary": {
+                            "total_results": len(search_results),
+                            "avg_score": sum(r.score for r in search_results) / len(search_results) if search_results else 0.0,
+                            "search_method": "direct_hybrid_search"
+                        }
+                    }
+                    logger.info(f"✅ [NTD_CONSULTATION] Direct hybrid search found {len(search_results)} results")
+                else:
+                    structured_context = {
+                        "query": search_query,
+                        "timestamp": datetime.now().isoformat(),
+                        "context": [],
+                        "meta_summary": {
+                            "total_results": 0,
+                            "avg_score": 0.0,
+                            "search_method": "direct_hybrid_search"
+                        }
+                    }
+                    logger.info(f"⚠️ [NTD_CONSULTATION] Direct hybrid search found 0 results")
+                    
+            except Exception as e:
+                logger.error(f"❌ [NTD_CONSULTATION] Error in direct hybrid search: {e}")
+                # Fallback к обычному методу
+                structured_context = self.rag_service.get_structured_context(search_query, k=10)
             
             if not structured_context.get('context'):
                 return {
