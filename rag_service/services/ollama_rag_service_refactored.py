@@ -21,20 +21,60 @@ from .context_builder_service import ContextBuilderService
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Глобальные instance сервисов для singleton pattern
+_global_qdrant_service = None
+_global_db_manager = None
+_global_embedding_service = None
+
+def get_global_qdrant_service():
+    """Получение глобального instance Qdrant сервиса"""
+    global _global_qdrant_service
+    if _global_qdrant_service is None:
+        _global_qdrant_service = QdrantService("http://qdrant:6333", "normative_documents", 1024)
+        logger.info(f"🌐 [GLOBAL_QDRANT] Created global Qdrant service: {id(_global_qdrant_service)}")
+    return _global_qdrant_service
+
+def get_global_db_manager():
+    """Получение глобального instance DatabaseManager"""
+    global _global_db_manager
+    if _global_db_manager is None:
+        _global_db_manager = DatabaseManager("postgresql://norms_user:norms_password@norms-db:5432/norms_db")
+        logger.info(f"🌐 [GLOBAL_DB] Created global DatabaseManager: {id(_global_db_manager)}")
+    return _global_db_manager
+
+def get_global_embedding_service():
+    """Получение глобального instance EmbeddingService"""
+    global _global_embedding_service
+    if _global_embedding_service is None:
+        _global_embedding_service = OllamaEmbeddingService()
+        logger.info(f"🌐 [GLOBAL_EMBEDDING] Created global EmbeddingService: {id(_global_embedding_service)}")
+    return _global_embedding_service
+
 class OllamaRAGService:
     """RAG сервис с использованием Ollama BGE-M3 для эмбеддингов"""
     
     def __init__(self):
+        logger.info(f"🚀 [OLLAMA_RAG_SERVICE] Initializing OllamaRAGService (instance: {id(self)})")
+        
         # Конфигурация
         self.QDRANT_URL = "http://qdrant:6333"  # Qdrant в Docker
         self.POSTGRES_URL = "postgresql://norms_user:norms_password@norms-db:5432/norms_db"  # БД в Docker
         self.VECTOR_COLLECTION = "normative_documents"
         self.VECTOR_SIZE = 1024  # Размер эмбеддинга BGE-M3
         
-        # Инициализация модулей
-        self.qdrant_service = QdrantService(self.QDRANT_URL, self.VECTOR_COLLECTION, self.VECTOR_SIZE)
-        self.db_manager = DatabaseManager(self.POSTGRES_URL)
-        self.embedding_service = OllamaEmbeddingService()
+        # Инициализация модулей с использованием глобальных instance
+        logger.info(f"🔧 [OLLAMA_RAG_SERVICE] Using global QdrantService...")
+        self.qdrant_service = get_global_qdrant_service()
+        logger.info(f"✅ [OLLAMA_RAG_SERVICE] QdrantService instance: {id(self.qdrant_service)}")
+        
+        logger.info(f"🔧 [OLLAMA_RAG_SERVICE] Using global DatabaseManager...")
+        self.db_manager = get_global_db_manager()
+        logger.info(f"✅ [OLLAMA_RAG_SERVICE] DatabaseManager instance: {id(self.db_manager)}")
+        
+        logger.info(f"🔧 [OLLAMA_RAG_SERVICE] Using global EmbeddingService...")
+        self.embedding_service = get_global_embedding_service()
+        logger.info(f"✅ [OLLAMA_RAG_SERVICE] EmbeddingService instance: {id(self.embedding_service)}")
+        
         self.document_parser = DocumentParser()
         self.metadata_extractor = MetadataExtractor()
         self.document_chunker = DocumentChunker()
