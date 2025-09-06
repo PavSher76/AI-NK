@@ -269,8 +269,17 @@ class OllamaRAGServiceMethods:
             document_code = self.rag_service.document_parser.extract_document_code_from_query(message)
             logger.info(f"🔍 [NTD_CONSULTATION] Extracted document code: {document_code}")
             
+            # Используем извлеченный код документа для поиска, если он найден
+            search_query = document_code if document_code else message
+            logger.info(f"🔍 [NTD_CONSULTATION] Using search query: {search_query}")
+            
+            # Отладочная информация о сервисах
+            logger.info(f"🔍 [NTD_CONSULTATION] RAG service instance: {id(self.rag_service)}")
+            logger.info(f"🔍 [NTD_CONSULTATION] Hybrid search service instance: {id(self.rag_service.hybrid_search_service)}")
+            logger.info(f"🔍 [NTD_CONSULTATION] Qdrant service instance: {id(self.rag_service.hybrid_search_service.qdrant_service)}")
+            
             # Получаем структурированный контекст
-            structured_context = self.rag_service.get_structured_context(message, k=10)
+            structured_context = self.rag_service.get_structured_context(search_query, k=10)
             
             if not structured_context.get('context'):
                 return {

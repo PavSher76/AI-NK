@@ -22,7 +22,8 @@ class DatabaseManager:
         """Получение курсора для работы с базой данных"""
         import psycopg2
         from psycopg2.extras import RealDictCursor
-        connection = psycopg2.connect(self.connection_string)
+        # Используем то же соединение, что и get_connection()
+        connection = self.get_connection()
         return connection.cursor(cursor_factory=RealDictCursor)
     
     def save_document_to_db(self, document_id: int, filename: str, original_filename: str, 

@@ -101,7 +101,11 @@ def get_ollama_rag_service():
     """Ленивая инициализация Ollama RAG сервиса"""
     global ollama_rag_service
     if ollama_rag_service is None:
+        logger.info(f"🔄 [RAG_SERVICE] Creating new OllamaRAGService instance")
         ollama_rag_service = OllamaRAGService()
+        logger.info(f"✅ [RAG_SERVICE] OllamaRAGService instance created: {id(ollama_rag_service)}")
+    else:
+        logger.info(f"♻️ [RAG_SERVICE] Reusing existing OllamaRAGService instance: {id(ollama_rag_service)}")
     return ollama_rag_service
 
 # ============================================================================

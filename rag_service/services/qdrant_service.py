@@ -20,7 +20,8 @@ class QdrantService:
         
         # Инициализация клиента
         self.client = qdrant_client.QdrantClient(qdrant_url)
-        logger.info(f"🔍 [QDRANT] Initialized with {qdrant_url}, collection: {collection_name}")
+        logger.info(f"🔍 [QDRANT] Initialized with {qdrant_url}, collection: {collection_name} (instance: {id(self)})")
+        logger.info(f"🔍 [QDRANT] Client instance: {id(self.client)}")
         
         # Создаем коллекцию, если она не существует
         self._ensure_collection_exists()
@@ -92,6 +93,9 @@ class QdrantService:
                       filters: Optional[Dict] = None) -> List[Dict[str, Any]]:
         """Поиск похожих векторов"""
         try:
+            logger.info(f"🔍 [QDRANT] Searching for {limit} similar vectors (instance: {id(self)})")
+            logger.info(f"🔍 [QDRANT] URL: {self.qdrant_url}, Collection: {self.collection_name}")
+            
             search_result = self.client.search(
                 collection_name=self.collection_name,
                 query_vector=query_vector,
@@ -110,11 +114,11 @@ class QdrantService:
                 }
                 results.append(result)
             
-            logger.info(f"✅ [QDRANT] Found {len(results)} similar vectors")
+            logger.info(f"✅ [QDRANT] Found {len(results)} similar vectors (instance: {id(self)})")
             return results
             
         except Exception as e:
-            logger.error(f"❌ [QDRANT] Error searching similar vectors: {e}")
+            logger.error(f"❌ [QDRANT] Error searching similar vectors: {e} (instance: {id(self)})")
             return []
     
     def delete_points_by_document(self, document_id: int) -> bool:
