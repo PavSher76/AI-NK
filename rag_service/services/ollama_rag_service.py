@@ -1065,7 +1065,10 @@ class OllamaRAGService:
                     WHERE id = %s
                 """, (document_id,))
                 document_result = cursor.fetchone()
-                document_title = document_result['original_filename'] if document_result else f"Document_{document_id}"
+                # Убираем расширение файла из названия
+                import re
+                original_filename = document_result['original_filename'] if document_result else f"Document_{document_id}"
+                document_title = re.sub(r'\.(pdf|txt|doc|docx)$', '', original_filename, flags=re.IGNORECASE)
                 
                 # Получаем чанки документа
                 cursor.execute("""
