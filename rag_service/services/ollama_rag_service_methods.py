@@ -314,7 +314,7 @@ class OllamaRAGServiceMethods:
                                 "chunk_id": getattr(result, 'chunk_id', None),
                                 "content": getattr(result, 'content', ''),
                                 "metadata": getattr(result, 'metadata', {}),
-                                "document_title": getattr(result, 'document_title', ''),
+                                "document_title": self._clean_document_title(getattr(result, 'document_title', '')),
                                 "chapter": getattr(result, 'chapter', None),
                                 "section": getattr(result, 'section', None),
                                 "page": getattr(result, 'page', None),
@@ -429,9 +429,10 @@ class OllamaRAGServiceMethods:
             # Формируем источники с правильной информацией
             sources = []
             for result in search_results[:3]:  # Топ-3 результата
+                clean_title = self._clean_document_title(result['document_title'])
                 source = {
-                    'title': result['document_title'],
-                    'filename': result['document_title'],
+                    'title': clean_title,
+                    'filename': clean_title,
                     'page': result.get('page', 'Не указана'),
                     'section': result.get('section', 'Не указан'),
                     'document_code': result.get('code', ''),
@@ -463,6 +464,16 @@ class OllamaRAGServiceMethods:
                 "documents_used": 0,
                 "timestamp": datetime.now().isoformat()
             }
+    
+    def _clean_document_title(self, title: str) -> str:
+        """Очистка названия документа от расширений файлов"""
+        if not title:
+            return title
+        
+        import re
+        # Убираем расширения файлов (.pdf, .txt, .doc, .docx)
+        cleaned_title = re.sub(r'\.(pdf|txt|doc|docx)$', '', title, flags=re.IGNORECASE)
+        return cleaned_title
     
     def _format_consultation_response_with_context(self, message: str, structured_context: Dict[str, Any], top_result: Dict) -> str:
         """Форматирование ответа консультации с использованием структурированного контекста"""
