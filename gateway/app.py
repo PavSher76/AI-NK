@@ -408,16 +408,16 @@ async def proxy_api(request: Request, path: str):
         print(f"🔍 [DEBUG] Gateway: Proxying request to {service_url}/{path}")
         return await proxy_request(request, service_url, f"/{path}")
     elif path.startswith("chat/health"):
-        service_url = SERVICES["ollama"]
-        print(f"🔍 [DEBUG] Gateway: Routing chat/health to ollama service: {service_url}")
+        service_url = SERVICES["vllm"]
+        print(f"🔍 [DEBUG] Gateway: Routing chat/health to vllm service: {service_url}")
         return await proxy_request(request, service_url, "/health")
     elif path.startswith("chat/tags"):
-        service_url = SERVICES["ollama"]
-        print(f"🔍 [DEBUG] Gateway: Routing chat/tags to ollama service: {service_url}")
+        service_url = SERVICES["vllm"]
+        print(f"🔍 [DEBUG] Gateway: Routing chat/tags to vllm service: {service_url}")
         return await proxy_request(request, service_url, "/models")
     elif path.startswith("chat") or path.startswith("generate"):
-        service_url = SERVICES["ollama"]
-        print(f"🔍 [DEBUG] Gateway: Routing to ollama service: {service_url} with path: {path}")
+        service_url = SERVICES["vllm"]
+        print(f"🔍 [DEBUG] Gateway: Routing to vllm service: {service_url} with path: {path}")
         # Для чата передаем путь без префикса api/
         clean_path = path.replace("api/", "") if path.startswith("api/") else path
         return await proxy_request(request, service_url, f"/{clean_path}")
@@ -502,16 +502,16 @@ async def proxy_main(request: Request, path: str):
         print(f"🔍 [DEBUG] Gateway: Routing to calculation-service: {service_url}")
         return await proxy_request(request, service_url, f"/{path}")
     elif path.startswith("chat/health"):
-        service_url = SERVICES["ollama"]
-        print(f"🔍 [DEBUG] Gateway: Routing chat/health to ollama service: {service_url}")
+        service_url = SERVICES["vllm"]
+        print(f"🔍 [DEBUG] Gateway: Routing chat/health to vllm service: {service_url}")
         return await proxy_request(request, service_url, "/health")
     elif path.startswith("chat/tags"):
-        service_url = SERVICES["ollama"]
-        print(f"🔍 [DEBUG] Gateway: Routing chat/tags to ollama service: {service_url}")
+        service_url = SERVICES["vllm"]
+        print(f"🔍 [DEBUG] Gateway: Routing chat/tags to vllm service: {service_url}")
         return await proxy_request(request, service_url, "/models")
     elif path.startswith("chat") or path.startswith("generate"):
-        service_url = SERVICES["ollama"]
-        print(f"🔍 [DEBUG] Gateway: Routing to ollama service: {service_url} with path: {path}")
+        service_url = SERVICES["vllm"]
+        print(f"🔍 [DEBUG] Gateway: Routing to vllm service: {service_url} with path: {path}")
         # Для чата передаем путь без префикса api/
         clean_path = path.replace("api/", "") if path.startswith("api/") else path
         return await proxy_request(request, service_url, f"/{clean_path}")

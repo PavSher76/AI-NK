@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
+from fastapi.responses import PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
@@ -24,8 +25,9 @@ model_logger = logging.getLogger("model")
 # Получаем URL Ollama из переменной окружения
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
 
-# Импорт Ollama RAG сервиса
-from services.ollama_rag_service import OllamaRAGService
+# Импорт Ollama RAG сервиса (новая модульная архитектура)
+from services.ollama_rag_service_refactored import OllamaRAGService
+from services.reranker_service import BGERerankerService
 
 # Модели Pydantic
 class NTDConsultationRequest(BaseModel):
@@ -50,9 +52,11 @@ class SearchRequest(BaseModel):
 # Модели Pydantic для чата
 class ChatRequest(BaseModel):
     message: str
-    model: str = "gpt-oss:latest"
+    model: str = "llama3.1:8b"
     history: Optional[List[Dict[str, str]]] = None
     max_tokens: Optional[int] = None
+    turbo_mode: bool = False  # Турбо режим рассуждения
+    reasoning_depth: str = "balanced"  # Глубина рассуждения: "fast", "balanced", "deep"
 
 class ChatResponse(BaseModel):
     status: str
@@ -61,6 +65,9 @@ class ChatResponse(BaseModel):
     timestamp: str
     tokens_used: Optional[int] = None
     generation_time_ms: Optional[float] = None
+    turbo_mode: bool = False
+    reasoning_depth: str = "balanced"
+    reasoning_steps: Optional[int] = None  # Количество шагов рассуждения
 
 class EmbeddingRequest(BaseModel):
     text: str
@@ -505,6 +512,80 @@ async def ntd_consultation_chat_endpoint(request: NTDConsultationRequest):
         logger.error(f"❌ [NTD_CONSULTATION] Error in chat endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/structured-context")
+async def get_structured_context_endpoint(request: dict):
+    """Получение структурированного контекста для запроса"""
+    try:
+        logger.info("🏗️ [STRUCTURED_CONTEXT] Structured context request received")
+        rag_service = get_ollama_rag_service()
+        
+        # Извлекаем параметры из запроса
+        message = request.get("message", "")
+        k = request.get("k", 8)
+        document_filter = request.get("document_filter")
+        chapter_filter = request.get("chapter_filter")
+        chunk_type_filter = request.get("chunk_type_filter")
+        use_reranker = request.get("use_reranker", True)
+        fast_mode = request.get("fast_mode", False)
+        use_mmr = request.get("use_mmr", True)
+        use_intent_classification = request.get("use_intent_classification", True)
+        
+        # Проверяем, что это OllamaRAGService
+        if hasattr(rag_service, 'get_structured_context'):
+            response = rag_service.get_structured_context(
+                query=message,
+                k=k,
+                document_filter=document_filter,
+                chapter_filter=chapter_filter,
+                chunk_type_filter=chunk_type_filter,
+                use_reranker=use_reranker,
+                fast_mode=fast_mode,
+                use_mmr=use_mmr,
+                use_intent_classification=use_intent_classification
+            )
+        else:
+            # Fallback для старого RAG сервиса
+            search_results = rag_service.hybrid_search(message, k=k)
+            response = {
+                "query": message,
+                "timestamp": datetime.now().isoformat(),
+                "context": [
+                    {
+                        "doc": result.get('code', ''),
+                        "section": result.get('section', ''),
+                        "page": result.get('page', 1),
+                        "snippet": result.get('content', '')[:200] + '...' if len(result.get('content', '')) > 200 else result.get('content', ''),
+                        "why": "fallback",
+                        "score": result.get('score', 0.0),
+                        "document_title": result.get('document_title', ''),
+                        "section_title": result.get('section_title', ''),
+                        "chunk_type": result.get('chunk_type', ''),
+                        "metadata": result.get('metadata', {})
+                    }
+                    for result in search_results
+                ],
+                "meta_summary": {
+                    "query_type": "fallback",
+                    "documents_found": len(search_results),
+                    "sections_covered": len(set(result.get('section', '') for result in search_results)),
+                    "avg_relevance": sum(result.get('score', 0) for result in search_results) / len(search_results) if search_results else 0,
+                    "coverage_quality": "fallback",
+                    "key_documents": list(set(result.get('code', '') for result in search_results[:3] if result.get('code'))),
+                    "key_sections": list(set(result.get('section', '') for result in search_results[:3] if result.get('section')))
+                },
+                "total_candidates": len(search_results),
+                "avg_score": sum(result.get('score', 0) for result in search_results) / len(search_results) if search_results else 0
+            }
+        
+        logger.info(f"✅ [STRUCTURED_CONTEXT] Structured context generated successfully")
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ [STRUCTURED_CONTEXT] Context generation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/ntd-consultation/stats")
 async def ntd_consultation_stats_endpoint():
     """Получение статистики консультаций НТД"""
@@ -545,52 +626,36 @@ async def get_consultation_cache_stats_endpoint():
 
 @app.post("/chat")
 async def chat_endpoint(request: ChatRequest):
-    """Чат с ИИ через Ollama"""
+    """Чат с ИИ через Ollama с поддержкой турбо режима рассуждения"""
     try:
-        logger.info(f"💬 [CHAT] Processing chat request with model: {request.model}")
+        logger.info(f"💬 [CHAT] Processing chat request with model: {request.model}, turbo_mode: {request.turbo_mode}, reasoning_depth: {request.reasoning_depth}")
         
-        # Создаем временный сервис для чата
-        import requests
-        import time
+        # Импортируем сервис турбо рассуждения
+        from services.turbo_reasoning_service import TurboReasoningService
         
-        start_time = time.time()
+        # Создаем сервис турбо рассуждения
+        turbo_service = TurboReasoningService()
         
-        # Формируем запрос к Ollama
-        payload = {
-            "model": request.model,
-            "prompt": request.message,
-            "stream": False,
-            "options": {
-                "temperature": 0.7,
-                "top_p": 0.9,
-                "max_tokens": request.max_tokens or 2048
-            }
-        }
+        # Генерируем ответ с выбранным режимом
+        result = turbo_service.generate_response(
+            message=request.message,
+            history=request.history,
+            turbo_mode=request.turbo_mode,
+            reasoning_depth=request.reasoning_depth,
+            max_tokens=request.max_tokens
+        )
         
-        if request.history:
-            # Добавляем историю в промпт
-            context = "\n".join([f"User: {msg.get('user', '')}\nAssistant: {msg.get('assistant', '')}" for msg in request.history])
-            payload["prompt"] = f"{context}\nUser: {request.message}\nAssistant:"
-        
-        response = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=120)
-        
-        if response.status_code == 200:
-            result = response.json()
-            response_text = result.get("response", "")
-            
-            generation_time = (time.time() - start_time) * 1000
-            
-            return ChatResponse(
-                status="success",
-                response=response_text,
-                model=request.model,
-                timestamp=datetime.now().isoformat(),
-                tokens_used=result.get("eval_count", 0),
-                generation_time_ms=generation_time
-            )
-        else:
-            logger.error(f"❌ [CHAT] Ollama API error: {response.status_code} - {response.text}")
-            raise HTTPException(status_code=500, detail=f"Ollama API error: {response.status_code}")
+        return ChatResponse(
+            status="success",
+            response=result["response"],
+            model=result["model"],
+            timestamp=datetime.now().isoformat(),
+            tokens_used=result["tokens_used"],
+            generation_time_ms=result["generation_time_ms"],
+            turbo_mode=result["turbo_mode"],
+            reasoning_depth=result["reasoning_depth"],
+            reasoning_steps=result["reasoning_steps"]
+        )
             
     except Exception as e:
         logger.error(f"❌ [CHAT] Error in chat endpoint: {e}")
@@ -638,6 +703,61 @@ async def models_endpoint():
     except Exception as e:
         logger.error(f"❌ [MODELS] Error getting models: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/reasoning-modes")
+async def reasoning_modes_endpoint():
+    """Получение информации о доступных режимах рассуждения"""
+    try:
+        logger.info("🧠 [REASONING_MODES] Getting available reasoning modes")
+        
+        from services.turbo_reasoning_service import TurboReasoningService
+        
+        # Создаем сервис для получения информации о режимах
+        turbo_service = TurboReasoningService()
+        
+        # Получаем режимы рассуждения
+        reasoning_modes = turbo_service.get_reasoning_modes()
+        
+        # Проверяем здоровье сервиса
+        service_health = turbo_service.health_check()
+        
+        return {
+            "status": "success",
+            "reasoning_modes": reasoning_modes,
+            "service_health": "healthy" if service_health else "unhealthy",
+            "total_modes": len(reasoning_modes),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [REASONING_MODES] Error getting reasoning modes: {e}")
+        return {
+            "status": "error",
+            "error": str(e),
+            "service_health": "unhealthy",
+            "timestamp": datetime.now().isoformat()
+        }
+
+@app.get("/hybrid_search_stats")
+async def hybrid_search_stats_endpoint():
+    """Получение статистики гибридного поиска"""
+    try:
+        logger.info("📊 [HYBRID_STATS] Getting hybrid search statistics")
+        
+        rag_service_instance = get_rag_service()
+        stats = rag_service_instance.get_hybrid_search_stats()
+        
+        logger.info("✅ [HYBRID_STATS] Statistics retrieved successfully")
+        return stats
+        
+    except Exception as e:
+        logger.error(f"❌ [HYBRID_STATS] Error getting hybrid search stats: {e}")
+        return {
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
 
 @app.get("/chat_documents_stats")
 async def chat_documents_stats_endpoint():
@@ -849,6 +969,173 @@ async def test_chunking_endpoint():
         logger.error(f"❌ [TEST_CHUNKING] Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post("/test-reranker")
+async def test_reranker_endpoint():
+    """Тестовый эндпоинт для проверки реранкинга"""
+    try:
+        logger.info("🔄 [TEST_RERANKER] Testing reranker functionality...")
+        
+        # Получаем RAG сервис
+        rag_service = get_ollama_rag_service()
+        
+        # Тестовый запрос
+        test_query = "Требования к проектированию оснований зданий"
+        
+        logger.info(f"🔍 [TEST_RERANKER] Test query: '{test_query}'")
+        
+        # Выполняем поиск с реранкингом
+        try:
+            results_with_reranker = rag_service.hybrid_search(
+                query=test_query,
+                k=8,
+                use_reranker=True,
+                fast_mode=False  # Отключаем быстрый режим для тестирования
+            )
+            
+            logger.info(f"✅ [TEST_RERANKER] Search with reranker completed, found {len(results_with_reranker)} results")
+            
+            # Анализируем результаты
+            reranked_analysis = []
+            for i, result in enumerate(results_with_reranker):
+                result_info = {
+                    'rank': i + 1,
+                    'document_title': result.get('document_title', 'Unknown'),
+                    'rerank_score': result.get('rerank_score', 'N/A'),
+                    'vector_score': result.get('score', 'N/A'),
+                    'content_preview': result.get('content', '')[:100] + '...' if result.get('content') else 'No content'
+                }
+                reranked_analysis.append(result_info)
+            
+            return {
+                "status": "success",
+                "message": "Reranker test completed",
+                "query": test_query,
+                "total_results": len(results_with_reranker),
+                "results": reranked_analysis,
+                "reranker_enabled": True,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ [TEST_RERANKER] Error during search with reranker: {e}")
+            return {
+                "status": "error",
+                "message": f"Error during search: {str(e)}",
+                "query": test_query,
+                "reranker_enabled": False,
+                "timestamp": datetime.now().isoformat()
+            }
+        
+    except Exception as e:
+        logger.error(f"❌ [TEST_RERANKER] Error in reranker test: {e}")
+        import traceback
+        logger.error(f"❌ [TEST_RERANKER] Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/test-turbo-reasoning")
+async def test_turbo_reasoning_endpoint():
+    """Тестовый эндпоинт для проверки турбо режима рассуждения"""
+    try:
+        logger.info("🚀 [TEST_TURBO_REASONING] Testing turbo reasoning functionality...")
+        
+        # Получаем сервис турбо рассуждения
+        from services.turbo_reasoning_service import TurboReasoningService
+        
+        turbo_service = TurboReasoningService()
+        
+        # Тестовое сообщение
+        test_message = "Объясни, как работает искусственный интеллект в простых терминах"
+        
+        # Тестируем разные режимы
+        test_results = {}
+        
+        # 1. Турбо режим
+        try:
+            logger.info("🧪 [TEST_TURBO_REASONING] Testing turbo mode...")
+            turbo_result = turbo_service.generate_response(
+                message=test_message,
+                turbo_mode=True
+            )
+            test_results["turbo"] = {
+                "response_preview": turbo_result["response"][:200] + "..." if len(turbo_result["response"]) > 200 else turbo_result["response"],
+                "generation_time_ms": turbo_result["generation_time_ms"],
+                "tokens_used": turbo_result["tokens_used"],
+                "reasoning_steps": turbo_result["reasoning_steps"]
+            }
+        except Exception as e:
+            logger.error(f"❌ [TEST_TURBO_REASONING] Turbo mode error: {e}")
+            test_results["turbo"] = {"error": str(e)}
+        
+        # 2. Быстрый режим
+        try:
+            logger.info("🧪 [TEST_TURBO_REASONING] Testing fast mode...")
+            fast_result = turbo_service.generate_response(
+                message=test_message,
+                reasoning_depth="fast"
+            )
+            test_results["fast"] = {
+                "response_preview": fast_result["response"][:200] + "..." if len(fast_result["response"]) > 200 else fast_result["response"],
+                "generation_time_ms": fast_result["generation_time_ms"],
+                "tokens_used": fast_result["tokens_used"],
+                "reasoning_steps": fast_result["reasoning_steps"]
+            }
+        except Exception as e:
+            logger.error(f"❌ [TEST_TURBO_REASONING] Fast mode error: {e}")
+            test_results["fast"] = {"error": str(e)}
+        
+        # 3. Сбалансированный режим
+        try:
+            logger.info("🧪 [TEST_TURBO_REASONING] Testing balanced mode...")
+            balanced_result = turbo_service.generate_response(
+                message=test_message,
+                reasoning_depth="balanced"
+            )
+            test_results["balanced"] = {
+                "response_preview": balanced_result["response"][:200] + "..." if len(balanced_result["response"]) > 200 else balanced_result["response"],
+                "generation_time_ms": balanced_result["generation_time_ms"],
+                "tokens_used": balanced_result["tokens_used"],
+                "reasoning_steps": balanced_result["reasoning_steps"]
+            }
+        except Exception as e:
+            logger.error(f"❌ [TEST_TURBO_REASONING] Balanced mode error: {e}")
+            test_results["balanced"] = {"error": str(e)}
+        
+        # 4. Глубокий режим
+        try:
+            logger.info("🧪 [TEST_TURBO_REASONING] Testing deep mode...")
+            deep_result = turbo_service.generate_response(
+                message=test_message,
+                reasoning_depth="deep"
+            )
+            test_results["deep"] = {
+                "response_preview": deep_result["response"][:200] + "..." if len(deep_result["response"]) > 200 else deep_result["response"],
+                "generation_time_ms": deep_result["generation_time_ms"],
+                "tokens_used": deep_result["tokens_used"],
+                "reasoning_steps": deep_result["reasoning_steps"]
+            }
+        except Exception as e:
+            logger.error(f"❌ [TEST_TURBO_REASONING] Deep mode error: {e}")
+            test_results["deep"] = {"error": str(e)}
+        
+        logger.info("✅ [TEST_TURBO_REASONING] All modes tested successfully")
+        
+        return {
+            "status": "success",
+            "message": "Turbo reasoning test completed",
+            "test_message": test_message,
+            "results": test_results,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [TEST_TURBO_REASONING] Error in turbo reasoning test: {e}")
+        import traceback
+        logger.error(f"❌ [TEST_TURBO_REASONING] Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ============================================================================
 # Системные эндпоинты
 # ============================================================================
@@ -892,7 +1179,7 @@ async def health_endpoint():
             "timestamp": datetime.now().isoformat()
         }
 
-@app.get("/metrics")
+@app.get("/metrics", response_class=PlainTextResponse)
 async def metrics_endpoint():
     """Получение метрик Prometheus"""
     try:

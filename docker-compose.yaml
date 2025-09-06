@@ -40,21 +40,23 @@ services:
   # Keycloak для аутентификации
   keycloak:
     image: quay.io/keycloak/keycloak:26.3.2
-    command: start --https-key-store-file=/opt/keycloak/ssl/keycloak.keystore --https-key-store-password=keycloak --https-port=8443 --hostname-strict=false --import-realm --import-realm-strategy=OVERWRITE_EXISTING --http-enabled=true
+    command: start --http-enabled=true --http-port=8080 --hostname-strict=false --import-realm --import-realm-strategy=OVERWRITE_EXISTING
     environment:
       KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
       KC_PROFILE: prod
       QUARKUS_PROFILE: prod
-      KC_HTTPS_KEYSTORE: /opt/keycloak/ssl/keycloak.keystore
-      KC_HTTPS_KEYSTORE_PASSWORD: keycloak
-      KC_SSL_REQUIRED: none
-      KC_HTTPS_PORT: 8443
-      KC_HTTP_ENABLED: false
-      KC_HTTPS_ENABLED: true
+      KC_HTTP_ENABLED: true
+      KC_HTTPS_ENABLED: false
+      KC_HTTP_PORT: 8080
+      KC_HOSTNAME_STRICT: false
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: keycloak
       TZ: Europe/Moscow
     ports:
-      - "${KEYCLOAK_PORT:-8081}:8443"
+      - "${KEYCLOAK_PORT:-8081}:8080"
     volumes:
       - ./keycloak/ai-nk-realm.json:/opt/keycloak/data/import/ai-nk-realm.json:ro
       - ./ssl/keycloak.keystore:/opt/keycloak/ssl/keycloak.keystore:ro
@@ -66,7 +68,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-k", "-f", "https://localhost:8443/health/ready"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health/ready"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -128,10 +130,11 @@ services:
       resources:
         limits:
           memory: 2G
-          cpus: '2.0'
         reservations:
           memory: 1G
-          cpus: '1.0'
+          cpus: '0.5'
+    # CPU Shares для macOS (средний приоритет VLLM)
+    cpu_shares: 512
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
       interval: 30s
@@ -167,6 +170,9 @@ services:
           memory: 1G
         reservations:
           memory: 512M
+          cpus: '0.2'
+    # CPU Shares для macOS (базовый приоритет Gateway)
+    cpu_shares: 256
     # healthcheck:
     #   test: ["CMD", "curl", "-k", "-f", "https://localhost:8443/healthz"]
     #   interval: 30s
@@ -277,6 +283,9 @@ services:
           memory: 2G
         reservations:
           memory: 1G
+          cpus: '0.5'
+    # CPU Shares для macOS (базовый приоритет PostgreSQL)
+    cpu_shares: 256
     # healthcheck:
     #   test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-norms_user} -d ${POSTGRES_DB:-norms_db}"]
     #   interval: 60s
@@ -304,13 +313,16 @@ services:
           memory: 2G
         reservations:
           memory: 1G
+          cpus: '0.5'
+    # CPU Shares для macOS (базовый приоритет Qdrant)
+    cpu_shares: 256
     # healthcheck:
     #   test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
     #   interval: 30s
     #   timeout: 10s
     #   retries: 3
 
-  # Парсер документов (оптимизированная конфигурация)
+  # Парсер документов (оптимизированная конфигурация) - ВЫСОКИЙ ПРИОРИТЕТ
   document-parser:
     build: ./document_parser
     ports:
@@ -344,10 +356,11 @@ services:
       resources:
         limits:
           memory: 2G
-          cpus: '5.0'
         reservations:
           memory: 1.5G
-          cpus: '2.0'
+          cpus: '2.5'
+    # CPU Shares для macOS (приоритет Document Parser)
+    cpu_shares: 1024
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
       interval: 30s
@@ -385,6 +398,9 @@ services:
           memory: 1.5G
         reservations:
           memory: 1G
+          cpus: '0.5'
+    # CPU Shares для macOS (средний приоритет Rule Engine)
+    cpu_shares: 512
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
       interval: 30s
@@ -418,13 +434,16 @@ services:
           memory: 2G
         reservations:
           memory: 1G
+          cpus: '0.5'
+    # CPU Shares для macOS (средний приоритет Calculation Service)
+    cpu_shares: 512
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
 
-  # RAG Service для поиска по нормам
+  # RAG Service для поиска по нормам - ВЫСОКИЙ ПРИОРИТЕТ
   rag-service:
     build: 
       context: ./rag_service
@@ -439,6 +458,9 @@ services:
       - TRANSFORMERS_CACHE=/app/models
       - HF_HOME=/app/models
       - TZ=Europe/Moscow
+      # OpenAI API Configuration for Turbo Mode
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
     volumes:
       - rag_models:/app/models
       - /etc/localtime:/etc/localtime:ro
@@ -452,10 +474,11 @@ services:
       resources:
         limits:
           memory: 6G
-          cpus: '5.0'
         reservations:
           memory: 4G
-          cpus: '2.0'
+          cpus: '2.5'
+    # CPU Shares для macOS (приоритет RAG сервиса)
+    cpu_shares: 1024
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
       interval: 30s

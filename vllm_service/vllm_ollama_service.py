@@ -1,141 +1,81 @@
-import logging
 import requests
-import json
+import logging
 import os
-from typing import List, Dict, Any, Optional
-from datetime import datetime
-import asyncio
 import time
+from datetime import datetime
+from typing import Dict, List, Optional, Any
+import json
 
-# Настройка логирования
 logger = logging.getLogger(__name__)
-chat_logger = logging.getLogger("chat")
 
-class OllamaStatusChecker:
-    """Проверка статуса локально установленного Ollama"""
+class OllamaService:
+    """Сервис для работы с Ollama API"""
     
-    def __init__(self, ollama_url: str = None):
-        self.ollama_url = ollama_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        self.last_check = None
-        self.status_cache = None
-        self.cache_duration = int(os.getenv("OLLAMA_CACHE_DURATION", "30"))  # секунды
+    def __init__(self):
+        self.ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        self.max_tokens = int(os.getenv("OLLAMA_MAX_TOKENS", "2048"))
+        self.temperature = float(os.getenv("OLLAMA_TEMPERATURE", "0.7"))
+        self.timeout = int(os.getenv("OLLAMA_TIMEOUT", "120"))
+        self.top_p = float(os.getenv("OLLAMA_TOP_P", "0.9"))
+        
+        # Статистика
+        self.stats = {
+            "total_requests": 0,
+            "successful_requests": 0,
+            "failed_requests": 0,
+            "total_tokens": 0,
+            "total_time_ms": 0,
+            "last_request_time": None
+        }
+        
+        logger.info(f"🔧 [OLLAMA_SERVICE] Initialized with URL: {self.ollama_url}")
     
-    def check_ollama_status(self) -> Dict[str, Any]:
-        """Проверка статуса Ollama"""
+    def health_check(self) -> Dict[str, Any]:
+        """Проверка здоровья Ollama сервиса"""
         try:
-            current_time = time.time()
-            
-            # Проверяем кэш
-            if (self.status_cache and self.last_check and 
-                current_time - self.last_check < self.cache_duration):
-                return self.status_cache
-            
-            # Проверяем доступность Ollama
+            start_time = time.time()
             response = requests.get(f"{self.ollama_url}/api/tags", timeout=10)
+            response_time = (time.time() - start_time) * 1000
             
             if response.status_code == 200:
-                models = response.json().get("models", [])
+                models_data = response.json()
+                models = models_data.get("models", [])
                 
-                # Проверяем наличие ключевых моделей
+                # Проверяем наличие нужных моделей
                 bge_m3_available = any("bge-m3" in model.get("name", "") for model in models)
                 gpt_oss_available = any("gpt-oss" in model.get("name", "") for model in models)
                 
-                status = {
-                    "status": "healthy" if (bge_m3_available or gpt_oss_available) else "degraded",
-                    "ollama_url": self.ollama_url,
-                    "available_models": [model.get("name") for model in models],
-                    "bge_m3_available": bge_m3_available,
-                    "gpt_oss_available": gpt_oss_available,
-                    "total_models": len(models),
-                    "last_check": datetime.now().isoformat(),
-                    "response_time_ms": response.elapsed.total_seconds() * 1000
+                return {
+                    "status": "healthy",
+                    "services": {
+                        "ollama": {
+                            "status": "healthy",
+                            "ollama_url": self.ollama_url,
+                            "available_models": [model.get("name", "") for model in models],
+                            "bge_m3_available": bge_m3_available,
+                            "gpt_oss_available": gpt_oss_available,
+                            "total_models": len(models),
+                            "last_check": datetime.now().isoformat(),
+                            "response_time_ms": round(response_time, 3)
+                        }
+                    },
+                    "configuration": {
+                        "ollama_url": self.ollama_url,
+                        "max_tokens": self.max_tokens,
+                        "temperature": self.temperature,
+                        "timeout": self.timeout
+                    },
+                    "timestamp": datetime.now().isoformat()
                 }
             else:
-                status = {
+                return {
                     "status": "unhealthy",
-                    "ollama_url": self.ollama_url,
-                    "error": f"HTTP {response.status_code}",
-                    "last_check": datetime.now().isoformat()
+                    "error": f"Ollama returned status {response.status_code}",
+                    "timestamp": datetime.now().isoformat()
                 }
-            
-            # Обновляем кэш
-            self.status_cache = status
-            self.last_check = current_time
-            
-            return status
-            
-        except Exception as e:
-            logger.error(f"❌ [OLLAMA_STATUS] Error checking Ollama status: {e}")
-            status = {
-                "status": "unhealthy",
-                "ollama_url": self.ollama_url,
-                "error": str(e),
-                "last_check": datetime.now().isoformat()
-            }
-            
-            # Обновляем кэш
-            self.status_cache = status
-            self.last_check = current_time
-            
-            return status
-    
-    def get_model_info(self, model_name: str) -> Optional[Dict[str, Any]]:
-        """Получение информации о конкретной модели"""
-        try:
-            # Используем POST запрос для /api/show
-            response = requests.post(f"{self.ollama_url}/api/show", 
-                                 json={"name": model_name}, timeout=15)
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
-                logger.warning(f"⚠️ [OLLAMA_STATUS] Failed to get model info for {model_name}: HTTP {response.status_code}")
-                return None
                 
         except Exception as e:
-            logger.error(f"❌ [OLLAMA_STATUS] Error getting model info for {model_name}: {e}")
-            return None
-
-class OllamaService:
-    """Ollama сервис с интеграцией локальных моделей"""
-    
-    def __init__(self, ollama_url: str = None):
-        # Используем localhost для доступа к Ollama
-        self.ollama_url = ollama_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        
-        self.ollama_checker = OllamaStatusChecker(self.ollama_url)
-        self.max_tokens = int(os.getenv("OLLAMA_MAX_TOKENS", "2048"))
-        self.temperature = float(os.getenv("OLLAMA_TEMPERATURE", "0.7"))
-        self.top_p = float(os.getenv("OLLAMA_TOP_P", "0.9"))
-        self.timeout = int(os.getenv("OLLAMA_TIMEOUT", "120"))
-        logger.info(f"🤖 [VLLM_OLLAMA] Initialized with Ollama at {self.ollama_url}")
-        logger.info(f"🔧 [VLLM_OLLAMA] Configuration: max_tokens={self.max_tokens}, temperature={self.temperature}, timeout={self.timeout}s")
-    
-    def health_check(self) -> Dict[str, Any]:
-        """Проверка здоровья сервиса"""
-        try:
-            # Проверяем Ollama
-            ollama_status = self.ollama_checker.check_ollama_status()
-            
-            # Общий статус зависит только от Ollama
-            overall_status = ollama_status["status"]
-            
-            return {
-                "status": overall_status,
-                "services": {
-                    "ollama": ollama_status
-                },
-                "configuration": {
-                    "ollama_url": self.ollama_url,
-                    "max_tokens": self.max_tokens,
-                    "temperature": self.temperature,
-                    "timeout": self.timeout
-                },
-                "timestamp": datetime.now().isoformat()
-            }
-            
-        except Exception as e:
-            logger.error(f"❌ [HEALTH] Health check error: {e}")
+            logger.error(f"❌ [OLLAMA_HEALTH] Health check failed: {e}")
             return {
                 "status": "unhealthy",
                 "error": str(e),
@@ -143,204 +83,210 @@ class OllamaService:
             }
     
     def get_ollama_models(self) -> Dict[str, Any]:
-        """Получение списка доступных моделей Ollama"""
+        """Получение списка доступных моделей"""
         try:
-            status = self.ollama_checker.check_ollama_status()
-            logger.info(f"🔍 [OLLAMA_MODELS] Ollama status: {status['status']}")
-            
-            if status["status"] == "healthy":
-                models_info = []
-                available_models = status.get("available_models", [])
-                logger.info(f"🔍 [OLLAMA_MODELS] Processing {len(available_models)} models: {available_models}")
+            response = requests.get(f"{self.ollama_url}/api/tags", timeout=10)
+            if response.status_code == 200:
+                ollama_data = response.json()
+                models = ollama_data.get("models", [])
                 
-                for model_name in available_models:
-                    # Добавляем базовую информацию о модели
-                    model_info = {
-                        "name": model_name,
+                # Преобразуем модели в формат, ожидаемый фронтендом
+                formatted_models = []
+                for model in models:
+                    formatted_model = {
+                        "name": model.get("name", ""),
                         "status": "available",
-                        "type": "ollama_model"
+                        "type": "ollama_model",
+                        "size": model.get("size", 0),
+                        "modified_at": model.get("modified_at", ""),
+                        "details": model.get("details", {})
                     }
-                    models_info.append(model_info)
-                    logger.info(f"✅ [OLLAMA_MODELS] Added model: {model_name}")
+                    formatted_models.append(formatted_model)
                 
-                logger.info(f"📊 [OLLAMA_MODELS] Total models processed: {len(models_info)}")
-                
-                result = {
-                    "status": "success",
-                    "models": models_info,
-                    "total_count": len(models_info),
-                    "ollama_status": status,
-                    "timestamp": datetime.now().isoformat()
-                }
-                logger.info(f"📤 [OLLAMA_MODELS] Returning result: {result}")
-                return result
-            else:
-                logger.warning(f"⚠️ [OLLAMA_MODELS] Ollama is not healthy: {status}")
                 return {
-                    "status": "error",
-                    "error": "Ollama is not healthy",
-                    "ollama_status": status,
+                    "status": "success",
+                    "models": formatted_models,
+                    "total_count": len(formatted_models),
                     "timestamp": datetime.now().isoformat()
                 }
-                
+            else:
+                raise Exception(f"Ollama API returned status {response.status_code}")
         except Exception as e:
-            logger.error(f"❌ [OLLAMA_MODELS] Error getting Ollama models: {e}")
+            logger.error(f"❌ [OLLAMA_MODELS] Error getting models: {e}")
             return {
                 "status": "error",
                 "error": str(e),
+                "models": [],
+                "total_count": 0,
                 "timestamp": datetime.now().isoformat()
             }
     
-    def generate_response_with_ollama(self, message: str, model_name: str = "gpt-oss:20b",
-                                    history: List[Dict[str, str]] = None, 
-                                    max_tokens: int = None) -> Dict[str, Any]:
-        """Генерация ответа с использованием Ollama"""
+    def generate_response_with_ollama(
+        self, 
+        message: str, 
+        model_name: str = "gpt-oss:latest",
+        history: Optional[List[Dict[str, str]]] = None,
+        max_tokens: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Генерация ответа через Ollama"""
+        
+        start_time = time.time()
+        self.stats["total_requests"] += 1
+        self.stats["last_request_time"] = datetime.now().isoformat()
+        
         try:
-            # Используем переданный max_tokens или значение по умолчанию
-            max_tokens = max_tokens or self.max_tokens
-            
             logger.info(f"💬 [OLLAMA_GENERATION] Generating response with {model_name}, max_tokens={max_tokens}")
             
-            # Проверяем статус Ollama
-            ollama_status = self.ollama_checker.check_ollama_status()
-            if ollama_status["status"] != "healthy":
-                return {
-                    "status": "error",
-                    "response": f"Ollama is not available: {ollama_status.get('error', 'Unknown error')}",
-                    "model": model_name,
-                    "timestamp": datetime.now().isoformat()
-                }
-            
-            # Проверяем доступность модели
-            if not any(model_name in model for model in ollama_status.get("available_models", [])):
-                return {
-                    "status": "error",
-                    "response": f"Model {model_name} is not available in Ollama",
-                    "model": model_name,
-                    "available_models": ollama_status.get("available_models", []),
-                    "timestamp": datetime.now().isoformat()
-                }
-            
             # Формируем промпт
-            if history:
-                prompt = ""
-                for entry in history:
-                    if entry.get('role') == 'user':
-                        prompt += f"User: {entry.get('content', '')}\n"
-                    elif entry.get('role') == 'assistant':
-                        prompt += f"Assistant: {entry.get('content', '')}\n"
-                prompt += f"User: {message}\nAssistant:"
-            else:
-                prompt = f"User: {message}\nAssistant:"
+            prompt = self._build_prompt(message, history)
             
-            # Отправляем запрос к Ollama
-            payload = {
+            # Параметры запроса
+            request_data = {
                 "model": model_name,
                 "prompt": prompt,
                 "stream": False,
                 "options": {
-                    "num_predict": max_tokens,
+                    "num_predict": max_tokens or self.max_tokens,
                     "temperature": self.temperature,
-                    "top_p": self.top_p
+                    "top_p": self.top_p,
+                    "stop": ["User:", "Assistant:"],
+                    "repeat_penalty": 1.1,
+                    "top_k": 40
                 }
             }
             
             logger.info(f"📤 [OLLAMA_GENERATION] Sending request to Ollama: {model_name}")
             logger.info(f"📤 [OLLAMA_GENERATION] Request URL: {self.ollama_url}/api/generate")
-            logger.info(f"📤 [OLLAMA_GENERATION] Request payload: {payload}")
+            logger.info(f"📤 [OLLAMA_GENERATION] Request payload: {json.dumps(request_data, ensure_ascii=False)}")
             
+            # Отправляем запрос
             response = requests.post(
                 f"{self.ollama_url}/api/generate",
-                json=payload,
+                json=request_data,
                 timeout=self.timeout
             )
+            
+            generation_time = (time.time() - start_time) * 1000
             
             logger.info(f"📥 [OLLAMA_GENERATION] Response status: {response.status_code}")
             logger.info(f"📥 [OLLAMA_GENERATION] Response headers: {dict(response.headers)}")
             
             if response.status_code == 200:
-                result = response.json()
-                logger.info(f"📥 [OLLAMA_GENERATION] Raw response from Ollama: {result}")
-                generated_text = result.get("response", "").strip()
+                response_data = response.json()
+                logger.info(f"📥 [OLLAMA_GENERATION] Raw response from Ollama: {json.dumps(response_data, ensure_ascii=False)}")
+                
+                generated_text = response_data.get("response", "").strip()
+                thinking = response_data.get("thinking", "").strip()
                 
                 logger.info(f"📝 [OLLAMA_GENERATION] Generated text: '{generated_text}' (length: {len(generated_text)})")
+                logger.info(f"🧠 [OLLAMA_GENERATION] Thinking: '{thinking[:100]}...' (length: {len(thinking)})")
                 
-                if generated_text:
-                    chat_logger.info(f"✅ [OLLAMA_GENERATION] Generated response with {model_name}")
-                    
-                    return {
-                        "status": "success",
-                        "response": generated_text,
-                        "model": model_name,
-                        "prompt_tokens": result.get("prompt_eval_count", 0),
-                        "response_tokens": result.get("eval_count", 0),
-                        "total_tokens": result.get("prompt_eval_count", 0) + result.get("eval_count", 0),
-                        "generation_time_ms": result.get("eval_duration", 0) / 1_000_000,  # конвертируем наносекунды в миллисекунды
-                        "timestamp": datetime.now().isoformat()
-                    }
-                else:
+                # Если response пустой, но есть thinking, используем thinking
+                if not generated_text and thinking:
+                    logger.info(f"🔄 [OLLAMA_GENERATION] Using thinking as response for {model_name}")
+                    generated_text = thinking
+                elif not generated_text:
                     logger.warning(f"⚠️ [OLLAMA_GENERATION] Empty response from Ollama for {model_name}")
+                    self.stats["failed_requests"] += 1
                     return {
                         "status": "error",
                         "response": "Empty response from Ollama",
                         "model": model_name,
                         "timestamp": datetime.now().isoformat()
                     }
+                
+                # Подсчитываем токены (приблизительно)
+                tokens_used = len(generated_text.split()) * 1.3  # Примерная оценка
+                
+                # Обновляем статистику
+                self.stats["successful_requests"] += 1
+                self.stats["total_tokens"] += int(tokens_used)
+                self.stats["total_time_ms"] += generation_time
+                
+                return {
+                    "status": "success",
+                    "response": generated_text,
+                    "model": model_name,
+                    "timestamp": datetime.now().isoformat(),
+                    "tokens_used": int(tokens_used),
+                    "generation_time_ms": round(generation_time, 2)
+                }
             else:
+                logger.error(f"❌ [OLLAMA_GENERATION] HTTP error: {response.status_code}")
+                self.stats["failed_requests"] += 1
                 return {
                     "status": "error",
-                    "response": f"Ollama API error: {response.status_code} - {response.text}",
+                    "response": f"HTTP error: {response.status_code}",
                     "model": model_name,
                     "timestamp": datetime.now().isoformat()
                 }
                 
         except requests.exceptions.Timeout:
             logger.error(f"⏰ [OLLAMA_GENERATION] Timeout error for {model_name}")
+            self.stats["failed_requests"] += 1
             return {
                 "status": "error",
                 "response": f"Request timeout after {self.timeout} seconds",
                 "model": model_name,
                 "timestamp": datetime.now().isoformat()
             }
-        except requests.exceptions.RequestException as e:
-            logger.error(f"🌐 [OLLAMA_GENERATION] Request error for {model_name}: {e}")
-            return {
-                "status": "error",
-                "response": f"Request error: {str(e)}",
-                "model": model_name,
-                "timestamp": datetime.now().isoformat()
-            }
         except Exception as e:
-            logger.error(f"❌ [OLLAMA_GENERATION] Unexpected error for {model_name}: {e}")
-            logger.exception(f"❌ [OLLAMA_GENERATION] Full traceback for {model_name}")
+            logger.error(f"❌ [OLLAMA_GENERATION] Error generating response: {e}")
+            self.stats["failed_requests"] += 1
             return {
                 "status": "error",
-                "response": f"Unexpected error: {str(e)}",
+                "response": f"Error: {str(e)}",
                 "model": model_name,
                 "timestamp": datetime.now().isoformat()
             }
     
+    def _build_prompt(self, message: str, history: Optional[List[Dict[str, str]]] = None) -> str:
+        """Построение промпта для Ollama"""
+        prompt_parts = []
+        
+        # Добавляем историю, если есть
+        if history:
+            for entry in history:
+                role = entry.get("role", "user")
+                content = entry.get("content", "")
+                if role == "user":
+                    prompt_parts.append(f"User: {content}")
+                elif role == "assistant":
+                    prompt_parts.append(f"Assistant: {content}")
+        
+        # Добавляем текущее сообщение
+        prompt_parts.append(f"User: {message}")
+        prompt_parts.append("Assistant:")
+        
+        return "\n".join(prompt_parts)
+    
     def get_stats(self) -> Dict[str, Any]:
         """Получение статистики сервиса"""
-        try:
-            # Статистика Ollama
-            ollama_status = self.ollama_checker.check_ollama_status()
-            
-            return {
-                "ollama": ollama_status,
-                "service_type": "VLLM + Ollama Integration",
-                "configuration": {
-                    "ollama_url": self.ollama_url,
-                    "max_tokens": self.max_tokens,
-                    "temperature": self.temperature,
-                    "timeout": self.timeout
-                },
-                "timestamp": datetime.now().isoformat()
-            }
-            
-        except Exception as e:
-            logger.error(f"❌ [STATS] Error getting stats: {e}")
-            return {
-                "error": str(e),
-                "timestamp": datetime.now().isoformat()
-            }
+        success_rate = 0
+        if self.stats["total_requests"] > 0:
+            success_rate = (self.stats["successful_requests"] / self.stats["total_requests"]) * 100
+        
+        avg_time = 0
+        if self.stats["successful_requests"] > 0:
+            avg_time = self.stats["total_time_ms"] / self.stats["successful_requests"]
+        
+        return {
+            "status": "success",
+            "statistics": {
+                "total_requests": self.stats["total_requests"],
+                "successful_requests": self.stats["successful_requests"],
+                "failed_requests": self.stats["failed_requests"],
+                "success_rate_percent": round(success_rate, 2),
+                "total_tokens": self.stats["total_tokens"],
+                "average_generation_time_ms": round(avg_time, 2),
+                "last_request_time": self.stats["last_request_time"]
+            },
+            "configuration": {
+                "ollama_url": self.ollama_url,
+                "max_tokens": self.max_tokens,
+                "temperature": self.temperature,
+                "timeout": self.timeout,
+                "top_p": self.top_p
+            },
+            "timestamp": datetime.now().isoformat()
+        }

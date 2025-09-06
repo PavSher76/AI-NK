@@ -226,13 +226,36 @@ class HierarchicalCheckService:
             # Ключевые слова для поиска названия проекта
             keywords = ['комбинат', 'фабрика', 'завод', 'комплекс', 'объект', 'сооружение']
             
-            # Ищем строки с ключевыми словами
-            for line in lines:
+            # Ищем строки с ключевыми словами и собираем все связанные строки
+            project_name_parts = []
+            found_keyword = False
+            
+            for i, line in enumerate(lines):
                 line_lower = line.lower()
+                line_stripped = line.strip()
+                
+                # Проверяем, содержит ли строка ключевые слова
                 if any(keyword in line_lower for keyword in keywords):
-                    # Проверяем, что строка достаточно длинная для названия
-                    if len(line.strip()) > 20:
-                        return line.strip()
+                    found_keyword = True
+                    if len(line_stripped) > 10:
+                        project_name_parts.append(line_stripped)
+                    
+                    # Собираем следующие строки, которые могут быть частью названия
+                    for j in range(i + 1, min(i + 5, len(lines))):  # Проверяем следующие 4 строки
+                        next_line = lines[j].strip()
+                        if len(next_line) > 5 and not next_line.isdigit():
+                            # Если строка содержит технические термины или продолжение названия
+                            if any(term in next_line.lower() for term in ['мощность', 'млн', 'год', 'месторождение', 'район', 'область', 'рудник', 'комплекс', 'ствол', 'копер']):
+                                project_name_parts.append(next_line)
+                            elif next_line.isupper() and len(next_line) > 10:
+                                project_name_parts.append(next_line)
+                            else:
+                                break
+                    break
+            
+            # Если нашли части названия, объединяем их
+            if project_name_parts:
+                return ' '.join(project_name_parts)
             
             # Поиск по паттерну "НАЗВАНИЕ ПРОЕКТА"
             for line in lines:
@@ -367,9 +390,10 @@ class HierarchicalCheckService:
             logger.debug(f"📋 [NORM_COMPLIANCE] Fetching all pages content for document {document_id}")
             pages = self.get_all_pages_content(document_id)
             
-            findings = []
-            total_pages = len(pages)
+            # Получаем реальное количество уникальных страниц
+            total_pages = len(set(page["page_number"] for page in pages))
             compliant_pages = 0
+            findings = []
             
             logger.info(f"📋 [NORM_COMPLIANCE] Total pages to check: {total_pages}")
             

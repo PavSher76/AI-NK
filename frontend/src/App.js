@@ -45,6 +45,12 @@ function App() {
   const [authMethod, setAuthMethod] = useState('');
   const [userInfo, setUserInfo] = useState(null);
   const [currentPage, setCurrentPage] = useState('dashboard'); // 'dashboard', 'chat', 'normcontrol', 'documents'
+  
+  // Состояние для турбо режима рассуждения
+  const [turboMode, setTurboMode] = useState(false);
+  const [reasoningDepth, setReasoningDepth] = useState('balanced');
+  const [reasoningModes, setReasoningModes] = useState({});
+  
   const [systemStatus, setSystemStatus] = useState({
     gateway: false,
     ollama: false,
@@ -196,44 +202,92 @@ function App() {
       return;
     }
 
-          try {
-        console.log('loadModels: Загружаем модели от VLLM сервиса...');
-        
-        // Получаем модели напрямую от VLLM сервиса
-        const response = await axios.get('http://localhost:8005/models', {
-          timeout: 10000 // 10 секунд
-        });
-        
-        console.log('loadModels: Получен ответ от VLLM:', response.status, response.data);
-        
-        if (response.data.status === 'success' && response.data.models) {
-          // Преобразуем формат данных из VLLM в формат, ожидаемый фронтендом
-          const modelsData = response.data.models.map(model => ({
-            id: model.name,
-            name: model.name,
-            status: model.status,
-            type: model.type
-          }));
-          
-          console.log('loadModels: Преобразованные данные:', modelsData);
-          
-          setModels(modelsData);
-          if (modelsData.length > 0 && !selectedModel) {
-            setSelectedModel(modelsData[0].id);
-            console.log('loadModels: Установлена первая модель:', modelsData[0].id);
-          }
-          setError(null); // Очищаем ошибки при успешной загрузке
-          console.log('loadModels: Модели загружены', modelsData.length);
-        } else {
-          console.error('loadModels: Неверный формат ответа от VLLM:', response.data);
-          setError('Неверный формат ответа от сервиса моделей');
+    try {
+      console.log('loadModels: Загружаем модели через Gateway...');
+      
+      // Получаем модели через Gateway
+      const response = await axios.get('/api/chat/tags', {
+        timeout: 10000, // 10 секунд
+        headers: {
+          'Authorization': `Bearer ${authToken}`
         }
-      } catch (error) {
-        console.error('🔍 [DEBUG] App.js: Error loading models:', error);
-        console.error('🔍 [DEBUG] App.js: Error response:', error.response?.data);
-        console.error('🔍 [DEBUG] App.js: Error status:', error.response?.status);
-        setError('Ошибка загрузки моделей от VLLM сервиса');
+      });
+      
+      console.log('loadModels: Получен ответ от Gateway:', response.status, response.data);
+      
+      if (response.data.models && Array.isArray(response.data.models)) {
+        // Преобразуем формат данных из Gateway в формат, ожидаемый фронтендом
+        const modelsData = response.data.models.map(model => ({
+          id: model.name,
+          name: model.name,
+          status: 'available',
+          type: model.details?.family || 'unknown',
+          size: model.size,
+          parameter_size: model.details?.parameter_size || 'unknown'
+        }));
+        
+        console.log('loadModels: Преобразованные данные:', modelsData);
+        
+        setModels(modelsData);
+        if (modelsData.length > 0 && !selectedModel) {
+          setSelectedModel(modelsData[0].id);
+          console.log('loadModels: Установлена первая модель:', modelsData[0].id);
+        }
+        setError(null); // Очищаем ошибки при успешной загрузке
+        console.log('loadModels: Модели загружены', modelsData.length);
+      } else {
+        console.error('loadModels: Неверный формат ответа от Gateway:', response.data);
+        setError('Неверный формат ответа от сервиса моделей');
       }
+    } catch (error) {
+      console.error('🔍 [DEBUG] App.js: Error loading models:', error);
+      console.error('🔍 [DEBUG] App.js: Error response:', error.response?.data);
+      console.error('🔍 [DEBUG] App.js: Error status:', error.response?.status);
+      setError('Ошибка загрузки моделей через Gateway');
+    }
+  };
+
+  // Загрузка режимов рассуждения
+  const loadReasoningModes = async () => {
+    try {
+      const response = await axios.get(`/rag/reasoning-modes`);
+      if (response.data.status === 'success') {
+        setReasoningModes(response.data.reasoning_modes);
+      }
+    } catch (error) {
+      console.error('Error loading reasoning modes:', error);
+      // Fallback на мок-данные для тестирования
+      setReasoningModes({
+        "fast": {
+          "name": "Быстрый",
+          "description": "Краткие ответы, простые рассуждения",
+          "temperature": 0.4,
+          "max_tokens": 1024,
+          "estimated_time": "5-15 секунд"
+        },
+        "balanced": {
+          "name": "Сбалансированный",
+          "description": "Подробные ответы с логическими рассуждениями",
+          "temperature": 0.6,
+          "max_tokens": 2048,
+          "estimated_time": "15-30 секунд"
+        },
+        "deep": {
+          "name": "Глубокий",
+          "description": "Детальный анализ с пошаговыми рассуждениями",
+          "temperature": 0.7,
+          "max_tokens": 3072,
+          "estimated_time": "30-60 секунд"
+        },
+        "turbo": {
+          "name": "Турбо",
+          "description": "Максимально быстрые ответы",
+          "temperature": 0.3,
+          "max_tokens": 1024,
+          "estimated_time": "3-10 секунд"
+        }
+      });
+    }
   };
 
   // Отправка сообщения
@@ -256,9 +310,12 @@ function App() {
     setError(null);
 
     try {
-      const response = await axios.post(`http://localhost:8005/chat`, {
+      // Используем RAG сервис для поддержки турбо режима
+      const response = await axios.post(`/rag/chat`, {
         message: content,
-        model: selectedModel
+        model: selectedModel,
+        turbo_mode: turboMode,
+        reasoning_depth: reasoningDepth
       }, {
         timeout: 120000 // 2 минуты
       });
@@ -273,7 +330,12 @@ function App() {
             prompt_tokens: response.data.prompt_tokens || 0,
             completion_tokens: response.data.response_tokens || 0,
             total_tokens: response.data.tokens_used || 0
-          }
+          },
+          // Метаданные турбо режима
+          turbo_mode: response.data.turbo_mode || false,
+          reasoning_depth: response.data.reasoning_depth || 'balanced',
+          reasoning_steps: response.data.reasoning_steps || 0,
+          generation_time_ms: response.data.generation_time_ms || 0
         };
 
         setMessages(prev => [...prev, assistantMessage]);
@@ -391,6 +453,7 @@ function App() {
       if (isAuthenticated && authToken) {
         console.log('🔍 [DEBUG] App.js: User is authenticated, loading models');
         await loadModels();
+        await loadReasoningModes();
       } else {
         console.log('🔍 [DEBUG] App.js: User is not authenticated, skipping models load');
       }
@@ -470,6 +533,12 @@ function App() {
                   onRefreshStatus={checkSystemStatus}
                 />
               }
+              // Турбо режим рассуждения
+              turboMode={turboMode}
+              onTurboModeChange={setTurboMode}
+              reasoningDepth={reasoningDepth}
+              onReasoningDepthChange={setReasoningDepth}
+              reasoningModes={reasoningModes}
             />
           )}
 
