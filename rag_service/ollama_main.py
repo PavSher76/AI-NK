@@ -317,9 +317,11 @@ async def reindex_documents_endpoint():
                 chunks = rag_service.get_document_chunks(document_id)
                 
                 if chunks:
-                    # Добавляем информацию о документе к каждому чанку
+                    # Добавляем информацию о документе к каждому чанку (убираем расширение)
+                    import re
+                    document_title_clean = re.sub(r'\.(pdf|txt|doc|docx)$', '', document_title, flags=re.IGNORECASE)
                     for chunk in chunks:
-                        chunk['document_title'] = document_title
+                        chunk['document_title'] = document_title_clean
                     
                     # Индексируем чанки
                     success = rag_service.index_document_chunks(document_id, chunks)

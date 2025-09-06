@@ -209,9 +209,12 @@ class OllamaRAGService:
                     
                     # Извлекаем код документа
                     document_title = chunk.get('document_title', '')
-                    code = self.extract_document_code(document_title)
+                    # Убираем расширение файла из названия
+                    import re
+                    document_title_clean = re.sub(r'\.(pdf|txt|doc|docx)$', '', document_title, flags=re.IGNORECASE)
+                    code = self.extract_document_code(document_title_clean)
                     
-                    logger.info(f"🔍 [INDEXING] Document title: '{document_title}', extracted code: '{code}'")
+                    logger.info(f"🔍 [INDEXING] Document title: '{document_title}' -> '{document_title_clean}', extracted code: '{code}'")
                     
                     # Создаем метаданные чанка
                     chunk_metadata = self.metadata_extractor.create_chunk_metadata(chunk, document_metadata)
@@ -224,7 +227,7 @@ class OllamaRAGService:
                             'document_id': document_id,
                             'chunk_id': chunk['chunk_id'],
                             'code': code,
-                            'title': document_title,
+                            'title': document_title_clean,  # Используем очищенное название без расширения
                             'section_title': chunk.get('section_title', ''),
                             'content': content,
                             'chunk_type': chunk.get('chunk_type', ''),
