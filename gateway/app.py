@@ -381,9 +381,9 @@ async def proxy_api(request: Request, path: str):
         service_url = SERVICES["rag-service"]
         print(f"🔍 [DEBUG] Gateway: Routing to rag-service: {service_url}")
         return await proxy_request(request, service_url, f"/{path}")
-    elif path.startswith("reindex-documents"):
+    elif path.startswith("reindex-documents") or path.startswith("reindex"):
         service_url = SERVICES["rag-service"]
-        print(f"🔍 [DEBUG] Gateway: Routing reindex-documents to rag-service: {service_url}")
+        print(f"🔍 [DEBUG] Gateway: Routing reindex to rag-service: {service_url}")
         return await proxy_request(request, service_url, f"/{path}")
     elif path.startswith("ntd-consultation"):
         service_url = SERVICES["rag-service"]
@@ -482,6 +482,10 @@ async def proxy_main(request: Request, path: str):
     elif path.startswith("documents"):
         service_url = SERVICES["rag-service"]
         print(f"🔍 [DEBUG] Gateway: Routing to rag-service: {service_url}")
+        return await proxy_request(request, service_url, f"/{path}")
+    elif path.startswith("reindex"):
+        service_url = SERVICES["rag-service"]
+        print(f"🔍 [DEBUG] Gateway: Routing reindex to rag-service: {service_url}")
         return await proxy_request(request, service_url, f"/{path}")
     elif path.startswith("ntd-consultation"):
         service_url = SERVICES["rag-service"]

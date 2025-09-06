@@ -177,115 +177,33 @@ async def delete_document_endpoint(document_id: int):
 
 @app.post("/reindex")
 async def reindex_documents_endpoint():
-    """Реиндексация всех документов"""
+    """Полная реиндексация всех документов с очисткой Qdrant"""
     try:
-        logger.info("🔄 [REINDEX] Starting document reindexing...")
-        
-        # Получаем все документы
-        documents = get_ollama_rag_service().get_documents()
-        
-        if not documents:
-            return {
-                "status": "success",
-                "message": "No documents to reindex",
-                "reindexed_count": 0,
-                "total_documents": 0
-            }
-        
-        logger.info(f"🔄 [REINDEX] Found {len(documents)} documents to reindex")
-        
-        reindexed_count = 0
-        total_chunks = 0
-        
-        for document in documents:
-            try:
-                document_id = document['id']
-                document_title = document['title']
-                
-                logger.info(f"🔄 [REINDEX] Reindexing document {document_id}: {document_title}")
-                
-                # Получаем чанки документа
-                chunks = get_ollama_rag_service().get_document_chunks(document_id)
-                
-                if not chunks:
-                    logger.warning(f"⚠️ [REINDEX] No chunks found for document {document_id}")
-                    continue
-                
-                # Подготавливаем чанки для индексации
-                chunks_for_indexing = []
-                for chunk in chunks:
-                    chunk_data = {
-                        'id': chunk['chunk_id'],
-                        'document_id': document_id,
-                        'chunk_id': chunk['chunk_id'],
-                        'content': chunk['content'],
-                        'page': chunk.get('page_number', 1),
-                        'section_title': chunk.get('chapter', ''),
-                        'section': chunk.get('section', ''),
-                        'document_title': document_title,
-                        'title': document_title,
-                        'code': get_ollama_rag_service().extract_document_code(document_title),
-                        'category': document.get('category', ''),
-                        'chunk_type': 'paragraph'
-                    }
-                    chunks_for_indexing.append(chunk_data)
-                
-                # Индексируем чанки
-                success = get_ollama_rag_service().index_document_chunks(document_id, chunks_for_indexing)
-                
-                if success:
-                    reindexed_count += 1
-                    total_chunks += len(chunks)
-                    logger.info(f"✅ [REINDEX] Document {document_id} reindexed successfully ({len(chunks)} chunks)")
-                else:
-                    logger.error(f"❌ [REINDEX] Failed to index document {document_id}")
-                
-            except Exception as e:
-                logger.error(f"❌ [REINDEX] Error reindexing document {document_id}: {e}")
-                continue
-        
-        logger.info(f"✅ [REINDEX] Reindexing completed. {reindexed_count}/{len(documents)} documents reindexed")
-        
-        return {
-            "status": "success",
-            "message": f"Reindexing completed. {reindexed_count} documents reindexed",
-            "reindexed_count": reindexed_count,
-            "total_documents": len(documents),
-            "total_chunks": total_chunks
-        }
-        
-    except Exception as e:
-        logger.error(f"❌ [REINDEX] Reindexing error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/documents/{document_id}/indexes")
-async def delete_document_indexes_endpoint(document_id: int):
-    """Удаление индексов документа"""
-    try:
-        success = get_ollama_rag_service().delete_document_indexes(document_id)
-        
-        if success:
-            return {
-                "status": "success",
-                "message": f"Indexes for document {document_id} deleted successfully",
-                "timestamp": datetime.now().isoformat()
-            }
-        else:
-            raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
-            
-    except Exception as e:
-        logger.error(f"❌ [DELETE_INDEXES] Error deleting indexes for document {document_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/reindex")
-async def reindex_documents_endpoint():
-    """Переиндексация всех документов"""
-    try:
-        logger.info("🔄 [REINDEX] Starting document reindexing...")
+        logger.info("🔄 [REINDEX] Starting full document reindexing with Qdrant cleanup...")
         
         rag_service = get_ollama_rag_service()
         
-        # Получаем все документы
+        # 1. Очищаем Qdrant коллекцию
+        logger.info("🗑️ [REINDEX] Clearing Qdrant collection...")
+        try:
+            success = rag_service.qdrant_service.clear_collection()
+            if success:
+                logger.info("✅ [REINDEX] Qdrant collection cleared")
+            else:
+                logger.warning("⚠️ [REINDEX] Failed to clear Qdrant collection")
+        except Exception as e:
+            logger.warning(f"⚠️ [REINDEX] Error clearing Qdrant collection: {e}")
+        
+        # 2. Убеждаемся, что коллекция существует
+        logger.info("🆕 [REINDEX] Ensuring Qdrant collection exists...")
+        try:
+            rag_service.qdrant_service._ensure_collection_exists()
+            logger.info("✅ [REINDEX] Qdrant collection ensured")
+        except Exception as e:
+            logger.error(f"❌ [REINDEX] Error ensuring Qdrant collection: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to ensure Qdrant collection: {e}")
+        
+        # 3. Получаем все документы из базы данных
         with rag_service.db_manager.get_cursor() as cursor:
             cursor.execute("""
                 SELECT ud.id, ud.original_filename as document_title, ud.category
@@ -303,9 +221,12 @@ async def reindex_documents_endpoint():
                 "timestamp": datetime.now().isoformat()
             }
         
+        logger.info(f"🔄 [REINDEX] Found {len(documents)} documents to reindex")
+        
         total_processed = 0
         total_chunks = 0
         
+        # 4. Индексируем каждый документ
         for document in documents:
             try:
                 document_id = document['id']
@@ -339,19 +260,143 @@ async def reindex_documents_endpoint():
                 logger.error(f"❌ [REINDEX] Error processing document {document.get('id', 'unknown')}: {e}")
                 continue
         
-        logger.info(f"✅ [REINDEX] Reindexing completed. Processed {total_processed} documents with {total_chunks} chunks")
+        logger.info(f"✅ [REINDEX] Full reindexing completed. Processed {total_processed} documents with {total_chunks} chunks")
         
         return {
             "status": "success",
-            "message": "Document reindexing completed",
+            "message": "Full document reindexing completed",
             "documents_processed": total_processed,
             "total_chunks": total_chunks,
             "timestamp": datetime.now().isoformat()
         }
         
     except Exception as e:
-        logger.error(f"❌ [REINDEX] Error during reindexing: {e}")
+        logger.error(f"❌ [REINDEX] Error during full reindexing: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/documents/{document_id}/indexes")
+async def delete_document_indexes_endpoint(document_id: int):
+    """Удаление индексов документа"""
+    try:
+        success = get_ollama_rag_service().delete_document_indexes(document_id)
+        
+        if success:
+            return {
+                "status": "success",
+                "message": f"Indexes for document {document_id} deleted successfully",
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
+            
+    except Exception as e:
+        logger.error(f"❌ [DELETE_INDEXES] Error deleting indexes for document {document_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/reindex/async")
+async def async_reindex_documents_endpoint():
+    """Асинхронная реиндексация всех документов с очисткой Qdrant"""
+    try:
+        logger.info("🔄 [ASYNC_REINDEX] Starting async document reindexing...")
+        
+        # Запускаем реиндексацию в фоновом режиме
+        import asyncio
+        asyncio.create_task(perform_async_reindex())
+        
+        return {
+            "status": "accepted",
+            "message": "Async reindexing started",
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [ASYNC_REINDEX] Error starting async reindexing: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def perform_async_reindex():
+    """Выполнение асинхронной реиндексации"""
+    try:
+        logger.info("🔄 [ASYNC_REINDEX] Performing async reindexing...")
+        
+        rag_service = get_ollama_rag_service()
+        
+        # 1. Очищаем Qdrant коллекцию
+        logger.info("🗑️ [ASYNC_REINDEX] Clearing Qdrant collection...")
+        try:
+            success = rag_service.qdrant_service.clear_collection()
+            if success:
+                logger.info("✅ [ASYNC_REINDEX] Qdrant collection cleared")
+            else:
+                logger.warning("⚠️ [ASYNC_REINDEX] Failed to clear Qdrant collection")
+        except Exception as e:
+            logger.warning(f"⚠️ [ASYNC_REINDEX] Error clearing Qdrant collection: {e}")
+        
+        # 2. Убеждаемся, что коллекция существует
+        logger.info("🆕 [ASYNC_REINDEX] Ensuring Qdrant collection exists...")
+        try:
+            rag_service.qdrant_service._ensure_collection_exists()
+            logger.info("✅ [ASYNC_REINDEX] Qdrant collection ensured")
+        except Exception as e:
+            logger.error(f"❌ [ASYNC_REINDEX] Error ensuring Qdrant collection: {e}")
+            return
+        
+        # 3. Получаем все документы из базы данных
+        with rag_service.db_manager.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT ud.id, ud.original_filename as document_title, ud.category
+                FROM uploaded_documents ud
+                WHERE ud.processing_status = 'completed'
+                ORDER BY ud.upload_date DESC
+            """)
+            documents = cursor.fetchall()
+        
+        if not documents:
+            logger.info("ℹ️ [ASYNC_REINDEX] No documents to reindex")
+            return
+        
+        logger.info(f"🔄 [ASYNC_REINDEX] Found {len(documents)} documents to reindex")
+        
+        total_processed = 0
+        total_chunks = 0
+        
+        # 4. Индексируем каждый документ
+        for document in documents:
+            try:
+                document_id = document['id']
+                document_title = document['document_title']
+                
+                logger.info(f"📝 [ASYNC_REINDEX] Processing document {document_id}: {document_title}")
+                
+                # Получаем чанки документа
+                chunks = rag_service.get_document_chunks(document_id)
+                
+                if chunks:
+                    # Добавляем информацию о документе к каждому чанку (убираем расширение)
+                    import re
+                    document_title_clean = re.sub(r'\.(pdf|txt|doc|docx)$', '', document_title, flags=re.IGNORECASE)
+                    for chunk in chunks:
+                        chunk['document_title'] = document_title_clean
+                    
+                    # Индексируем чанки
+                    success = rag_service.index_document_chunks(document_id, chunks)
+                    
+                    if success:
+                        total_processed += 1
+                        total_chunks += len(chunks)
+                        logger.info(f"✅ [ASYNC_REINDEX] Successfully indexed document {document_id} with {len(chunks)} chunks")
+                    else:
+                        logger.error(f"❌ [ASYNC_REINDEX] Failed to index document {document_id}")
+                else:
+                    logger.warning(f"⚠️ [ASYNC_REINDEX] No chunks found for document {document_id}")
+                    
+            except Exception as e:
+                logger.error(f"❌ [ASYNC_REINDEX] Error processing document {document.get('id', 'unknown')}: {e}")
+                continue
+        
+        logger.info(f"✅ [ASYNC_REINDEX] Async reindexing completed. Processed {total_processed} documents with {total_chunks} chunks")
+        
+    except Exception as e:
+        logger.error(f"❌ [ASYNC_REINDEX] Error during async reindexing: {e}")
 
 @app.post("/upload")
 async def upload_document(
