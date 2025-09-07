@@ -52,7 +52,7 @@ class DocumentChunker:
                             chunk_structure = self._identify_chunk_structure(chunk_text, page_structure)
                             
                             chunks.append({
-                                'chunk_id': f"doc_{document_id}_page_{page_num}_chunk_{chunk_id}",
+                                'chunk_id': f"{document_id}_{page_num}_{chunk_id}",
                                 'document_id': document_id,
                                 'document_title': filename,
                                 'content': chunk_text.strip(),
@@ -75,7 +75,7 @@ class DocumentChunker:
                     chunk_structure = self._identify_chunk_structure(chunk_text, document_structure)
                     
                     chunks.append({
-                        'chunk_id': f"doc_{document_id}_page_1_chunk_{chunk_id}",
+                        'chunk_id': f"{document_id}_1_{chunk_id}",
                         'document_id': document_id,
                         'document_title': filename,
                         'content': chunk_text.strip(),

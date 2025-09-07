@@ -456,15 +456,15 @@ class OllamaRAGService:
                         (chunk_id, clause_id, document_id, document_title, chunk_type, content, page_number, chapter, section)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
-                        chunk['chunk_id'],
-                        chunk['chunk_id'],  # Используем chunk_id как clause_id
+                        chunk['chunk_id'][:255],  # chunk_id (ограничено 255 символами)
+                        f"clause_{chunk['chunk_id']}"[:255],  # clause_id (ограничено 255 символами)
                         chunk['document_id'],
                         chunk['document_title'],
                         chunk['chunk_type'],
                         chunk['content'],
                         chunk.get('page', 1),  # page_number
-                        chunk.get('chapter', ''),  # chapter
-                        chunk.get('section', '')   # section
+                        (chunk.get('chapter', '') or '')[:255],  # chapter (ограничено 255 символами)
+                        (chunk.get('section', '') or '')[:255]   # section (ограничено 255 символами)
                     ))
                 connection.commit()
             
