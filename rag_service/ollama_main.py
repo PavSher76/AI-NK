@@ -204,14 +204,12 @@ async def reindex_documents_endpoint():
             raise HTTPException(status_code=500, detail=f"Failed to ensure Qdrant collection: {e}")
         
         # 3. Получаем все документы из базы данных
-        with rag_service.db_manager.get_cursor() as cursor:
-            cursor.execute("""
-                SELECT ud.id, ud.original_filename as document_title, ud.category
-                FROM uploaded_documents ud
-                WHERE ud.processing_status = 'completed'
-                ORDER BY ud.upload_date DESC
-            """)
-            documents = cursor.fetchall()
+        documents = rag_service.db_manager.execute_read_query("""
+            SELECT ud.id, ud.original_filename as document_title, ud.category
+            FROM uploaded_documents ud
+            WHERE ud.processing_status = 'completed'
+            ORDER BY ud.upload_date DESC
+        """)
         
         if not documents:
             return {
@@ -341,14 +339,12 @@ async def perform_async_reindex():
             return
         
         # 3. Получаем все документы из базы данных
-        with rag_service.db_manager.get_cursor() as cursor:
-            cursor.execute("""
-                SELECT ud.id, ud.original_filename as document_title, ud.category
-                FROM uploaded_documents ud
-                WHERE ud.processing_status = 'completed'
-                ORDER BY ud.upload_date DESC
-            """)
-            documents = cursor.fetchall()
+        documents = rag_service.db_manager.execute_read_query("""
+            SELECT ud.id, ud.original_filename as document_title, ud.category
+            FROM uploaded_documents ud
+            WHERE ud.processing_status = 'completed'
+            ORDER BY ud.upload_date DESC
+        """)
         
         if not documents:
             logger.info("ℹ️ [ASYNC_REINDEX] No documents to reindex")
@@ -1207,8 +1203,7 @@ async def health_endpoint():
         # Проверяем подключение к PostgreSQL
         rag_service = get_ollama_rag_service()
         try:
-            with rag_service.db_manager.get_cursor() as cursor:
-                cursor.execute("SELECT 1")
+            rag_service.db_manager.execute_read_query("SELECT 1")
             postgres_status = "healthy"
         except:
             postgres_status = "unhealthy"
