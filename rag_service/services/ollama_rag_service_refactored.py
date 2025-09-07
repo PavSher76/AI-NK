@@ -82,14 +82,16 @@ class OllamaRAGService:
         self.bge_reranker_service = BGERankingService()  # Новый BGE реранкер
         
         # Инициализация гибридного поиска
-        self.hybrid_search_service = HybridSearchService(
-            db_connection=self.db_manager.get_connection(),
-            embedding_service=self.embedding_service,
-            qdrant_service=self.qdrant_service,
-            alpha=0.6,  # Больше веса для dense поиска
-            use_rrf=True,
-            rrf_k=60
-        )
+        # Получаем соединение для инициализации HybridSearchService
+        with self.db_manager.get_read_connection() as connection:
+            self.hybrid_search_service = HybridSearchService(
+                db_connection=connection,
+                embedding_service=self.embedding_service,
+                qdrant_service=self.qdrant_service,
+                alpha=0.6,  # Больше веса для dense поиска
+                use_rrf=True,
+                rrf_k=60
+            )
         
         # Инициализация MMR сервиса
         self.mmr_service = MMRService(
@@ -297,12 +299,11 @@ class OllamaRAGService:
                 logger.info(f"✅ [DELETE_INDEXES] Deleted points from Qdrant for document {document_id}")
             
             # Удаляем чанки из PostgreSQL
-            with self.db_manager.get_cursor() as cursor:
+            with self.db_manager.get_write_cursor() as (cursor, connection):
                 cursor.execute("DELETE FROM normative_chunks WHERE document_id = %s", (document_id,))
                 deleted_chunks = cursor.rowcount
+                connection.commit()
                 logger.info(f"✅ [DELETE_INDEXES] Deleted {deleted_chunks} chunks from PostgreSQL for document {document_id}")
-                # Фиксируем транзакцию
-                cursor.connection.commit()
             
             return True
             
@@ -319,7 +320,7 @@ class OllamaRAGService:
             indexes_deleted = self.delete_document_indexes(document_id)
             
             # 2. Удаляем извлеченные элементы и сам документ в одной транзакции
-            with self.db_manager.get_cursor() as cursor:
+            with self.db_manager.get_write_cursor() as (cursor, connection):
                 # Удаляем извлеченные элементы
                 cursor.execute("DELETE FROM extracted_elements WHERE uploaded_document_id = %s", (document_id,))
                 deleted_elements = cursor.rowcount
@@ -426,13 +427,11 @@ class OllamaRAGService:
             
             # Обновляем количество токенов
             token_count = len(text_content.split())
-            with self.db_manager.get_cursor() as cursor:
-                cursor.execute("""
-                    UPDATE uploaded_documents 
-                    SET token_count = %s
-                    WHERE id = %s
-                """, (token_count, document_id))
-                cursor.connection.commit()
+            self.db_manager.execute_write_query("""
+                UPDATE uploaded_documents 
+                SET token_count = %s
+                WHERE id = %s
+            """, (token_count, document_id))
             
             logger.info(f"✅ [PROCESS_ASYNC] Document {document_id} processed successfully")
             return True
@@ -450,7 +449,7 @@ class OllamaRAGService:
             logger.info(f"🔍 [INDEX_CHUNKS_ASYNC] Retrieved metadata: {document_metadata}")
             
             # Сохраняем чанки в PostgreSQL
-            with self.db_manager.get_cursor() as cursor:
+            with self.db_manager.get_write_cursor() as (cursor, connection):
                 for chunk in chunks:
                     cursor.execute("""
                         INSERT INTO normative_chunks 
@@ -467,7 +466,7 @@ class OllamaRAGService:
                         chunk.get('chapter', ''),  # chapter
                         chunk.get('section', '')   # section
                     ))
-                cursor.connection.commit()
+                connection.commit()
             
             # Создаем эмбеддинги и сохраняем в Qdrant
             for chunk in chunks:

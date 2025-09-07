@@ -145,7 +145,15 @@ class DatabaseManager:
                 cursor.execute(query, params or ())
                 if commit:
                     connection.commit()
-                return cursor.fetchone() if cursor.description else None
+                # Для INSERT ... RETURNING запросов всегда пытаемся получить результат
+                try:
+                    result = cursor.fetchone()
+                    logger.info(f"🔍 [EXECUTE_WRITE_QUERY] fetchone() result: {result}, type: {type(result)}")
+                    return result
+                except Exception as e:
+                    # Если нет результата (например, для обычных INSERT без RETURNING)
+                    logger.info(f"🔍 [EXECUTE_WRITE_QUERY] fetchone() failed: {e}")
+                    return None
         except Exception as e:
             logger.error(f"❌ [DB_MANAGER] Error executing write query: {e}")
             logger.error(f"❌ [DB_MANAGER] Query: {query}")
@@ -221,6 +229,7 @@ class DatabaseManager:
                 raise Exception("Document with this content already exists")
             
             # Сохраняем документ в базу данных (используем соединение на запись)
+            logger.info(f"🔍 [SAVE_DOCUMENT] Attempting to save document with ID: {document_id}")
             result = self.execute_write_query("""
                 INSERT INTO uploaded_documents 
                 (id, filename, original_filename, file_type, file_size, document_hash, 
@@ -238,8 +247,22 @@ class DatabaseManager:
                 document_type
             ))
             
-            saved_id = result[0] if result else document_id
-            logger.info(f"✅ [SAVE_DOCUMENT] Document saved with ID: {saved_id}")
+            logger.info(f"🔍 [SAVE_DOCUMENT] Query result: {result}, type: {type(result)}")
+            
+            # Для INSERT ... RETURNING result должен содержать RealDictRow с ID
+            if result:
+                # RealDictRow можно использовать как словарь
+                if hasattr(result, 'get'):
+                    saved_id = result.get('id', document_id)
+                elif hasattr(result, '__getitem__'):
+                    saved_id = result[0] if len(result) > 0 else document_id
+                else:
+                    saved_id = document_id
+                logger.info(f"✅ [SAVE_DOCUMENT] Document saved with ID from result: {saved_id}")
+            else:
+                # Fallback на переданный document_id
+                saved_id = document_id
+                logger.warning(f"⚠️ [SAVE_DOCUMENT] No result from query, using fallback ID: {saved_id}")
             return saved_id
             
         except Exception as e:
