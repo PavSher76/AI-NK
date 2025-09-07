@@ -115,6 +115,7 @@ class MetadataExtractor:
                 
                 # А (Альбом)
                 (r'А(\d+(?:\.\d+)*)\.(\d{4})', 'CORP_STD'),
+                (r'А(\d+(?:\.\d+)*)\.(\d{2})', 'CORP_STD'),
                 (r'А(\d+(?:\.\d+)*)', 'CORP_STD'),
             ]
             

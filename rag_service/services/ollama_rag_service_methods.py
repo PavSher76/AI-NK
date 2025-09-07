@@ -601,10 +601,20 @@ class OllamaRAGServiceMethods:
                     logger.info(f"🔍 [GET_DOCUMENT_METADATA] Result type: {type(result)}")
                     logger.info(f"🔍 [GET_DOCUMENT_METADATA] Result length: {len(result) if result else 0}")
                     
-                    # Проверяем, что result - это кортеж
+                    # Проверяем, что result - это кортеж или RealDictRow
                     if isinstance(result, tuple) and len(result) >= 6:
                         doc_id, filename, original_filename, file_path, document_hash, document_type = result
                         logger.info(f"🔍 [GET_DOCUMENT_METADATA] Retrieved from DB: doc_id={doc_id}, filename={filename}, original_filename={original_filename}, file_path={file_path}")
+                        # Используем original_filename для извлечения метаданных
+                        return self.rag_service.metadata_extractor.extract_document_metadata(original_filename, doc_id, file_path)
+                    elif hasattr(result, 'get'):  # RealDictRow
+                        doc_id = result.get('id')
+                        filename = result.get('filename')
+                        original_filename = result.get('original_filename')
+                        file_path = result.get('file_path')
+                        document_hash = result.get('document_hash')
+                        document_type = result.get('document_type')
+                        logger.info(f"🔍 [GET_DOCUMENT_METADATA] Retrieved from DB (RealDictRow): doc_id={doc_id}, filename={filename}, original_filename={original_filename}, file_path={file_path}")
                         # Используем original_filename для извлечения метаданных
                         return self.rag_service.metadata_extractor.extract_document_metadata(original_filename, doc_id, file_path)
                     else:
