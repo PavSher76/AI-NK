@@ -15,8 +15,8 @@ import {
 } from 'lucide-react';
 import './CalculationsPage.css';
 
-const StructuralCalculationsPage = ({ isAuthenticated, authToken }) => {
-  const [selectedCategory, setSelectedCategory] = useState('strength');
+const FoundationCalculationsPage = ({ isAuthenticated, authToken }) => {
+  const [selectedCategory, setSelectedCategory] = useState('bearing_capacity');
   const [formData, setFormData] = useState({
     name: '',
     description: '',
@@ -27,211 +27,208 @@ const StructuralCalculationsPage = ({ isAuthenticated, authToken }) => {
   const [success, setSuccess] = useState(null);
   const [results, setResults] = useState(null);
 
-  // Виды расчетов строительных конструкций
-  const structuralCategories = [
+  // Виды расчетов оснований и фундаментов
+  const foundationCategories = [
     {
-      id: 'strength',
-      name: 'Расчёт на прочность',
-      description: 'Проверка прочности элементов конструкций',
+      id: 'bearing_capacity',
+      name: 'Расчёт несущей способности',
+      description: 'Определение несущей способности основания',
       icon: '🏗️',
-      norms: ['СП 63.13330', 'СП 16.13330', 'EN 1992', 'EN 1993'],
+      norms: ['СП 22.13330.2016', 'СП 24.13330.2011'],
       parameters: [
         {
-          name: 'load_value',
-          label: 'Расчетная нагрузка',
-          unit: 'кН',
-          type: 'number',
-          required: true,
-          default: 100,
-          min: 0
-        },
-        {
-          name: 'section_area',
-          label: 'Площадь сечения',
-          unit: 'см²',
-          type: 'number',
-          required: true,
-          default: 100,
-          min: 1
-        },
-        {
-          name: 'material_strength',
-          label: 'Расчетное сопротивление материала',
-          unit: 'МПа',
-          type: 'number',
-          required: true,
-          default: 235,
-          min: 100
-        },
-        {
-          name: 'safety_factor',
-          label: 'Коэффициент надежности',
-          unit: '',
-          type: 'number',
-          required: false,
-          default: 1.1,
-          min: 1.0,
-          max: 2.0
-        }
-      ]
-    },
-    {
-      id: 'stability',
-      name: 'Расчёт на устойчивость',
-      description: 'Проверка устойчивости сжатых элементов',
-      icon: '📏',
-      norms: ['СП 16.13330', 'СП 63.13330', 'EN 1993'],
-      parameters: [
-        {
-          name: 'element_length',
-          label: 'Длина элемента',
+          name: 'foundation_width',
+          label: 'Ширина фундамента',
           unit: 'м',
           type: 'number',
           required: true,
-          default: 3.0,
-          min: 0.1
+          default: 1.0,
+          min: 0.3
         },
         {
-          name: 'moment_of_inertia',
-          label: 'Момент инерции',
-          unit: 'см⁴',
-          type: 'number',
-          required: true,
-          default: 1000,
-          min: 1
-        },
-        {
-          name: 'elastic_modulus',
-          label: 'Модуль упругости',
-          unit: 'МПа',
-          type: 'number',
-          required: true,
-          default: 210000,
-          min: 10000
-        },
-        {
-          name: 'end_conditions',
-          label: 'Тип закрепления',
-          unit: '',
-          type: 'select',
-          required: true,
-          default: 'pinned',
-          options: [
-            { value: 'pinned', label: 'Шарнирное' },
-            { value: 'fixed', label: 'Жесткое' },
-            { value: 'cantilever', label: 'Консольное' }
-          ]
-        }
-      ]
-    },
-    {
-      id: 'stiffness',
-      name: 'Расчёт на жёсткость',
-      description: 'Проверка прогибов и деформаций',
-      icon: '📐',
-      norms: ['СП 63.13330', 'СП 64.13330', 'EN 1995'],
-      parameters: [
-        {
-          name: 'span_length',
-          label: 'Пролет',
+          name: 'foundation_depth',
+          label: 'Глубина заложения',
           unit: 'м',
           type: 'number',
           required: true,
-          default: 6.0,
+          default: 1.5,
           min: 0.5
         },
         {
-          name: 'distributed_load',
-          label: 'Распределенная нагрузка',
-          unit: 'кН/м',
+          name: 'soil_type',
+          label: 'Тип грунта',
+          unit: '',
+          type: 'select',
+          required: true,
+          default: 'clay',
+          options: [
+            { value: 'clay', label: 'Глина' },
+            { value: 'sand', label: 'Песок' },
+            { value: 'loam', label: 'Суглинок' },
+            { value: 'sandy_loam', label: 'Супесь' }
+          ]
+        },
+        {
+          name: 'soil_density',
+          label: 'Плотность грунта',
+          unit: 'кг/м³',
           type: 'number',
           required: true,
-          default: 10.0,
+          default: 1800,
+          min: 1000
+        },
+        {
+          name: 'angle_of_friction',
+          label: 'Угол внутреннего трения',
+          unit: 'град',
+          type: 'number',
+          required: true,
+          default: 25,
+          min: 10,
+          max: 45
+        },
+        {
+          name: 'cohesion',
+          label: 'Сцепление',
+          unit: 'кПа',
+          type: 'number',
+          required: true,
+          default: 20,
           min: 0
-        },
-        {
-          name: 'moment_of_inertia',
-          label: 'Момент инерции',
-          unit: 'см⁴',
-          type: 'number',
-          required: true,
-          default: 5000,
-          min: 1
-        },
-        {
-          name: 'elastic_modulus',
-          label: 'Модуль упругости',
-          unit: 'МПа',
-          type: 'number',
-          required: true,
-          default: 210000,
-          min: 10000
         }
       ]
     },
     {
-      id: 'cracking',
-      name: 'Расчёт на трещиностойкость',
-      description: 'Проверка ширины раскрытия трещин',
-      icon: '🔍',
-      norms: ['СП 63.13330', 'EN 1992'],
+      id: 'settlement',
+      name: 'Расчёт осадок',
+      description: 'Определение осадок фундамента',
+      icon: '📏',
+      norms: ['СП 22.13330.2016', 'СП 24.13330.2011'],
       parameters: [
         {
-          name: 'reinforcement_area',
-          label: 'Площадь арматуры',
-          unit: 'мм²',
+          name: 'foundation_area',
+          label: 'Площадь фундамента',
+          unit: 'м²',
           type: 'number',
           required: true,
-          default: 1000,
+          default: 10.0,
+          min: 1.0
+        },
+        {
+          name: 'foundation_pressure',
+          label: 'Давление под подошвой',
+          unit: 'кПа',
+          type: 'number',
+          required: true,
+          default: 200,
+          min: 50
+        },
+        {
+          name: 'compression_modulus',
+          label: 'Модуль деформации',
+          unit: 'МПа',
+          type: 'number',
+          required: true,
+          default: 10,
           min: 1
         },
         {
-          name: 'concrete_class',
-          label: 'Класс бетона',
+          name: 'poisson_ratio',
+          label: 'Коэффициент Пуассона',
           unit: '',
-          type: 'select',
-          required: true,
-          default: 'B25',
-          options: [
-            { value: 'B15', label: 'B15' },
-            { value: 'B20', label: 'B20' },
-            { value: 'B25', label: 'B25' },
-            { value: 'B30', label: 'B30' },
-            { value: 'B35', label: 'B35' }
-          ]
-        },
-        {
-          name: 'bending_moment',
-          label: 'Изгибающий момент',
-          unit: 'кН·м',
-          type: 'number',
-          required: true,
-          default: 50.0,
-          min: 0
-        },
-        {
-          name: 'crack_width_limit',
-          label: 'Предельная ширина трещин',
-          unit: 'мм',
           type: 'number',
           required: true,
           default: 0.3,
           min: 0.1,
-          max: 1.0
+          max: 0.5
+        },
+        {
+          name: 'layer_thickness',
+          label: 'Толщина сжимаемого слоя',
+          unit: 'м',
+          type: 'number',
+          required: true,
+          default: 5.0,
+          min: 1.0
         }
       ]
     },
     {
-      id: 'dynamic',
-      name: 'Динамический расчёт',
-      description: 'Расчет на сейсмические воздействия',
-      icon: '🌊',
-      norms: ['СП 14.13330', 'EN 1998'],
+      id: 'slope_stability',
+      name: 'Расчёт устойчивости склонов',
+      description: 'Проверка устойчивости откосов и склонов',
+      icon: '⛰️',
+      norms: ['СП 22.13330.2016', 'СП 47.13330.2016'],
       parameters: [
         {
-          name: 'seismic_zone',
-          label: 'Сейсмический район',
-          unit: '',
+          name: 'slope_height',
+          label: 'Высота откоса',
+          unit: 'м',
+          type: 'number',
+          required: true,
+          default: 5.0,
+          min: 1.0
+        },
+        {
+          name: 'slope_angle',
+          label: 'Угол откоса',
+          unit: 'град',
+          type: 'number',
+          required: true,
+          default: 30,
+          min: 10,
+          max: 60
+        },
+        {
+          name: 'soil_density',
+          label: 'Плотность грунта',
+          unit: 'кг/м³',
+          type: 'number',
+          required: true,
+          default: 1800,
+          min: 1000
+        },
+        {
+          name: 'angle_of_friction',
+          label: 'Угол внутреннего трения',
+          unit: 'град',
+          type: 'number',
+          required: true,
+          default: 25,
+          min: 10,
+          max: 45
+        },
+        {
+          name: 'cohesion',
+          label: 'Сцепление',
+          unit: 'кПа',
+          type: 'number',
+          required: true,
+          default: 20,
+          min: 0
+        },
+        {
+          name: 'water_pressure',
+          label: 'Напор грунтовых вод',
+          unit: 'кПа',
+          type: 'number',
+          required: false,
+          default: 0,
+          min: 0
+        }
+      ]
+    },
+    {
+      id: 'seismic_analysis',
+      name: 'Сейсмический анализ',
+      description: 'Расчет на сейсмические воздействия',
+      icon: '🌊',
+      norms: ['СП 14.13330.2014', 'СП 22.13330.2016'],
+      parameters: [
+        {
+          name: 'seismic_intensity',
+          label: 'Сейсмическая интенсивность',
+          unit: 'баллы',
           type: 'select',
           required: true,
           default: '6',
@@ -258,27 +255,91 @@ const StructuralCalculationsPage = ({ isAuthenticated, authToken }) => {
         },
         {
           name: 'structure_weight',
-          label: 'Масса конструкции',
-          unit: 'т',
+          label: 'Вес сооружения',
+          unit: 'кН',
           type: 'number',
           required: true,
-          default: 100.0,
-          min: 1
+          default: 1000,
+          min: 100
         },
         {
           name: 'natural_period',
-          label: 'Собственный период колебаний',
+          label: 'Собственный период',
           unit: 'с',
           type: 'number',
           required: true,
           default: 0.5,
           min: 0.1
+        },
+        {
+          name: 'damping_ratio',
+          label: 'Коэффициент демпфирования',
+          unit: '',
+          type: 'number',
+          required: true,
+          default: 0.05,
+          min: 0.01,
+          max: 0.1
+        }
+      ]
+    },
+    {
+      id: 'groundwater',
+      name: 'Расчёт подземных вод',
+      description: 'Анализ влияния подземных вод',
+      icon: '💧',
+      norms: ['СП 22.13330.2016', 'СП 47.13330.2016'],
+      parameters: [
+        {
+          name: 'water_level',
+          label: 'Уровень грунтовых вод',
+          unit: 'м',
+          type: 'number',
+          required: true,
+          default: 2.0,
+          min: 0.5
+        },
+        {
+          name: 'water_pressure',
+          label: 'Напор воды',
+          unit: 'кПа',
+          type: 'number',
+          required: true,
+          default: 20,
+          min: 0
+        },
+        {
+          name: 'permeability',
+          label: 'Коэффициент фильтрации',
+          unit: 'м/сут',
+          type: 'number',
+          required: true,
+          default: 1.0,
+          min: 0.001
+        },
+        {
+          name: 'drainage_area',
+          label: 'Площадь дренажа',
+          unit: 'м²',
+          type: 'number',
+          required: true,
+          default: 100,
+          min: 1
+        },
+        {
+          name: 'drainage_depth',
+          label: 'Глубина дренажа',
+          unit: 'м',
+          type: 'number',
+          required: true,
+          default: 1.0,
+          min: 0.5
         }
       ]
     }
   ];
 
-  const selectedCategoryData = structuralCategories.find(cat => cat.id === selectedCategory);
+  const selectedCategoryData = foundationCategories.find(cat => cat.id === selectedCategory);
 
   useEffect(() => {
     if (selectedCategoryData) {
@@ -315,18 +376,21 @@ const StructuralCalculationsPage = ({ isAuthenticated, authToken }) => {
     setError(null);
 
     try {
-      console.log('🔍 [DEBUG] StructuralCalculationsPage.js: Creating structural calculation:', calculationData);
+      console.log('🔍 [DEBUG] FoundationCalculationsPage.js: Creating foundation calculation:', calculationData);
       
       // Сначала выполняем расчет
-      const executeResponse = await fetch('https://localhost/api/calculations/structural/execute', {
+      const executeResponse = await fetch('https://localhost/api/calculations/geological/execute', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${authToken}`
         },
         body: JSON.stringify({
-          calculation_type: calculationData.subcategory,
-          parameters: calculationData.parameters
+          calculation_type: 'geological',
+          parameters: {
+            ...calculationData.parameters,
+            calculation_subtype: selectedCategory
+          }
         })
       });
 
@@ -352,15 +416,15 @@ const StructuralCalculationsPage = ({ isAuthenticated, authToken }) => {
       });
 
       if (createResponse.ok) {
-        setSuccess('Структурный расчет успешно создан и выполнен');
-        console.log('🔍 [DEBUG] StructuralCalculationsPage.js: Structural calculation created successfully');
+        setSuccess('Расчет основания и фундамента успешно создан и выполнен');
+        console.log('🔍 [DEBUG] FoundationCalculationsPage.js: Foundation calculation created successfully');
       } else {
         const errorData = await createResponse.json();
         setError(errorData.message || 'Ошибка создания расчета');
       }
     } catch (error) {
-      console.error('🔍 [DEBUG] StructuralCalculationsPage.js: Structural calculation error:', error);
-      setError(error.message || 'Ошибка создания структурного расчета');
+      console.error('🔍 [DEBUG] FoundationCalculationsPage.js: Foundation calculation error:', error);
+      setError(error.message || 'Ошибка создания расчета основания');
     } finally {
       setLoading(false);
     }
@@ -372,7 +436,7 @@ const StructuralCalculationsPage = ({ isAuthenticated, authToken }) => {
     const calculationData = {
       name: formData.name || `${selectedCategoryData.name} - ${new Date().toLocaleDateString()}`,
       description: formData.description || selectedCategoryData.description,
-      type: 'structural',
+      type: 'foundation',
       category: 'construction',
       subcategory: selectedCategory,
       parameters: formData.parameters
@@ -471,8 +535,8 @@ const StructuralCalculationsPage = ({ isAuthenticated, authToken }) => {
             Назад к расчетам
           </button>
         </div>
-        <h1>Строительные конструкции</h1>
-        <p>Расчеты прочности, устойчивости и деформаций строительных конструкций</p>
+        <h1>Основания и фундаменты</h1>
+        <p>Расчеты несущей способности оснований, осадок и деформаций фундаментов</p>
       </div>
 
       <div className="calculations-content">
@@ -482,7 +546,7 @@ const StructuralCalculationsPage = ({ isAuthenticated, authToken }) => {
             <div className="bg-white rounded-lg shadow p-6">
               <h3 className="text-lg font-semibold text-gray-900 mb-4">Виды расчетов</h3>
               <div className="space-y-3">
-                {structuralCategories.map((category) => (
+                {foundationCategories.map((category) => (
                   <button
                     key={category.id}
                     onClick={() => setSelectedCategory(category.id)}
@@ -668,4 +732,4 @@ const StructuralCalculationsPage = ({ isAuthenticated, authToken }) => {
   );
 };
 
-export default StructuralCalculationsPage;
+export default FoundationCalculationsPage;

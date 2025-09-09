@@ -109,6 +109,12 @@ async def auth_middleware(request: Request, call_next):
         "/api/upload",             # Эндпоинт для загрузки документов
         "/api/calculation/token",  # Эндпоинт для получения JWT токена
         "/api/calculation/me",     # Эндпоинт для получения информации о пользователе
+        "/api/calculations",       # Эндпоинт для расчетов (без авторизации)
+        "/api/calculation/calculations",  # Эндпоинт для расчетов через calculation prefix
+        "/api/calculations/degasification",  # Эндпоинт для расчетов дегазации
+        "/api/calculation/calculations/degasification",  # Эндпоинт для расчетов дегазации через calculation prefix
+        "/api/calculations/degasification/types",  # Эндпоинт для типов расчетов дегазации
+        "/api/calculations/degasification/execute",  # Эндпоинт для выполнения расчетов дегазации
         "/api/chat/tags",          # Эндпоинт для проверки статуса Ollama
         "/api/chat/health",        # Эндпоинт для проверки здоровья Ollama
         "/api/chat",               # Эндпоинт для чата с ИИ

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Eye, EyeOff, Loader2 } from 'lucide-react';
+import { getCalculationToken } from '../utils/calculationAuth';
 
 const AuthModal = ({ isOpen, onClose, onAuthSuccess }) => {
   const [username, setUsername] = useState('');
@@ -77,9 +78,42 @@ const AuthModal = ({ isOpen, onClose, onAuthSuccess }) => {
     }
   };
 
+  const handleCalculationLogin = async (e) => {
+    e.preventDefault();
+    
+    if (!username.trim() || !password.trim()) {
+      setError('Введите логин и пароль');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+
+    try {
+      // Получаем токен через calculation service
+      const tokenData = await getCalculationToken(username, password);
+      
+      // Сохраняем информацию о пользователе
+      const userInfo = {
+        token: tokenData.access_token,
+        username: tokenData.user.username,
+        method: 'calculation',
+        expiresAt: Date.now() + (24 * 60 * 60 * 1000) // 24 часа
+      };
+      
+      onAuthSuccess(userInfo, 'calculation');
+      onClose();
+    } catch (error) {
+      console.error('Calculation login error:', error);
+      setError(error.message || 'Ошибка авторизации в calculation service');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleTestLogin = () => {
-    setUsername('admin');
-    setPassword('admin');
+    setUsername('test_user');
+    setPassword('test_password');
   };
 
   if (!isOpen) return null;
@@ -150,7 +184,23 @@ const AuthModal = ({ isOpen, onClose, onAuthSuccess }) => {
                   Вход...
                 </>
               ) : (
-                'Войти'
+                'Войти через Keycloak'
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleCalculationLogin}
+              disabled={loading}
+              className="w-full flex items-center justify-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {loading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                  Вход...
+                </>
+              ) : (
+                'Войти в расчеты'
               )}
             </button>
 
@@ -159,7 +209,7 @@ const AuthModal = ({ isOpen, onClose, onAuthSuccess }) => {
               onClick={handleTestLogin}
               className="w-full px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
             >
-              Заполнить тестовые данные (admin/admin)
+              Заполнить тестовые данные (test_user/test_password)
             </button>
           </div>
         </form>

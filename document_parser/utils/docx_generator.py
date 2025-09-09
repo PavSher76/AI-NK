@@ -156,10 +156,33 @@ class DOCXReportGenerator:
         self._add_paragraph(compliance_info)
         self.document.add_paragraph()
         
+        # Добавляем перечень НТД, на соответствие которым выполнена проверка
+        relevant_ntd = compliance_data.get('relevant_ntd', [])
+        if relevant_ntd:
+            self._add_heading("Перечень нормативных документов", 3)
+            self._add_paragraph("Проверка выполнена на соответствие следующим нормативным документам согласно \"Перечень НТД для руководства внутри ОНК по маркам\":")
+            self.document.add_paragraph()
+            
+            # Создаем таблицу с перечнем НТД
+            ntd_data = []
+            for i, ntd in enumerate(relevant_ntd, 1):
+                ntd_data.append([str(i), ntd])
+            
+            self._create_table(ntd_data, ['№', 'Наименование нормативного документа'])
+            self.document.add_paragraph()
+        else:
+            # Если перечень НТД не указан, добавляем информацию об этом
+            self._add_heading("Перечень нормативных документов", 3)
+            self._add_paragraph("Перечень нормативных документов для проверки не определен. Рекомендуется загрузить документ \"Перечень НТД для руководства внутри ОНК по маркам\" для автоматического определения релевантных НТД.")
+            self.document.add_paragraph()
+        
         # Общая статистика
+        total_pages = compliance_data.get('total_pages', 0)
+        a4_equivalent = self._calculate_a4_equivalent(total_pages, compliance_data.get('page_sizes', []))
+        
         stats_data = [
-            ['Страниц в документе', str(compliance_data.get('total_pages', 0))],
-            ['Листов формата А4', str(compliance_data.get('total_pages', 0))],
+            ['Страниц в документе', str(total_pages)],
+            ['Листов формата А4', str(a4_equivalent)],
             ['Соответствующих страниц', str(compliance_data.get('compliant_pages', 0))],
             ['Процент соответствия', f"{compliance_data.get('compliance_percentage', 0):.1f}%"],
             ['Всего находок', str(compliance_data.get('total_findings', 0))],
@@ -202,8 +225,10 @@ class DOCXReportGenerator:
         if sections:
             sections_table_data = []
             for section in sections:
+                # Переводим тип секции на русский язык для лучшего понимания
+                section_type_ru = self._translate_section_type(section.get('section_type', ''))
                 sections_table_data.append([
-                    section.get('section_type', ''),
+                    section_type_ru,
                     section.get('section_name', ''),
                     f"{section.get('start_page', '')}-{section.get('end_page', '')}",
                     section.get('check_priority', '')
@@ -211,6 +236,91 @@ class DOCXReportGenerator:
             
             self._create_table(sections_table_data, ['Тип секции', 'Название', 'Страницы', 'Приоритет проверки'])
             self.document.add_paragraph()
+    
+    def _create_detailed_sections_report_section(self, sections_analysis):
+        """Создание раздела с детальным отчетом проверки по секциям"""
+        if not sections_analysis:
+            return
+        
+        self._add_heading("Детальный отчет проверки по секциям", 2)
+        
+        # Парсим данные анализа секций
+        sections_data = self._parse_json_string(sections_analysis)
+        
+        # Проверяем наличие детального анализа
+        detailed_analysis = sections_data.get('detailed_sections_analysis')
+        if not detailed_analysis:
+            self.document.add_paragraph("Детальный анализ секций недоступен.")
+            return
+        
+        sections_analysis_data = detailed_analysis.get('sections_analysis', [])
+        
+        for section_data in sections_analysis_data:
+            section_name = section_data.get('section_name', 'Неизвестная секция')
+            start_page = section_data.get('start_page', 0)
+            end_page = section_data.get('end_page', 0)
+            analysis = section_data.get('analysis', {})
+            
+            # Заголовок секции
+            self._add_heading(f"{section_name} (страницы {start_page}-{end_page})", 3)
+            
+            # Статус соответствия
+            compliance_status = analysis.get('compliance_status', 'unknown')
+            status_text = self._translate_compliance_status(compliance_status)
+            
+            status_paragraph = self.document.add_paragraph()
+            status_paragraph.add_run("Статус соответствия: ").bold = True
+            status_paragraph.add_run(status_text)
+            
+            # Findings (находки)
+            findings = analysis.get('findings', [])
+            if findings:
+                self.document.add_paragraph()
+                findings_heading = self.document.add_paragraph()
+                findings_heading.add_run("Найденные проблемы:").bold = True
+                
+                for finding in findings:
+                    finding_para = self.document.add_paragraph()
+                    finding_para.style = 'List Bullet'
+                    finding_para.add_run(finding.get('title', 'Неизвестная проблема'))
+                    
+                    if finding.get('description'):
+                        desc_para = self.document.add_paragraph()
+                        desc_para.style = 'List Bullet 2'
+                        desc_para.add_run(finding['description'])
+                    
+                    if finding.get('recommendation'):
+                        rec_para = self.document.add_paragraph()
+                        rec_para.style = 'List Bullet 2'
+                        rec_para.add_run(f"Рекомендация: {finding['recommendation']}")
+            else:
+                self.document.add_paragraph()
+                no_issues_para = self.document.add_paragraph()
+                no_issues_para.add_run("Проблем не обнаружено.").italic = True
+            
+            # Рекомендации
+            recommendations = analysis.get('recommendations', [])
+            if recommendations:
+                self.document.add_paragraph()
+                rec_heading = self.document.add_paragraph()
+                rec_heading.add_run("Рекомендации:").bold = True
+                
+                for recommendation in recommendations:
+                    rec_para = self.document.add_paragraph()
+                    rec_para.style = 'List Bullet'
+                    rec_para.add_run(recommendation)
+            
+            self.document.add_paragraph()  # Пустая строка между секциями
+    
+    def _translate_compliance_status(self, status: str) -> str:
+        """Перевод статуса соответствия на русский язык"""
+        translations = {
+            "compliant": "Соответствует требованиям",
+            "partially_compliant": "Частично соответствует требованиям",
+            "non_compliant": "Не соответствует требованиям",
+            "unknown": "Статус неизвестен"
+        }
+        return translations.get(status, status)
     
     def _create_overall_status_section(self, overall_status, execution_time):
         """Создание раздела с общим статусом"""
@@ -276,6 +386,10 @@ class DOCXReportGenerator:
             if hierarchical_result.get('sections_analysis'):
                 self._create_sections_analysis_section(hierarchical_result['sections_analysis'])
             
+            # Детальный отчет проверки по секциям
+            if hierarchical_result.get('sections_analysis'):
+                self._create_detailed_sections_report_section(hierarchical_result['sections_analysis'])
+            
             # Общий статус
             overall_status = hierarchical_result.get('overall_status', 'unknown')
             execution_time = hierarchical_result.get('execution_time', 0)
@@ -295,6 +409,57 @@ class DOCXReportGenerator:
         except Exception as e:
             logger.error(f"Error generating DOCX report: {e}")
             raise
+    
+    def _calculate_a4_equivalent(self, total_pages: int, page_sizes: list) -> int:
+        """Расчет эквивалента количества листов формата А4"""
+        try:
+            if not page_sizes or total_pages == 0:
+                # Если нет информации о размерах страниц, возвращаем количество страниц
+                return total_pages
+            
+            # Стандартные размеры форматов (в пунктах)
+            A4_WIDTH = 595.28  # A4 width in points
+            A4_HEIGHT = 841.89  # A4 height in points
+            A4_AREA = A4_WIDTH * A4_HEIGHT
+            
+            total_a4_equivalent = 0
+            
+            for page_size in page_sizes:
+                if isinstance(page_size, dict):
+                    width = page_size.get('width', A4_WIDTH)
+                    height = page_size.get('height', A4_HEIGHT)
+                    
+                    # Рассчитываем площадь страницы
+                    page_area = width * height
+                    
+                    # Рассчитываем коэффициент для пересчета в А4
+                    a4_ratio = page_area / A4_AREA
+                    
+                    # Добавляем к общему эквиваленту
+                    total_a4_equivalent += a4_ratio
+                else:
+                    # Если формат данных неизвестен, считаем как А4
+                    total_a4_equivalent += 1
+            
+            # Округляем до целого числа
+            return max(1, round(total_a4_equivalent))
+            
+        except Exception as e:
+            logger.warning(f"Error calculating A4 equivalent: {e}")
+            # В случае ошибки возвращаем количество страниц
+            return total_pages
+    
+    def _translate_section_type(self, section_type: str) -> str:
+        """Перевод типа секции на русский язык"""
+        translations = {
+            "title": "Титул",
+            "general_data": "Общие данные",
+            "main_content": "Основное содержание",
+            "specification": "Спецификация",
+            "details": "Узлы и детали",
+            "unknown": "Неизвестный раздел"
+        }
+        return translations.get(section_type, section_type)
     
     def generate_report_docx(self, report_data):
         """Генерация DOCX отчета (основной метод)"""

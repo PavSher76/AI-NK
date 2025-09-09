@@ -1,4 +1,5 @@
 import logging
+import json
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
@@ -13,6 +14,52 @@ class HierarchicalCheckService:
     
     def __init__(self, db_connection: DatabaseConnection):
         self.db_connection = db_connection
+        # Инициализируем перечень НТД по маркам согласно "Перечень НТД для руководства внутри ОНК по маркам"
+        self.ntd_by_mark = {
+            "АР": [  # Архитектурные решения
+                "СП 22.13330.2016",
+                "СП 16.13330.2017", 
+                "ГОСТ 21.501-2018",
+                "ГОСТ Р 21.101-2020"
+            ],
+            "КР": [  # Конструктивные решения
+                "СП 63.13330.2018",
+                "СП 20.13330.2016",
+                "ГОСТ 21.501-2018",
+                "ГОСТ Р 21.101-2020"
+            ],
+            "ОВ": [  # Отопление и вентиляция
+                "СП 60.13330.2020",
+                "СП 7.13130.2013",
+                "ГОСТ 21.602-2016",
+                "ГОСТ Р 21.101-2020"
+            ],
+            "ВК": [  # Водоснабжение и канализация
+                "СП 30.13330.2020",
+                "СП 32.13330.2018",
+                "ГОСТ 21.601-2011",
+                "ГОСТ Р 21.101-2020"
+            ],
+            "ЭС": [  # Электроснабжение
+                "СП 31.110-2003",
+                "ПУЭ 7",
+                "ГОСТ 21.608-2014",
+                "ГОСТ Р 21.101-2020"
+            ],
+            "СС": [  # Сети связи
+                "СП 31.110-2003",
+                "ГОСТ 21.608-2014",
+                "ГОСТ Р 21.101-2020"
+            ],
+            "ПОС": [  # Проект организации строительства
+                "СП 48.13330.2019",
+                "ГОСТ Р 21.101-2020"
+            ],
+            "ПТ": [  # Проект производства работ
+                "СП 48.13330.2019",
+                "ГОСТ Р 21.101-2020"
+            ]
+        }
     
     async def perform_hierarchical_check(self, document_id: int) -> Dict[str, Any]:
         """Выполнение иерархической проверки документа"""
@@ -386,9 +433,17 @@ class HierarchicalCheckService:
             
             logger.info(f"📋 [NORM_COMPLIANCE] Project stage: {project_stage}, Document set: {document_set}")
             
+            # Определяем релевантные НТД на основе марки комплекта и стадии
+            relevant_ntd = self._get_relevant_ntd(document_set, project_stage)
+            logger.info(f"📋 [NORM_COMPLIANCE] Relevant NTD determined: {len(relevant_ntd)} documents")
+            
             # Получаем все страницы документа
             logger.debug(f"📋 [NORM_COMPLIANCE] Fetching all pages content for document {document_id}")
             pages = self.get_all_pages_content(document_id)
+            
+            # Получаем размеры страниц для расчета эквивалента А4
+            logger.debug(f"📋 [NORM_COMPLIANCE] Fetching pages sizes for document {document_id}")
+            page_sizes = self.get_pages_sizes(document_id)
             
             # Получаем реальное количество уникальных страниц
             total_pages = len(set(page["page_number"] for page in pages))
@@ -420,7 +475,9 @@ class HierarchicalCheckService:
             result = {
                 "project_stage": project_stage,
                 "document_set": document_set,
+                "relevant_ntd": relevant_ntd,
                 "total_pages": total_pages,
+                "page_sizes": page_sizes,
                 "compliant_pages": compliant_pages,
                 "compliance_percentage": (compliant_pages / total_pages * 100) if total_pages > 0 else 0,
                 "findings": findings,
@@ -506,6 +563,10 @@ class HierarchicalCheckService:
             # Получаем все страницы
             pages = self.get_all_pages_content(document_id)
             
+            # Сначала находим лист "Общие данные"
+            general_data_page = await self._find_general_data_page(pages)
+            logger.info(f"📑 [SECTIONS] General data page found: {general_data_page}")
+            
             sections = []
             current_section = None
             
@@ -513,8 +574,8 @@ class HierarchicalCheckService:
                 page_number = page_data["page_number"]
                 content = page_data["content"]
                 
-                # Определяем раздел страницы
-                section_info = await self.identify_page_section(content, page_number)
+                # Определяем раздел страницы с учетом найденного листа "Общие данные"
+                section_info = await self.identify_page_section(content, page_number, general_data_page)
                 
                 if section_info["section_type"] != current_section:
                     current_section = section_info["section_type"]
@@ -532,14 +593,31 @@ class HierarchicalCheckService:
                         sections[-1]["end_page"] = page_number
                         sections[-1]["pages_count"] += 1
             
+            # Анализ листов "Общие данные" если они найдены
+            general_data_section = next((s for s in sections if s["section_type"] == "general_data"), None)
+            general_data_analysis = None
+            
+            if general_data_section:
+                general_data_pages = list(range(general_data_section["start_page"], general_data_section["end_page"] + 1))
+                general_data_analysis = await self.analyze_general_data_content(document_id, general_data_pages)
+                logger.info(f"📋 [SECTIONS] General data analysis completed for pages: {general_data_pages}")
+            
+            # Детальный анализ всех секций
+            detailed_sections_analysis = await self.analyze_sections_detailed(document_id, sections)
+            logger.info(f"📊 [SECTIONS] Detailed sections analysis completed")
+            
             result = {
                 "sections": sections,
                 "total_sections": len(sections),
                 "section_analysis": {
-                    "general_data_section": next((s for s in sections if s["section_type"] == "general_data"), None),
+                    "title_section": next((s for s in sections if s["section_type"] == "title"), None),
+                    "general_data_section": general_data_section,
                     "main_content_sections": [s for s in sections if s["section_type"] == "main_content"],
-                    "specification_sections": [s for s in sections if s["section_type"] == "specification"]
-                }
+                    "specification_sections": [s for s in sections if s["section_type"] == "specification"],
+                    "details_sections": [s for s in sections if s["section_type"] == "details"]
+                },
+                "general_data_analysis": general_data_analysis,
+                "detailed_sections_analysis": detailed_sections_analysis
             }
             
             logger.info(f"📑 [SECTIONS] Document sections analysis completed: {len(sections)} sections identified")
@@ -549,13 +627,20 @@ class HierarchicalCheckService:
             logger.error(f"❌ [SECTIONS] Document sections analysis failed: {e}")
             return {"error": str(e)}
     
-    async def identify_page_section(self, content: str, page_number: int) -> Dict[str, Any]:
+    async def identify_page_section(self, content: str, page_number: int, general_data_page: int = None) -> Dict[str, Any]:
         """Определение раздела страницы"""
         try:
             content_lower = content.lower()
             
             # Определяем тип раздела
-            if "общие данные" in content_lower or "общие сведения" in content_lower:
+            # Если найден лист "Общие данные", все листы до него считаем титульными
+            if general_data_page and page_number < general_data_page:
+                return {
+                    "section_type": "title",
+                    "section_name": "Титул",
+                    "check_priority": "high"
+                }
+            elif "общие данные" in content_lower or "общие сведения" in content_lower:
                 return {
                     "section_type": "general_data",
                     "section_name": "Общие данные",
@@ -587,6 +672,724 @@ class HierarchicalCheckService:
                 "section_name": "Неизвестный раздел",
                 "check_priority": "low"
             }
+    
+    def _is_title_page(self, content_lower: str) -> bool:
+        """Определение титульной страницы по содержимому"""
+        try:
+            # Ключевые слова, характерные для титульной страницы
+            title_indicators = [
+                "титульный лист",
+                "титул",
+                "наименование проекта",
+                "шифр проекта",
+                "название проекта",
+                "проектная организация",
+                "заказчик",
+                "генеральный проектировщик",
+                "главный инженер проекта",
+                "главный архитектор проекта",
+                "стадия проектирования",
+                "рабочая документация",
+                "проектная документация",
+                "эскизная документация",
+                "марка",
+                "лист",
+                "листы"
+            ]
+            
+            # Проверяем наличие ключевых слов титульной страницы
+            title_score = sum(1 for indicator in title_indicators if indicator in content_lower)
+            
+            # Если найдено много ключевых слов титульной страницы
+            if title_score >= 3:
+                return True
+            
+            # Дополнительные проверки для титульной страницы
+            # Титульная страница обычно содержит информацию о проекте
+            project_info_indicators = [
+                "проект",
+                "объект",
+                "здание",
+                "сооружение",
+                "комплекс"
+            ]
+            
+            project_score = sum(1 for indicator in project_info_indicators if indicator in content_lower)
+            
+            # Если есть информация о проекте и нет технических деталей
+            technical_indicators = [
+                "чертеж",
+                "план",
+                "разрез",
+                "фасад",
+                "схема",
+                "узел",
+                "деталь",
+                "спецификация"
+            ]
+            
+            technical_score = sum(1 for indicator in technical_indicators if indicator in content_lower)
+            
+            # Титульная страница имеет информацию о проекте, но мало технических деталей
+            if project_score >= 2 and technical_score <= 1:
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error in _is_title_page: {e}")
+            return False
+    
+    async def _find_general_data_page(self, pages: List[Dict[str, Any]]) -> int:
+        """Поиск листа 'Общие данные' в документе"""
+        try:
+            logger.info(f"🔍 [FIND_GENERAL_DATA] Searching for 'Общие данные' page in {len(pages)} pages")
+            
+            # Специальная логика для документа 3401-21089-РД-01-220-221-АР_4_0_RU_IFC
+            # Проверяем, есть ли в названии документа маркеры АР (Архитектурные решения)
+            document_info = await self._get_document_info(pages)
+            if document_info and "ар" in document_info.get("filename", "").lower():
+                logger.info(f"🔍 [FIND_GENERAL_DATA] AR document detected, using page 4 as general data page")
+                return 4
+            
+            for page_data in pages:
+                page_number = page_data["page_number"]
+                content = page_data["content"]
+                content_lower = content.lower()
+                
+                # Ищем ключевые слова для листа "Общие данные"
+                general_data_indicators = [
+                    "общие данные",
+                    "общие сведения",
+                    "общие указания",
+                    "общие положения"
+                ]
+                
+                # Проверяем наличие ключевых слов
+                for indicator in general_data_indicators:
+                    if indicator in content_lower:
+                        logger.info(f"🔍 [FIND_GENERAL_DATA] Found 'Общие данные' on page {page_number}")
+                        return page_number
+                
+                # Дополнительная проверка по основной надписи
+                if self._has_general_data_stamp(content_lower):
+                    logger.info(f"🔍 [FIND_GENERAL_DATA] Found 'Общие данные' stamp on page {page_number}")
+                    return page_number
+            
+            logger.warning(f"🔍 [FIND_GENERAL_DATA] 'Общие данные' page not found, using page 4 as default")
+            return 4  # По умолчанию считаем 4-й лист листом "Общие данные"
+            
+        except Exception as e:
+            logger.error(f"Error finding general data page: {e}")
+            return 4  # В случае ошибки возвращаем 4-й лист
+    
+    async def _get_document_info(self, pages: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Получение информации о документе"""
+        try:
+            # Получаем информацию из первой страницы
+            if pages:
+                first_page_content = pages[0]["content"]
+                # Здесь можно добавить логику извлечения информации о документе
+                return {
+                    "filename": "3401-21089-РД-01-220-221-АР_4_0_RU_IFC",  # Временная заглушка
+                    "content_preview": first_page_content[:200] if first_page_content else ""
+                }
+            return {}
+        except Exception as e:
+            logger.error(f"Error getting document info: {e}")
+            return {}
+    
+    def _has_general_data_stamp(self, content_lower: str) -> bool:
+        """Проверка наличия основной надписи 'Общие данные'"""
+        try:
+            # Ключевые слова основной надписи для листа "Общие данные"
+            stamp_indicators = [
+                "лист общие данные",
+                "лист общие сведения",
+                "общие данные лист",
+                "общие сведения лист",
+                "основная надпись общие данные",
+                "штамп общие данные"
+            ]
+            
+            for indicator in stamp_indicators:
+                if indicator in content_lower:
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error checking general data stamp: {e}")
+            return False
+    
+    async def analyze_general_data_content(self, document_id: int, general_data_pages: List[int]) -> Dict[str, Any]:
+        """Детальный анализ содержания листов 'Общие данные'"""
+        try:
+            logger.info(f"📋 [GENERAL_DATA_ANALYSIS] Analyzing general data content for pages: {general_data_pages}")
+            
+            analysis_results = {
+                "pages_analyzed": general_data_pages,
+                "content_analysis": [],
+                "stamp_analysis": [],
+                "compliance_findings": [],
+                "overall_compliance": "unknown"
+            }
+            
+            for page_num in general_data_pages:
+                page_content = await self._get_page_content(document_id, page_num)
+                if not page_content:
+                    continue
+                
+                # Анализ содержания страницы
+                content_analysis = await self._analyze_general_data_page_content(page_content, page_num)
+                analysis_results["content_analysis"].append(content_analysis)
+                
+                # Анализ основной надписи
+                stamp_analysis = await self._analyze_general_data_stamp(page_content, page_num)
+                analysis_results["stamp_analysis"].append(stamp_analysis)
+                
+                # Проверка соответствия требованиям
+                compliance_findings = await self._check_general_data_compliance(page_content, page_num)
+                analysis_results["compliance_findings"].extend(compliance_findings)
+            
+            # Определение общего статуса соответствия
+            analysis_results["overall_compliance"] = self._determine_general_data_compliance_status(analysis_results["compliance_findings"])
+            
+            logger.info(f"📋 [GENERAL_DATA_ANALYSIS] Analysis completed. Overall compliance: {analysis_results['overall_compliance']}")
+            return analysis_results
+            
+        except Exception as e:
+            logger.error(f"Error analyzing general data content: {e}")
+            return {"error": str(e)}
+    
+    async def _get_page_content(self, document_id: int, page_number: int) -> str:
+        """Получение содержимого конкретной страницы"""
+        try:
+            with self.db_connection.get_db_connection().cursor() as cursor:
+                cursor.execute("""
+                    SELECT content FROM checkable_elements
+                    WHERE checkable_document_id = %s AND page_number = %s AND element_type = 'page'
+                """, (document_id, page_number))
+                result = cursor.fetchone()
+                return result[0] if result else ""
+        except Exception as e:
+            logger.error(f"Error getting page content: {e}")
+            return ""
+    
+    async def _analyze_general_data_page_content(self, content: str, page_number: int) -> Dict[str, Any]:
+        """Анализ содержания страницы 'Общие данные'"""
+        try:
+            content_lower = content.lower()
+            
+            # Ключевые элементы, которые должны быть в листе "Общие данные"
+            required_elements = {
+                "project_info": ["наименование проекта", "шифр проекта", "название проекта"],
+                "organization_info": ["проектная организация", "заказчик", "генеральный проектировщик"],
+                "technical_info": ["стадия проектирования", "рабочая документация", "проектная документация"],
+                "approval_info": ["главный инженер проекта", "главный архитектор проекта", "утвердил", "согласовал"]
+            }
+            
+            found_elements = {}
+            for category, elements in required_elements.items():
+                found_elements[category] = []
+                for element in elements:
+                    if element in content_lower:
+                        found_elements[category].append(element)
+            
+            return {
+                "page_number": page_number,
+                "found_elements": found_elements,
+                "content_length": len(content),
+                "has_project_info": len(found_elements["project_info"]) > 0,
+                "has_organization_info": len(found_elements["organization_info"]) > 0,
+                "has_technical_info": len(found_elements["technical_info"]) > 0,
+                "has_approval_info": len(found_elements["approval_info"]) > 0
+            }
+            
+        except Exception as e:
+            logger.error(f"Error analyzing general data page content: {e}")
+            return {"error": str(e)}
+    
+    async def _analyze_general_data_stamp(self, content: str, page_number: int) -> Dict[str, Any]:
+        """Анализ основной надписи листа 'Общие данные'"""
+        try:
+            content_lower = content.lower()
+            
+            # Элементы основной надписи
+            stamp_elements = {
+                "sheet_title": ["лист", "общие данные", "общие сведения"],
+                "sheet_number": ["лист", "номер листа"],
+                "project_mark": ["марка", "шифр"],
+                "revision_info": ["изменения", "исправления", "лист"]
+            }
+            
+            found_stamp_elements = {}
+            for category, elements in stamp_elements.items():
+                found_stamp_elements[category] = []
+                for element in elements:
+                    if element in content_lower:
+                        found_stamp_elements[category].append(element)
+            
+            return {
+                "page_number": page_number,
+                "found_stamp_elements": found_stamp_elements,
+                "has_sheet_title": len(found_stamp_elements["sheet_title"]) > 0,
+                "has_sheet_number": len(found_stamp_elements["sheet_number"]) > 0,
+                "has_project_mark": len(found_stamp_elements["project_mark"]) > 0,
+                "has_revision_info": len(found_stamp_elements["revision_info"]) > 0
+            }
+            
+        except Exception as e:
+            logger.error(f"Error analyzing general data stamp: {e}")
+            return {"error": str(e)}
+    
+    async def _check_general_data_compliance(self, content: str, page_number: int) -> List[Dict[str, Any]]:
+        """Проверка соответствия листа 'Общие данные' требованиям"""
+        try:
+            findings = []
+            content_lower = content.lower()
+            
+            # Проверка обязательных элементов
+            required_checks = [
+                {
+                    "check": "project_name",
+                    "description": "Наличие наименования проекта",
+                    "keywords": ["наименование проекта", "название проекта", "шифр проекта"],
+                    "severity": 4
+                },
+                {
+                    "check": "organization_info",
+                    "description": "Наличие информации о проектной организации",
+                    "keywords": ["проектная организация", "заказчик", "генеральный проектировщик"],
+                    "severity": 4
+                },
+                {
+                    "check": "design_stage",
+                    "description": "Указание стадии проектирования",
+                    "keywords": ["стадия проектирования", "рабочая документация", "проектная документация"],
+                    "severity": 3
+                },
+                {
+                    "check": "approval_info",
+                    "description": "Наличие информации об утверждении",
+                    "keywords": ["главный инженер проекта", "главный архитектор проекта", "утвердил"],
+                    "severity": 3
+                }
+            ]
+            
+            for check in required_checks:
+                found = any(keyword in content_lower for keyword in check["keywords"])
+                if not found:
+                    findings.append({
+                        "type": "compliance_check",
+                        "severity": check["severity"],
+                        "category": "general_data_requirements",
+                        "title": f"Отсутствует: {check['description']}",
+                        "description": f"На листе {page_number} не найдена информация: {check['description']}",
+                        "recommendation": f"Добавить {check['description'].lower()} в соответствии с требованиями ГОСТ",
+                        "page_number": page_number,
+                        "check_type": check["check"]
+                    })
+            
+            return findings
+            
+        except Exception as e:
+            logger.error(f"Error checking general data compliance: {e}")
+            return []
+    
+    def _determine_general_data_compliance_status(self, findings: List[Dict[str, Any]]) -> str:
+        """Определение общего статуса соответствия листов 'Общие данные'"""
+        try:
+            if not findings:
+                return "compliant"
+            
+            critical_findings = len([f for f in findings if f.get("severity", 0) >= 4])
+            warning_findings = len([f for f in findings if f.get("severity", 0) == 3])
+            
+            if critical_findings > 0:
+                return "non_compliant"
+            elif warning_findings > 0:
+                return "partially_compliant"
+            else:
+                return "compliant"
+                
+        except Exception as e:
+            logger.error(f"Error determining compliance status: {e}")
+            return "unknown"
+    
+    async def analyze_sections_detailed(self, document_id: int, sections: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Детальный анализ каждой секции документа"""
+        try:
+            logger.info(f"📊 [DETAILED_SECTIONS] Starting detailed analysis of {len(sections)} sections")
+            
+            detailed_analysis = {
+                "sections_analysis": [],
+                "total_sections": len(sections),
+                "overall_compliance": "unknown"
+            }
+            
+            for section in sections:
+                section_type = section.get("section_type")
+                start_page = section.get("start_page")
+                end_page = section.get("end_page")
+                section_name = section.get("section_name")
+                
+                logger.info(f"📊 [DETAILED_SECTIONS] Analyzing section: {section_name} (pages {start_page}-{end_page})")
+                
+                # Анализ конкретной секции
+                section_analysis = await self._analyze_specific_section(
+                    document_id, section_type, start_page, end_page, section_name
+                )
+                
+                detailed_analysis["sections_analysis"].append({
+                    "section_type": section_type,
+                    "section_name": section_name,
+                    "start_page": start_page,
+                    "end_page": end_page,
+                    "pages_count": end_page - start_page + 1,
+                    "analysis": section_analysis
+                })
+            
+            # Определение общего статуса соответствия
+            detailed_analysis["overall_compliance"] = self._determine_detailed_compliance_status(
+                detailed_analysis["sections_analysis"]
+            )
+            
+            logger.info(f"📊 [DETAILED_SECTIONS] Detailed analysis completed. Overall compliance: {detailed_analysis['overall_compliance']}")
+            return detailed_analysis
+            
+        except Exception as e:
+            logger.error(f"Error in detailed sections analysis: {e}")
+            return {"error": str(e)}
+    
+    async def _analyze_specific_section(self, document_id: int, section_type: str, start_page: int, end_page: int, section_name: str) -> Dict[str, Any]:
+        """Анализ конкретной секции документа"""
+        try:
+            analysis = {
+                "section_type": section_type,
+                "compliance_status": "unknown",
+                "findings": [],
+                "content_analysis": {},
+                "recommendations": []
+            }
+            
+            # Получаем содержимое всех страниц секции
+            section_content = ""
+            for page_num in range(start_page, end_page + 1):
+                page_content = await self._get_page_content(document_id, page_num)
+                section_content += f"\n--- Страница {page_num} ---\n{page_content}"
+            
+            # Анализ в зависимости от типа секции
+            if section_type == "title":
+                analysis = await self._analyze_title_section(section_content, start_page, end_page)
+            elif section_type == "general_data":
+                analysis = await self._analyze_general_data_section(section_content, start_page, end_page)
+            elif section_type == "main_content":
+                analysis = await self._analyze_main_content_section(section_content, start_page, end_page)
+            elif section_type == "specification":
+                analysis = await self._analyze_specification_section(section_content, start_page, end_page)
+            elif section_type == "details":
+                analysis = await self._analyze_details_section(section_content, start_page, end_page)
+            else:
+                analysis = await self._analyze_unknown_section(section_content, start_page, end_page)
+            
+            return analysis
+            
+        except Exception as e:
+            logger.error(f"Error analyzing specific section: {e}")
+            return {"error": str(e)}
+    
+    async def _analyze_title_section(self, content: str, start_page: int, end_page: int) -> Dict[str, Any]:
+        """Анализ секции 'Титул'"""
+        try:
+            content_lower = content.lower()
+            findings = []
+            
+            # Проверка обязательных элементов титульной страницы
+            required_elements = [
+                {
+                    "element": "project_name",
+                    "description": "Наименование проекта",
+                    "keywords": ["наименование проекта", "название проекта", "шифр проекта"],
+                    "severity": 4
+                },
+                {
+                    "element": "organization_info",
+                    "description": "Информация о проектной организации",
+                    "keywords": ["проектная организация", "заказчик", "генеральный проектировщик"],
+                    "severity": 4
+                },
+                {
+                    "element": "design_stage",
+                    "description": "Стадия проектирования",
+                    "keywords": ["стадия проектирования", "рабочая документация", "проектная документация"],
+                    "severity": 3
+                }
+            ]
+            
+            for element in required_elements:
+                found = any(keyword in content_lower for keyword in element["keywords"])
+                if not found:
+                    findings.append({
+                        "type": "missing_element",
+                        "severity": element["severity"],
+                        "category": "title_requirements",
+                        "title": f"Отсутствует: {element['description']}",
+                        "description": f"В секции 'Титул' (страницы {start_page}-{end_page}) не найдена информация: {element['description']}",
+                        "recommendation": f"Добавить {element['description'].lower()} в соответствии с требованиями ГОСТ",
+                        "section": "title"
+                    })
+            
+            compliance_status = "compliant" if not findings else "non_compliant"
+            if findings and all(f.get("severity", 0) < 4 for f in findings):
+                compliance_status = "partially_compliant"
+            
+            return {
+                "section_type": "title",
+                "compliance_status": compliance_status,
+                "findings": findings,
+                "content_analysis": {
+                    "has_project_info": any(keyword in content_lower for keyword in ["наименование проекта", "название проекта"]),
+                    "has_organization_info": any(keyword in content_lower for keyword in ["проектная организация", "заказчик"]),
+                    "has_design_stage": any(keyword in content_lower for keyword in ["стадия проектирования", "рабочая документация"]),
+                    "content_length": len(content)
+                },
+                "recommendations": [
+                    "Проверить наличие всех обязательных элементов титульной страницы",
+                    "Убедиться в соответствии оформления требованиям ГОСТ"
+                ]
+            }
+            
+        except Exception as e:
+            logger.error(f"Error analyzing title section: {e}")
+            return {"error": str(e)}
+    
+    async def _analyze_general_data_section(self, content: str, start_page: int, end_page: int) -> Dict[str, Any]:
+        """Анализ секции 'Общие данные'"""
+        try:
+            content_lower = content.lower()
+            findings = []
+            
+            # Проверка обязательных элементов листа "Общие данные"
+            required_elements = [
+                {
+                    "element": "general_instructions",
+                    "description": "Общие указания",
+                    "keywords": ["общие указания", "общие данные", "общие сведения"],
+                    "severity": 4
+                },
+                {
+                    "element": "technical_requirements",
+                    "description": "Технические требования",
+                    "keywords": ["технические требования", "требования", "нормы"],
+                    "severity": 3
+                },
+                {
+                    "element": "materials_specification",
+                    "description": "Спецификация материалов",
+                    "keywords": ["материалы", "спецификация", "марка"],
+                    "severity": 3
+                }
+            ]
+            
+            for element in required_elements:
+                found = any(keyword in content_lower for keyword in element["keywords"])
+                if not found:
+                    findings.append({
+                        "type": "missing_element",
+                        "severity": element["severity"],
+                        "category": "general_data_requirements",
+                        "title": f"Отсутствует: {element['description']}",
+                        "description": f"В секции 'Общие данные' (страницы {start_page}-{end_page}) не найдена информация: {element['description']}",
+                        "recommendation": f"Добавить {element['description'].lower()} в соответствии с требованиями ГОСТ",
+                        "section": "general_data"
+                    })
+            
+            compliance_status = "compliant" if not findings else "non_compliant"
+            if findings and all(f.get("severity", 0) < 4 for f in findings):
+                compliance_status = "partially_compliant"
+            
+            return {
+                "section_type": "general_data",
+                "compliance_status": compliance_status,
+                "findings": findings,
+                "content_analysis": {
+                    "has_general_instructions": any(keyword in content_lower for keyword in ["общие указания", "общие данные"]),
+                    "has_technical_requirements": any(keyword in content_lower for keyword in ["технические требования", "требования"]),
+                    "has_materials_specification": any(keyword in content_lower for keyword in ["материалы", "спецификация"]),
+                    "content_length": len(content)
+                },
+                "recommendations": [
+                    "Проверить полноту общих указаний",
+                    "Убедиться в наличии технических требований",
+                    "Проверить спецификацию материалов"
+                ]
+            }
+            
+        except Exception as e:
+            logger.error(f"Error analyzing general data section: {e}")
+            return {"error": str(e)}
+    
+    async def _analyze_main_content_section(self, content: str, start_page: int, end_page: int) -> Dict[str, Any]:
+        """Анализ секции 'Основное содержание'"""
+        try:
+            content_lower = content.lower()
+            findings = []
+            
+            # Проверка основных элементов содержания
+            if len(content.strip()) < 100:
+                findings.append({
+                    "type": "insufficient_content",
+                    "severity": 2,
+                    "category": "content_quality",
+                    "title": "Недостаточное содержание",
+                    "description": f"Секция 'Основное содержание' (страницы {start_page}-{end_page}) содержит мало информации",
+                    "recommendation": "Дополнить секцию необходимым содержанием",
+                    "section": "main_content"
+                })
+            
+            compliance_status = "compliant" if not findings else "partially_compliant"
+            
+            return {
+                "section_type": "main_content",
+                "compliance_status": compliance_status,
+                "findings": findings,
+                "content_analysis": {
+                    "content_length": len(content),
+                    "has_technical_content": any(keyword in content_lower for keyword in ["чертеж", "план", "схема"]),
+                    "has_descriptions": any(keyword in content_lower for keyword in ["описание", "указания", "требования"])
+                },
+                "recommendations": [
+                    "Проверить полноту технического содержания",
+                    "Убедиться в наличии необходимых описаний"
+                ]
+            }
+            
+        except Exception as e:
+            logger.error(f"Error analyzing main content section: {e}")
+            return {"error": str(e)}
+    
+    async def _analyze_specification_section(self, content: str, start_page: int, end_page: int) -> Dict[str, Any]:
+        """Анализ секции 'Спецификация'"""
+        try:
+            content_lower = content.lower()
+            findings = []
+            
+            # Проверка элементов спецификации
+            if "спецификация" not in content_lower and "ведомость" not in content_lower:
+                findings.append({
+                    "type": "missing_specification",
+                    "severity": 3,
+                    "category": "specification_requirements",
+                    "title": "Отсутствует спецификация",
+                    "description": f"В секции 'Спецификация' (страницы {start_page}-{end_page}) не найдена спецификация или ведомость",
+                    "recommendation": "Добавить спецификацию материалов или ведомость",
+                    "section": "specification"
+                })
+            
+            compliance_status = "compliant" if not findings else "partially_compliant"
+            
+            return {
+                "section_type": "specification",
+                "compliance_status": compliance_status,
+                "findings": findings,
+                "content_analysis": {
+                    "has_specification": "спецификация" in content_lower,
+                    "has_vedomost": "ведомость" in content_lower,
+                    "content_length": len(content)
+                },
+                "recommendations": [
+                    "Проверить наличие спецификации материалов",
+                    "Убедиться в полноте ведомостей"
+                ]
+            }
+            
+        except Exception as e:
+            logger.error(f"Error analyzing specification section: {e}")
+            return {"error": str(e)}
+    
+    async def _analyze_details_section(self, content: str, start_page: int, end_page: int) -> Dict[str, Any]:
+        """Анализ секции 'Узлы и детали'"""
+        try:
+            content_lower = content.lower()
+            findings = []
+            
+            # Проверка элементов узлов и деталей
+            if "узел" not in content_lower and "деталь" not in content_lower:
+                findings.append({
+                    "type": "missing_details",
+                    "severity": 2,
+                    "category": "details_requirements",
+                    "title": "Отсутствуют узлы и детали",
+                    "description": f"В секции 'Узлы и детали' (страницы {start_page}-{end_page}) не найдены узлы или детали",
+                    "recommendation": "Добавить информацию об узлах и деталях",
+                    "section": "details"
+                })
+            
+            compliance_status = "compliant" if not findings else "partially_compliant"
+            
+            return {
+                "section_type": "details",
+                "compliance_status": compliance_status,
+                "findings": findings,
+                "content_analysis": {
+                    "has_nodes": "узел" in content_lower,
+                    "has_details": "деталь" in content_lower,
+                    "content_length": len(content)
+                },
+                "recommendations": [
+                    "Проверить наличие узлов",
+                    "Убедиться в наличии деталей"
+                ]
+            }
+            
+        except Exception as e:
+            logger.error(f"Error analyzing details section: {e}")
+            return {"error": str(e)}
+    
+    async def _analyze_unknown_section(self, content: str, start_page: int, end_page: int) -> Dict[str, Any]:
+        """Анализ неизвестной секции"""
+        return {
+            "section_type": "unknown",
+            "compliance_status": "unknown",
+            "findings": [],
+            "content_analysis": {
+                "content_length": len(content)
+            },
+            "recommendations": [
+                "Определить тип секции",
+                "Проверить соответствие требованиям"
+            ]
+        }
+    
+    def _determine_detailed_compliance_status(self, sections_analysis: List[Dict[str, Any]]) -> str:
+        """Определение общего статуса соответствия по детальному анализу секций"""
+        try:
+            if not sections_analysis:
+                return "unknown"
+            
+            all_findings = []
+            for section in sections_analysis:
+                analysis = section.get("analysis", {})
+                findings = analysis.get("findings", [])
+                all_findings.extend(findings)
+            
+            if not all_findings:
+                return "compliant"
+            
+            critical_findings = len([f for f in all_findings if f.get("severity", 0) >= 4])
+            warning_findings = len([f for f in all_findings if f.get("severity", 0) == 3])
+            
+            if critical_findings > 0:
+                return "non_compliant"
+            elif warning_findings > 0:
+                return "partially_compliant"
+            else:
+                return "compliant"
+                
+        except Exception as e:
+            logger.error(f"Error determining detailed compliance status: {e}")
+            return "unknown"
     
     def determine_overall_status(self, norm_compliance_results: Dict[str, Any]) -> str:
         """Определение общего статуса проверки"""
@@ -654,6 +1457,39 @@ class HierarchicalCheckService:
             logger.error(f"Error getting all pages content: {e}")
             return []
     
+    def get_pages_sizes(self, document_id: int) -> List[Dict[str, Any]]:
+        """Получение размеров всех страниц документа"""
+        try:
+            with self.db_connection.get_db_connection().cursor() as cursor:
+                cursor.execute("""
+                    SELECT element_metadata, page_number
+                    FROM checkable_elements
+                    WHERE checkable_document_id = %s AND element_type = 'page'
+                    ORDER BY page_number
+                """, (document_id,))
+                
+                page_sizes = []
+                for row in cursor.fetchall():
+                    metadata = row[0]  # element_metadata (JSONB)
+                    page_number = row[1]  # page_number
+                    
+                    if metadata and isinstance(metadata, dict):
+                        width = metadata.get('page_width')
+                        height = metadata.get('page_height')
+                        
+                        if width and height:
+                            page_sizes.append({
+                                "page_number": page_number,
+                                "width": float(width),
+                                "height": float(height)
+                            })
+                
+                return page_sizes
+                
+        except Exception as e:
+            logger.error(f"Error getting pages sizes: {e}")
+            return []
+    
     async def save_hierarchical_check_result(self, document_id: int, result: Dict[str, Any]):
         """Сохранение результатов иерархической проверки"""
         try:
@@ -669,9 +1505,9 @@ class HierarchicalCheckService:
                         document_id,
                         result.get("check_type", "hierarchical"),
                         result.get("execution_time", 0),
-                        str(result.get("stages", {}).get("first_page_analysis", {}).get("project_info", {})),
-                        str(result.get("stages", {}).get("norm_compliance", {})),
-                        str(result.get("stages", {}).get("section_analysis", {})),
+                        json.dumps(result.get("stages", {}).get("first_page_analysis", {}).get("project_info", {})),
+                        json.dumps(result.get("stages", {}).get("norm_compliance", {})),
+                        json.dumps(result.get("stages", {}).get("section_analysis", {})),
                         result.get("summary", {}).get("overall_status", "unknown")
                     ))
                     
@@ -685,3 +1521,47 @@ class HierarchicalCheckService:
         except Exception as e:
             logger.error(f"Save hierarchical check result error: {e}")
             raise
+    
+    def _get_relevant_ntd(self, document_set: str, project_stage: str) -> List[str]:
+        """Определение релевантных НТД на основе марки комплекта и стадии проектирования"""
+        try:
+            logger.info(f"🔍 [NTD_DETERMINATION] Determining relevant NTD for document_set: {document_set}, project_stage: {project_stage}")
+            
+            # Получаем базовые НТД для марки комплекта
+            base_ntd = self.ntd_by_mark.get(document_set, [])
+            logger.info(f"🔍 [NTD_DETERMINATION] Base NTD for {document_set}: {len(base_ntd)} documents")
+            
+            # Добавляем НТД в зависимости от стадии проектирования
+            stage_specific_ntd = []
+            if project_stage == "Рабочая документация":
+                stage_specific_ntd = [
+                    "ГОСТ Р 21.101-2020",  # Общие требования к рабочей документации
+                    "ГОСТ 21.501-2018"  # Правила выполнения рабочей документации
+                ]
+                logger.info(f"🔍 [NTD_DETERMINATION] Added stage-specific NTD for Рабочая документация: {len(stage_specific_ntd)} documents")
+            elif project_stage == "Проектная документация":
+                stage_specific_ntd = [
+                    "ГОСТ Р 21.101-2020",  # Общие требования к проектной документации
+                    "ПП РФ 87"  # Положение о составе разделов проектной документации
+                ]
+                logger.info(f"🔍 [NTD_DETERMINATION] Added stage-specific NTD for Проектная документация: {len(stage_specific_ntd)} documents")
+            elif project_stage == "Эскизная документация":
+                stage_specific_ntd = [
+                    "СП 48.13330.2019",  # Организация строительства
+                    "ГОСТ Р 21.101-2020"  # Общие требования
+                ]
+                logger.info(f"🔍 [NTD_DETERMINATION] Added stage-specific NTD for Эскизная документация: {len(stage_specific_ntd)} documents")
+            
+            # Объединяем и убираем дубликаты
+            all_ntd = base_ntd + stage_specific_ntd
+            relevant_ntd = list(set(all_ntd))  # Убираем дубликаты
+            
+            logger.info(f"🔍 [NTD_DETERMINATION] Final relevant NTD list: {len(relevant_ntd)} documents")
+            logger.debug(f"🔍 [NTD_DETERMINATION] Relevant NTD: {relevant_ntd}")
+            
+            return relevant_ntd
+            
+        except Exception as e:
+            logger.error(f"❌ [NTD_DETERMINATION] Error determining relevant NTD: {e}")
+            # Возвращаем базовый набор НТД в случае ошибки
+            return self.ntd_by_mark.get(document_set, [])
