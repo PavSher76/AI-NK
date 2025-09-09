@@ -241,11 +241,79 @@ class PDFReportGenerator:
         )))
         elements.append(Spacer(1, 10))
         
+        # Добавляем перечень НТД, на соответствие которым выполнена проверка
+        relevant_ntd = compliance_data.get('relevant_ntd', [])
+        if relevant_ntd:
+            elements.append(Paragraph("ПЕРЕЧЕНЬ НОРМАТИВНЫХ ДОКУМЕНТОВ", ParagraphStyle(
+                name='NTDTitle',
+                fontName=self.bold_font,
+                fontSize=12,
+                spaceAfter=8,
+                spaceBefore=15,
+                textColor=colors.darkblue
+            )))
+            
+            elements.append(Paragraph("Проверка выполнена на соответствие следующим нормативным документам согласно \"Перечень НТД для руководства внутри ОНК по маркам\":", ParagraphStyle(
+                name='NTDInfo',
+                fontName=self.default_font,
+                fontSize=9,
+                spaceAfter=8
+            )))
+            
+            # Создаем таблицу с перечнем НТД
+            ntd_table_data = [['№', 'Наименование нормативного документа']]
+            for i, ntd in enumerate(relevant_ntd, 1):
+                ntd_table_data.append([str(i), ntd])
+            
+            ntd_table = Table(ntd_table_data, colWidths=[0.5*inch, 5.5*inch])
+            ntd_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.lightblue),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 9),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 1), (-1, -1), 8),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 6),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+                ('TOPPADDING', (0, 0), (-1, -1), 6),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ]))
+            
+            elements.append(ntd_table)
+            elements.append(Spacer(1, 15))
+        else:
+            # Если перечень НТД не указан, добавляем информацию об этом
+            elements.append(Paragraph("ПЕРЕЧЕНЬ НОРМАТИВНЫХ ДОКУМЕНТОВ", ParagraphStyle(
+                name='NTDTitle',
+                fontName=self.bold_font,
+                fontSize=12,
+                spaceAfter=8,
+                spaceBefore=15,
+                textColor=colors.darkblue
+            )))
+            
+            elements.append(Paragraph("Перечень нормативных документов для проверки не определен. Рекомендуется загрузить документ \"Перечень НТД для руководства внутри ОНК по маркам\" для автоматического определения релевантных НТД.", ParagraphStyle(
+                name='NTDWarning',
+                fontName=self.default_font,
+                fontSize=9,
+                spaceAfter=8,
+                textColor=colors.red
+            )))
+            elements.append(Spacer(1, 15))
+        
         # Общая статистика
+        total_pages = compliance_data.get('total_pages', 0)
+        a4_equivalent = self._calculate_a4_equivalent(total_pages, compliance_data.get('page_sizes', []))
+        
         stats_table_data = [
             ['Параметр', 'Значение'],
-            ['Листов в документе', str(compliance_data.get('total_pages', 0))],
-            ['Листов формата А4', str(compliance_data.get('total_pages', 0))],  # Пока используем то же значение
+            ['Листов в документе', str(total_pages)],
+            ['Листов формата А4', str(a4_equivalent)],
             ['Соответствующих страниц', str(compliance_data.get('compliant_pages', 0))],
             ['Процент соответствия', f"{compliance_data.get('compliance_percentage', 0):.1f}%"],
             ['Всего находок', str(compliance_data.get('total_findings', 0))],
@@ -334,8 +402,10 @@ class PDFReportGenerator:
             sections_table_data = [['Тип секции', 'Название', 'Страницы', 'Приоритет проверки']]
             
             for section in sections:
+                # Переводим тип секции на русский язык для лучшего понимания
+                section_type_ru = self._translate_section_type(section.get('section_type', ''))
                 sections_table_data.append([
-                    section.get('section_type', ''),
+                    section_type_ru,
                     section.get('section_name', ''),
                     f"{section.get('start_page', '')}-{section.get('end_page', '')}",
                     section.get('check_priority', '')
@@ -358,6 +428,103 @@ class PDFReportGenerator:
             elements.append(Spacer(1, 15))
         
         return elements
+    
+    def _create_detailed_sections_report_section(self, sections_analysis):
+        """Создание раздела с детальным отчетом проверки по секциям"""
+        elements = []
+        
+        if not sections_analysis:
+            return elements
+        
+        # Заголовок раздела
+        elements.append(Paragraph("ДЕТАЛЬНЫЙ ОТЧЕТ ПРОВЕРКИ ПО СЕКЦИЯМ", ParagraphStyle(
+            name='DetailedSectionsTitle',
+            fontName=self.bold_font,
+            fontSize=14,
+            spaceAfter=12,
+            spaceBefore=20,
+            textColor=colors.darkblue
+        )))
+        
+        # Парсим данные анализа секций
+        sections_data = self._parse_json_string(sections_analysis)
+        
+        # Проверяем наличие детального анализа
+        detailed_analysis = sections_data.get('detailed_sections_analysis')
+        if not detailed_analysis:
+            elements.append(Paragraph("Детальный анализ секций недоступен.", self.styles['Normal']))
+            return elements
+        
+        sections_analysis_data = detailed_analysis.get('sections_analysis', [])
+        
+        for section_data in sections_analysis_data:
+            section_name = section_data.get('section_name', 'Неизвестная секция')
+            start_page = section_data.get('start_page', 0)
+            end_page = section_data.get('end_page', 0)
+            analysis = section_data.get('analysis', {})
+            
+            # Заголовок секции
+            elements.append(Paragraph(f"{section_name} (страницы {start_page}-{end_page})", ParagraphStyle(
+                name='SectionTitle',
+                fontName=self.bold_font,
+                fontSize=12,
+                spaceAfter=8,
+                spaceBefore=15,
+                textColor=colors.darkgreen
+            )))
+            
+            # Статус соответствия
+            compliance_status = analysis.get('compliance_status', 'unknown')
+            status_text = self._translate_compliance_status(compliance_status)
+            
+            status_para = Paragraph(f"<b>Статус соответствия:</b> {status_text}", self.styles['Normal'])
+            elements.append(status_para)
+            elements.append(Spacer(1, 6))
+            
+            # Findings (находки)
+            findings = analysis.get('findings', [])
+            if findings:
+                elements.append(Paragraph("<b>Найденные проблемы:</b>", self.styles['Normal']))
+                
+                for finding in findings:
+                    finding_text = f"• {finding.get('title', 'Неизвестная проблема')}"
+                    elements.append(Paragraph(finding_text, self.styles['Normal']))
+                    
+                    if finding.get('description'):
+                        desc_text = f"  - {finding['description']}"
+                        elements.append(Paragraph(desc_text, self.styles['Normal']))
+                    
+                    if finding.get('recommendation'):
+                        rec_text = f"  - Рекомендация: {finding['recommendation']}"
+                        elements.append(Paragraph(rec_text, self.styles['Normal']))
+                    
+                    elements.append(Spacer(1, 3))
+            else:
+                elements.append(Paragraph("<i>Проблем не обнаружено.</i>", self.styles['Normal']))
+            
+            # Рекомендации
+            recommendations = analysis.get('recommendations', [])
+            if recommendations:
+                elements.append(Spacer(1, 6))
+                elements.append(Paragraph("<b>Рекомендации:</b>", self.styles['Normal']))
+                
+                for recommendation in recommendations:
+                    rec_text = f"• {recommendation}"
+                    elements.append(Paragraph(rec_text, self.styles['Normal']))
+            
+            elements.append(Spacer(1, 10))  # Отступ между секциями
+        
+        return elements
+    
+    def _translate_compliance_status(self, status: str) -> str:
+        """Перевод статуса соответствия на русский язык"""
+        translations = {
+            "compliant": "Соответствует требованиям",
+            "partially_compliant": "Частично соответствует требованиям",
+            "non_compliant": "Не соответствует требованиям",
+            "unknown": "Статус неизвестен"
+        }
+        return translations.get(status, status)
     
     def _create_overall_status_section(self, overall_status, execution_time):
         """Создание раздела с общим статусом"""
@@ -445,6 +612,10 @@ class PDFReportGenerator:
             if hierarchical_result.get('sections_analysis'):
                 elements.extend(self._create_sections_analysis_section(hierarchical_result['sections_analysis']))
             
+            # Детальный отчет проверки по секциям
+            if hierarchical_result.get('sections_analysis'):
+                elements.extend(self._create_detailed_sections_report_section(hierarchical_result['sections_analysis']))
+            
             # Общий статус
             overall_status = hierarchical_result.get('overall_status', 'unknown')
             execution_time = hierarchical_result.get('execution_time', 0)
@@ -464,6 +635,57 @@ class PDFReportGenerator:
         except Exception as e:
             logger.error(f"Error generating PDF report: {e}")
             raise
+    
+    def _calculate_a4_equivalent(self, total_pages: int, page_sizes: list) -> int:
+        """Расчет эквивалента количества листов формата А4"""
+        try:
+            if not page_sizes or total_pages == 0:
+                # Если нет информации о размерах страниц, возвращаем количество страниц
+                return total_pages
+            
+            # Стандартные размеры форматов (в пунктах)
+            A4_WIDTH = 595.28  # A4 width in points
+            A4_HEIGHT = 841.89  # A4 height in points
+            A4_AREA = A4_WIDTH * A4_HEIGHT
+            
+            total_a4_equivalent = 0
+            
+            for page_size in page_sizes:
+                if isinstance(page_size, dict):
+                    width = page_size.get('width', A4_WIDTH)
+                    height = page_size.get('height', A4_HEIGHT)
+                    
+                    # Рассчитываем площадь страницы
+                    page_area = width * height
+                    
+                    # Рассчитываем коэффициент для пересчета в А4
+                    a4_ratio = page_area / A4_AREA
+                    
+                    # Добавляем к общему эквиваленту
+                    total_a4_equivalent += a4_ratio
+                else:
+                    # Если формат данных неизвестен, считаем как А4
+                    total_a4_equivalent += 1
+            
+            # Округляем до целого числа
+            return max(1, round(total_a4_equivalent))
+            
+        except Exception as e:
+            logger.warning(f"Error calculating A4 equivalent: {e}")
+            # В случае ошибки возвращаем количество страниц
+            return total_pages
+    
+    def _translate_section_type(self, section_type: str) -> str:
+        """Перевод типа секции на русский язык"""
+        translations = {
+            "title": "Титул",
+            "general_data": "Общие данные",
+            "main_content": "Основное содержание",
+            "specification": "Спецификация",
+            "details": "Узлы и детали",
+            "unknown": "Неизвестный раздел"
+        }
+        return translations.get(section_type, section_type)
     
     def generate_report_pdf(self, report_data):
         """Генерация PDF отчета (основной метод)"""

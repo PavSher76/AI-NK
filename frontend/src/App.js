@@ -29,6 +29,16 @@ import ChatPage from './pages/ChatPage';
 import NormcontrolPage from './pages/NormcontrolPage';
 import CalculationsPage from './pages/CalculationsPage';
 import StructuralCalculationsPage from './pages/StructuralCalculationsPage';
+import FoundationCalculationsPage from './pages/FoundationCalculationsPage';
+import ThermalCalculationsPage from './pages/ThermalCalculationsPage';
+import VentilationCalculationsPage from './pages/VentilationCalculationsPage';
+import ElectricalCalculationsPage from './pages/ElectricalCalculationsPage';
+import DegasificationCalculationsPage from './pages/DegasificationCalculationsPage';
+import WaterSupplyCalculationsPage from './pages/WaterSupplyCalculationsPage';
+import FireSafetyCalculationsPage from './pages/FireSafetyCalculationsPage';
+import AcousticCalculationsPage from './pages/AcousticCalculationsPage';
+import LightingCalculationsPage from './pages/LightingCalculationsPage';
+import GeologicalCalculationsPage from './pages/GeologicalCalculationsPage';
 import DocumentsPage from './pages/DocumentsPage';
 import NTDConsultation from './components/NTDConsultation';
 
@@ -565,6 +575,17 @@ function App() {
             />
           )}
 
+          {currentPage === 'foundation-calculations' && (
+            <FoundationCalculationsPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
+            />
+          )}
+
+          {currentPage === 'degasification-calculations' && (
+            <DegasificationCalculationsPage />
+          )}
+
           {currentPage === 'electrical-calculations' && (
             <CalculationsPage
               isAuthenticated={isAuthenticated}
@@ -581,11 +602,66 @@ function App() {
             />
           )}
 
-          {currentPage === 'thermal-calculations' && (
-            <CalculationsPage
+          {currentPage === 'foundation-calculations' && (
+            <FoundationCalculationsPage
               isAuthenticated={isAuthenticated}
               authToken={authToken}
-              calculationType="thermal"
+            />
+          )}
+
+          {currentPage === 'thermal-calculations' && (
+            <ThermalCalculationsPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
+            />
+          )}
+
+          {currentPage === 'ventilation-calculations' && (
+            <VentilationCalculationsPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
+            />
+          )}
+
+          {currentPage === 'electrical-calculations' && (
+            <ElectricalCalculationsPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
+            />
+          )}
+
+          {currentPage === 'water-supply-calculations' && (
+            <WaterSupplyCalculationsPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
+            />
+          )}
+
+          {currentPage === 'fire-safety-calculations' && (
+            <FireSafetyCalculationsPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
+            />
+          )}
+
+          {currentPage === 'acoustic-calculations' && (
+            <AcousticCalculationsPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
+            />
+          )}
+
+          {currentPage === 'lighting-calculations' && (
+            <LightingCalculationsPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
+            />
+          )}
+
+          {currentPage === 'geological-calculations' && (
+            <GeologicalCalculationsPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
             />
           )}
 

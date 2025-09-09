@@ -12,7 +12,16 @@ import {
   RefreshCw,
   X,
   HelpCircle,
-  Activity
+  Activity,
+  Building,
+  Thermometer,
+  Wind,
+  Zap,
+  Droplets,
+  Flame,
+  Volume2,
+  Sun,
+  Mountain
 } from 'lucide-react';
 
 const Sidebar = ({ 
@@ -69,7 +78,75 @@ const Sidebar = ({
       id: 'calculations',
       label: 'Расчеты',
       icon: Calculator,
-      onClick: () => handlePageClick('calculations')
+      onClick: () => handlePageClick('calculations'),
+      submenu: [
+        {
+          id: 'structural-calculations',
+          label: 'Строительные конструкции',
+          icon: Building,
+          onClick: () => handlePageClick('structural-calculations')
+        },
+        {
+          id: 'degasification-calculations',
+          label: 'Дегазация угольных шахт',
+          icon: Wind,
+          onClick: () => handlePageClick('degasification-calculations')
+        },
+        {
+          id: 'foundation-calculations',
+          label: 'Основания и фундаменты',
+          icon: Mountain,
+          onClick: () => handlePageClick('foundation-calculations')
+        },
+        {
+          id: 'thermal-calculations',
+          label: 'Теплотехнические',
+          icon: Thermometer,
+          onClick: () => handlePageClick('thermal-calculations')
+        },
+        {
+          id: 'ventilation-calculations',
+          label: 'Вентиляция и кондиционирование',
+          icon: Wind,
+          onClick: () => handlePageClick('ventilation-calculations')
+        },
+        {
+          id: 'electrical-calculations',
+          label: 'Электротехнические',
+          icon: Zap,
+          onClick: () => handlePageClick('electrical-calculations')
+        },
+        {
+          id: 'water-supply-calculations',
+          label: 'Водоснабжение и водоотведение',
+          icon: Droplets,
+          onClick: () => handlePageClick('water-supply-calculations')
+        },
+        {
+          id: 'fire-safety-calculations',
+          label: 'Пожарная безопасность',
+          icon: Flame,
+          onClick: () => handlePageClick('fire-safety-calculations')
+        },
+        {
+          id: 'acoustic-calculations',
+          label: 'Акустические',
+          icon: Volume2,
+          onClick: () => handlePageClick('acoustic-calculations')
+        },
+        {
+          id: 'lighting-calculations',
+          label: 'Освещение и инсоляция',
+          icon: Sun,
+          onClick: () => handlePageClick('lighting-calculations')
+        },
+        {
+          id: 'geological-calculations',
+          label: 'Инженерно-геологические',
+          icon: Mountain,
+          onClick: () => handlePageClick('geological-calculations')
+        }
+      ]
     },
     {
       id: 'normcontrol',
@@ -88,29 +165,71 @@ const Sidebar = ({
   const renderNavigationItem = (item) => {
     const Icon = item.icon;
     const isActive = currentPage === item.id;
+    const hasSubmenu = item.submenu && item.submenu.length > 0;
+    const isSubmenuActive = hasSubmenu && item.submenu.some(subItem => currentPage === subItem.id);
 
     return (
-      <button
-        key={item.id}
-        onClick={item.onClick}
-        className={`w-full flex items-center px-4 py-3.5 rounded-xl text-sm font-medium transition-all duration-300 group ${
-          isActive
-            ? 'bg-gradient-to-r from-primary-50 to-primary-100 text-primary-700 shadow-soft border border-primary-200'
-            : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50 hover:shadow-soft'
-        }`}
-      >
-        <div className={`w-8 h-8 rounded-lg flex items-center justify-center mr-3 transition-all duration-300 ${
-          isActive 
-            ? 'bg-primary-500 text-white shadow-soft' 
-            : 'bg-gray-100 text-gray-600 group-hover:bg-primary-100 group-hover:text-primary-600'
-        }`}>
-          <Icon className="w-4 h-4" />
-        </div>
-        <span className="flex-1 text-left">{item.label}</span>
-        {isActive && (
-          <div className="w-2 h-2 bg-primary-500 rounded-full"></div>
+      <div key={item.id} className="space-y-1">
+        <button
+          onClick={item.onClick}
+          className={`w-full flex items-center px-4 py-3.5 rounded-xl text-sm font-medium transition-all duration-300 group ${
+            isActive || isSubmenuActive
+              ? 'bg-gradient-to-r from-primary-50 to-primary-100 text-primary-700 shadow-soft border border-primary-200'
+              : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50 hover:shadow-soft'
+          }`}
+        >
+          <div className={`w-8 h-8 rounded-lg flex items-center justify-center mr-3 transition-all duration-300 ${
+            isActive || isSubmenuActive
+              ? 'bg-primary-500 text-white shadow-soft' 
+              : 'bg-gray-100 text-gray-600 group-hover:bg-primary-100 group-hover:text-primary-600'
+          }`}>
+            <Icon className="w-4 h-4" />
+          </div>
+          <span className="flex-1 text-left">{item.label}</span>
+          {hasSubmenu && (
+            <div className={`w-2 h-2 rounded-full transition-all duration-300 ${
+              isSubmenuActive ? 'bg-primary-500' : 'bg-gray-300'
+            }`}></div>
+          )}
+          {isActive && !hasSubmenu && (
+            <div className="w-2 h-2 bg-primary-500 rounded-full"></div>
+          )}
+        </button>
+        
+        {/* Подменю */}
+        {hasSubmenu && (
+          <div className="ml-4 space-y-1">
+            {item.submenu.map((subItem) => {
+              const SubIcon = subItem.icon;
+              const isSubActive = currentPage === subItem.id;
+              
+              return (
+                <button
+                  key={subItem.id}
+                  onClick={subItem.onClick}
+                  className={`w-full flex items-center px-3 py-2 rounded-lg text-xs font-medium transition-all duration-300 group ${
+                    isSubActive
+                      ? 'bg-primary-100 text-primary-700 border border-primary-200'
+                      : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+                  }`}
+                >
+                  <div className={`w-6 h-6 rounded-md flex items-center justify-center mr-2 transition-all duration-300 ${
+                    isSubActive
+                      ? 'bg-primary-500 text-white' 
+                      : 'bg-gray-100 text-gray-500 group-hover:bg-primary-100 group-hover:text-primary-600'
+                  }`}>
+                    <SubIcon className="w-3 h-3" />
+                  </div>
+                  <span className="flex-1 text-left">{subItem.label}</span>
+                  {isSubActive && (
+                    <div className="w-1.5 h-1.5 bg-primary-500 rounded-full"></div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
         )}
-      </button>
+      </div>
     );
   };
 

@@ -24,7 +24,7 @@ import {
   Info,
   X
 } from 'lucide-react';
-import StructuralCalculationModal from '../components/StructuralCalculationModal';
+// import StructuralCalculationModal from '../components/StructuralCalculationModal'; // Удалено - теперь отдельная страница
 
 const CalculationsPage = ({ isAuthenticated, authToken, calculationType = 'all' }) => {
   const [calculations, setCalculations] = useState([]);
@@ -33,7 +33,9 @@ const CalculationsPage = ({ isAuthenticated, authToken, calculationType = 'all' 
   const [success, setSuccess] = useState(null);
   const [selectedCalculation, setSelectedCalculation] = useState(null);
   const [showNewCalculationModal, setShowNewCalculationModal] = useState(false);
-  const [showStructuralModal, setShowStructuralModal] = useState(false);
+  const [showViewCalculationModal, setShowViewCalculationModal] = useState(false);
+  const [viewingCalculation, setViewingCalculation] = useState(null);
+  // const [showStructuralModal, setShowStructuralModal] = useState(false); // Удалено - теперь отдельная страница
   const [searchTerm, setSearchTerm] = useState('');
   const [filterCategory, setFilterCategory] = useState('all');
   const [sortBy, setSortBy] = useState('date');
@@ -122,6 +124,14 @@ const CalculationsPage = ({ isAuthenticated, authToken, calculationType = 'all' 
       icon: '⚡'
     },
     {
+      id: 'degasification',
+      name: 'Дегазация угольных шахт',
+      category: 'mining',
+      description: 'Расчеты систем дегазации угольных шахт и извлечения метана',
+      norms: ['ГОСТ Р 55154-2012', 'ПБ 05-618-03', 'СП 31.110-2003'],
+      icon: '⛏️'
+    },
+    {
       id: 'water',
       name: 'Водоснабжение и водоотведение',
       category: 'engineering',
@@ -169,7 +179,8 @@ const CalculationsPage = ({ isAuthenticated, authToken, calculationType = 'all' 
     { id: 'construction', name: 'Строительство' },
     { id: 'engineering', name: 'Инженерные системы' },
     { id: 'safety', name: 'Безопасность' },
-    { id: 'geology', name: 'Геология' }
+    { id: 'geology', name: 'Геология' },
+    { id: 'mining', name: 'Горное дело' }
   ];
 
   // Загрузка расчетов
@@ -252,69 +263,7 @@ const CalculationsPage = ({ isAuthenticated, authToken, calculationType = 'all' 
     }
   };
 
-  // Создание структурного расчета
-  const createStructuralCalculation = async (calculationData) => {
-    if (!isAuthenticated || !authToken) {
-      setError('Ошибка авторизации');
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      console.log('🔍 [DEBUG] CalculationsPage.js: Creating structural calculation:', calculationData);
-      
-      // Сначала выполняем расчет
-      const executeResponse = await fetch(`${API_BASE}/calculations/structural/execute`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${authToken}`
-        },
-        body: JSON.stringify({
-          calculation_type: calculationData.subcategory,
-          parameters: calculationData.parameters
-        })
-      });
-
-      if (!executeResponse.ok) {
-        const errorData = await executeResponse.json();
-        throw new Error(errorData.detail || 'Ошибка выполнения расчета');
-      }
-
-      const calculationResult = await executeResponse.json();
-      
-      // Создаем запись в базе данных
-      const createResponse = await fetch(`${API_BASE}/calculations`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${authToken}`
-        },
-        body: JSON.stringify({
-          ...calculationData,
-          result: calculationResult
-        })
-      });
-
-      if (createResponse.ok) {
-        const newCalculation = await createResponse.json();
-        setCalculations(prev => [newCalculation, ...prev]);
-        setSuccess('Структурный расчет успешно создан и выполнен');
-        setShowStructuralModal(false);
-        console.log('🔍 [DEBUG] CalculationsPage.js: Structural calculation created successfully');
-      } else {
-        const errorData = await createResponse.json();
-        setError(errorData.message || 'Ошибка создания расчета');
-      }
-    } catch (error) {
-      console.error('🔍 [DEBUG] CalculationsPage.js: Structural calculation error:', error);
-      setError(error.message || 'Ошибка создания структурного расчета');
-    } finally {
-      setLoading(false);
-    }
-  };
+  // Функция createStructuralCalculation удалена - теперь структурные расчеты на отдельной странице
 
   // Удаление расчета
   const deleteCalculation = async (calculationId) => {
@@ -410,6 +359,367 @@ const CalculationsPage = ({ isAuthenticated, authToken, calculationType = 'all' 
   const handleNewCalculation = (type) => {
     setSelectedCalculation({ type, ...calculationTypes.find(t => t.id === type) });
     setShowNewCalculationModal(true);
+  };
+
+  // Просмотр расчета
+  const handleViewCalculation = async (calculation) => {
+    try {
+      let calculationToView = { ...calculation };
+      
+      // Если результат отсутствует, выполняем расчет через соответствующий API endpoint
+      if (!calculation.result) {
+        console.log('🔍 [DEBUG] CalculationsPage.js: No result found for viewing, executing calculation...');
+        const response = await fetch(`https://localhost/api/calculations/${calculation.type}/execute`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${authToken}`
+          },
+          body: JSON.stringify({
+            calculation_type: calculation.type,
+            parameters: calculation.parameters
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const result = await response.json();
+        calculationToView.result = result;
+      }
+      
+      setViewingCalculation(calculationToView);
+      setShowViewCalculationModal(true);
+    } catch (error) {
+      console.error('🔍 [DEBUG] CalculationsPage.js: View calculation error:', error);
+      setError('Ошибка загрузки результатов расчета');
+    }
+  };
+
+  // Скачивание результата расчета
+  const handleDownloadCalculation = async (calculation) => {
+    if (!isAuthenticated || !authToken) {
+      setError('Ошибка авторизации');
+      return;
+    }
+
+    try {
+      let calculationData = { ...calculation };
+      
+      // Если результат отсутствует, выполняем расчет через соответствующий API endpoint
+      if (!calculation.result) {
+        console.log('🔍 [DEBUG] CalculationsPage.js: No result found, executing calculation...');
+        const response = await fetch(`https://localhost/api/calculations/${calculation.type}/execute`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${authToken}`
+          },
+          body: JSON.stringify({
+            calculation_type: calculation.type,
+            parameters: calculation.parameters
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const result = await response.json();
+        calculationData.result = result;
+      }
+
+      // Создаем JSON файл с результатами расчета
+      const finalData = {
+        name: calculationData.name,
+        description: calculationData.description,
+        type: calculationData.type,
+        category: calculationData.category,
+        status: calculationData.status,
+        created_at: calculationData.created_at,
+        parameters: calculationData.parameters,
+        result: calculationData.result
+      };
+
+      const dataStr = JSON.stringify(finalData, null, 2);
+      const dataBlob = new Blob([dataStr], { type: 'application/json' });
+      
+      const url = URL.createObjectURL(dataBlob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${calculation.name.replace(/[^a-zA-Z0-9]/g, '_')}_${new Date(calculation.created_at).toISOString().split('T')[0]}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      setSuccess('Результат расчета скачан');
+    } catch (error) {
+      console.error('🔍 [DEBUG] CalculationsPage.js: Download error:', error);
+      setError('Ошибка скачивания расчета');
+    }
+  };
+
+  // Компонент модального окна просмотра расчета
+  const ViewCalculationModal = () => {
+    if (!viewingCalculation) return null;
+
+    // Функция для получения русских названий и единиц измерения
+    const getFieldInfo = (key, value) => {
+      const fieldMap = {
+        // Динамические расчеты
+        'seismic_zone': { name: 'Сейсмический район', unit: 'баллов' },
+        'soil_category': { name: 'Категория грунта', unit: '' },
+        'base_seismic_coefficient': { name: 'Базовый коэффициент сейсмичности', unit: '' },
+        'soil_coefficient': { name: 'Коэффициент грунта', unit: '' },
+        'dynamic_coefficient': { name: 'Коэффициент динамичности', unit: '' },
+        'seismic_coefficient': { name: 'Итоговый коэффициент сейсмичности', unit: '' },
+        'seismic_load': { name: 'Сейсмическая нагрузка', unit: 'кН' },
+        'structure_weight': { name: 'Масса конструкции', unit: 'т' },
+        'natural_period': { name: 'Собственный период колебаний', unit: 'с' },
+        'stability_check': { name: 'Проверка сейсмической устойчивости', unit: '' },
+        
+        // Расчеты на прочность
+        'moment_of_inertia': { name: 'Момент инерции', unit: 'см⁴' },
+        'max_moment': { name: 'Максимальный момент', unit: 'кН·м' },
+        'max_stress': { name: 'Максимальное напряжение', unit: 'МПа' },
+        'allowable_stress': { name: 'Допускаемое напряжение', unit: 'МПа' },
+        'strength_check': { name: 'Проверка прочности', unit: '' },
+        'deflection': { name: 'Прогиб', unit: 'м' },
+        'deflection_limit': { name: 'Предельный прогиб', unit: 'м' },
+        'deflection_check': { name: 'Проверка жесткости', unit: '' },
+        'safety_factor_used': { name: 'Использованный коэффициент надежности', unit: '' },
+        
+        // Расчеты на устойчивость
+        'element_length': { name: 'Длина элемента', unit: 'м' },
+        'design_length': { name: 'Расчетная длина', unit: 'м' },
+        'radius_of_gyration': { name: 'Радиус инерции', unit: 'см' },
+        'slenderness': { name: 'Гибкость', unit: '' },
+        'critical_force': { name: 'Критическая сила', unit: 'кН' },
+        'end_conditions': { name: 'Тип закрепления', unit: '' },
+        
+        // Расчеты на жесткость
+        'span_length': { name: 'Пролет', unit: 'м' },
+        'distributed_load': { name: 'Распределенная нагрузка', unit: 'кН/м' },
+        'elastic_modulus': { name: 'Модуль упругости', unit: 'МПа' },
+        'rotation_angle': { name: 'Угол поворота', unit: 'рад' },
+        
+        // Расчеты на трещиностойкость
+        'reinforcement_area': { name: 'Площадь арматуры', unit: 'мм²' },
+        'concrete_class': { name: 'Класс бетона', unit: '' },
+        'concrete_strength': { name: 'Прочность бетона', unit: 'МПа' },
+        'concrete_elastic_modulus': { name: 'Модуль упругости бетона', unit: 'МПа' },
+        'bending_moment': { name: 'Изгибающий момент', unit: 'кН·м' },
+        'crack_width': { name: 'Ширина раскрытия трещин', unit: 'мм' },
+        'crack_width_limit': { name: 'Предельная ширина трещин', unit: 'мм' },
+        'cracking_check': { name: 'Проверка трещиностойкости', unit: '' },
+        'reinforcement_ratio': { name: 'Коэффициент армирования', unit: '' },
+        
+        // Общие поля
+        'execution_time': { name: 'Время выполнения', unit: 'с' },
+        'calculation_type': { name: 'Тип расчета', unit: '' },
+        'timestamp': { name: 'Время выполнения', unit: '' },
+        'status': { name: 'Статус', unit: '' }
+      };
+
+      const fieldInfo = fieldMap[key] || { name: key.replace(/_/g, ' '), unit: '' };
+      return fieldInfo;
+    };
+
+    // Функция для форматирования значения
+    const formatValue = (value, unit) => {
+      if (typeof value === 'boolean') {
+        return value ? 'Да' : 'Нет';
+      }
+      if (typeof value === 'number') {
+        const formatted = value.toFixed(2);
+        return unit ? `${formatted} ${unit}` : formatted;
+      }
+      // Специальная обработка для категории грунта
+      if (typeof value === 'string' && value.length === 1 && ['A', 'B', 'C', 'D'].includes(value)) {
+        const soilCategories = {
+          'A': 'A - Скальные грунты',
+          'B': 'B - Плотные грунты', 
+          'C': 'C - Средние грунты',
+          'D': 'D - Слабые грунты'
+        };
+        return soilCategories[value] || value;
+      }
+      // Специальная обработка для типа закрепления
+      if (typeof value === 'string' && ['pinned', 'fixed', 'cantilever'].includes(value)) {
+        const endConditions = {
+          'pinned': 'Шарнирное',
+          'fixed': 'Жесткое',
+          'cantilever': 'Консольное'
+        };
+        return endConditions[value] || value;
+      }
+      return value;
+    };
+
+    const renderCalculationResult = (result) => {
+      if (!result) return <p className="text-gray-500">Результаты расчета недоступны</p>;
+
+      return (
+        <div className="space-y-4">
+          {Object.entries(result).map(([key, value]) => {
+            if (key === 'normative_links' || key === 'safety_recommendations') return null;
+            if (typeof value === 'object' && value !== null) {
+              return (
+                <div key={key} className="bg-gray-50 p-4 rounded-lg">
+                  <h4 className="font-medium text-gray-900 mb-2">
+                    {getFieldInfo(key, value).name.toUpperCase()}
+                  </h4>
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    {Object.entries(value).map(([subKey, subValue]) => {
+                      const subFieldInfo = getFieldInfo(subKey, subValue);
+                      return (
+                        <div key={subKey} className="flex justify-between">
+                          <span className="text-gray-600">{subFieldInfo.name}:</span>
+                          <span className="font-medium">
+                            {formatValue(subValue, subFieldInfo.unit)}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            }
+            const fieldInfo = getFieldInfo(key, value);
+            return (
+              <div key={key} className="flex justify-between py-1 border-b border-gray-200">
+                <span className="text-gray-600">{fieldInfo.name}:</span>
+                <span className="font-medium">
+                  {formatValue(value, fieldInfo.unit)}
+                </span>
+              </div>
+            );
+          })}
+          
+          {result.normative_links && (
+            <div className="bg-blue-50 p-4 rounded-lg">
+              <h4 className="font-medium text-blue-900 mb-2">Нормативные документы</h4>
+              <ul className="text-sm text-blue-800">
+                {Object.entries(result.normative_links).map(([doc, description]) => (
+                  <li key={doc} className="mb-1">
+                    <strong>{doc}:</strong> {description}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {result.safety_recommendations && (
+            <div className="bg-yellow-50 p-4 rounded-lg">
+              <h4 className="font-medium text-yellow-900 mb-2">Рекомендации по безопасности</h4>
+              <ul className="text-sm text-yellow-800">
+                {result.safety_recommendations.map((rec, index) => (
+                  <li key={index} className="mb-1">• {rec}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    return (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="bg-white rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-semibold text-gray-900">
+              Просмотр расчета: {viewingCalculation.name}
+            </h2>
+            <button
+              onClick={() => setShowViewCalculationModal(false)}
+              className="text-gray-400 hover:text-gray-600"
+            >
+              <X className="w-6 h-6" />
+            </button>
+          </div>
+
+          <div className="space-y-6">
+            {/* Основная информация */}
+            <div className="bg-gray-50 p-4 rounded-lg">
+              <h3 className="font-medium text-gray-900 mb-3">Основная информация</h3>
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <span className="text-gray-600">Тип расчета:</span>
+                  <span className="ml-2 font-medium">
+                    {calculationTypes.find(t => t.id === viewingCalculation.type)?.name || viewingCalculation.type}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-600">Статус:</span>
+                  <span className={`ml-2 px-2 py-1 text-xs rounded-full ${
+                    viewingCalculation.status === 'completed' ? 'bg-green-100 text-green-800' :
+                    viewingCalculation.status === 'processing' ? 'bg-yellow-100 text-yellow-800' :
+                    'bg-red-100 text-red-800'
+                  }`}>
+                    {viewingCalculation.status === 'completed' ? 'Завершен' :
+                     viewingCalculation.status === 'processing' ? 'В обработке' : 'Ошибка'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-600">Дата создания:</span>
+                  <span className="ml-2 font-medium">
+                    {new Date(viewingCalculation.created_at).toLocaleString('ru-RU')}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-600">Описание:</span>
+                  <span className="ml-2 font-medium">{viewingCalculation.description}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Параметры расчета */}
+            {viewingCalculation.parameters && (
+              <div className="bg-blue-50 p-4 rounded-lg">
+                <h3 className="font-medium text-blue-900 mb-3">Параметры расчета</h3>
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  {Object.entries(viewingCalculation.parameters).map(([key, value]) => {
+                    const fieldInfo = getFieldInfo(key, value);
+                    return (
+                      <div key={key} className="flex justify-between">
+                        <span className="text-blue-700">{fieldInfo.name}:</span>
+                        <span className="font-medium text-blue-900">
+                          {formatValue(value, fieldInfo.unit)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Результаты расчета */}
+            <div>
+              <h3 className="font-medium text-gray-900 mb-3">Результаты расчета</h3>
+              {renderCalculationResult(viewingCalculation.result)}
+            </div>
+          </div>
+
+          <div className="flex justify-end space-x-3 pt-6 border-t mt-6">
+            <button
+              onClick={() => handleDownloadCalculation(viewingCalculation)}
+              className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 flex items-center"
+            >
+              <Download className="w-4 h-4 mr-2" />
+              Скачать результат
+            </button>
+            <button
+              onClick={() => setShowViewCalculationModal(false)}
+              className="px-4 py-2 text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50"
+            >
+              Закрыть
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   };
 
   // Компонент модального окна создания расчета
@@ -589,8 +899,7 @@ const CalculationsPage = ({ isAuthenticated, authToken, calculationType = 'all' 
           .map((type) => (
           <div
             key={type.id}
-            className="bg-white rounded-lg shadow p-6 hover:shadow-lg transition-shadow cursor-pointer border border-gray-200"
-            onClick={() => handleNewCalculation(type.id)}
+            className="bg-white rounded-lg shadow p-6 hover:shadow-lg transition-shadow border border-gray-200"
           >
             <div className="flex items-start justify-between mb-4">
               <div className="text-3xl">{type.icon}</div>
@@ -621,7 +930,38 @@ const CalculationsPage = ({ isAuthenticated, authToken, calculationType = 'all' 
               className="w-full mt-4 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors flex items-center justify-center"
               onClick={() => {
                 if (type.id === 'structural') {
-                  setShowStructuralModal(true);
+                  // Переход на страницу структурных расчетов
+                  window.location.href = '/structural-calculations';
+                } else if (type.id === 'foundation') {
+                  // Переход на страницу расчетов оснований и фундаментов
+                  window.location.href = '/foundation-calculations';
+                } else if (type.id === 'degasification') {
+                  // Переход на страницу дегазации
+                  window.location.href = '/degasification-calculations';
+                } else if (type.id === 'thermal') {
+                  // Переход на страницу теплотехнических расчетов
+                  window.location.href = '/thermal-calculations';
+                } else if (type.id === 'ventilation') {
+                  // Переход на страницу вентиляционных расчетов
+                  window.location.href = '/ventilation-calculations';
+                } else if (type.id === 'electrical') {
+                  // Переход на страницу электротехнических расчетов
+                  window.location.href = '/electrical-calculations';
+                } else if (type.id === 'water') {
+                  // Переход на страницу водоснабжения
+                  window.location.href = '/water-supply-calculations';
+                } else if (type.id === 'fire') {
+                  // Переход на страницу пожарной безопасности
+                  window.location.href = '/fire-safety-calculations';
+                } else if (type.id === 'acoustic') {
+                  // Переход на страницу акустических расчетов
+                  window.location.href = '/acoustic-calculations';
+                } else if (type.id === 'lighting') {
+                  // Переход на страницу освещения
+                  window.location.href = '/lighting-calculations';
+                } else if (type.id === 'geotechnical') {
+                  // Переход на страницу геологических расчетов
+                  window.location.href = '/geological-calculations';
                 } else {
                   handleNewCalculation(type.id);
                 }
@@ -704,12 +1044,14 @@ const CalculationsPage = ({ isAuthenticated, authToken, calculationType = 'all' 
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                       <div className="flex space-x-2">
                         <button 
+                          onClick={() => handleViewCalculation(calculation)}
                           className="text-blue-600 hover:text-blue-900"
                           title="Просмотреть расчет"
                         >
                           <Eye className="w-4 h-4" />
                         </button>
                         <button 
+                          onClick={() => handleDownloadCalculation(calculation)}
                           className="text-green-600 hover:text-green-900"
                           title="Скачать результат"
                         >
@@ -753,14 +1095,11 @@ const CalculationsPage = ({ isAuthenticated, authToken, calculationType = 'all' 
 
       {/* Модальное окно создания расчета */}
       {showNewCalculationModal && selectedCalculation && <NewCalculationModal />}
-      {showStructuralModal && (
-        <StructuralCalculationModal
-          isOpen={showStructuralModal}
-          onClose={() => setShowStructuralModal(false)}
-          onCreateCalculation={createStructuralCalculation}
-          loading={loading}
-        />
-      )}
+      
+      {/* Модальное окно просмотра расчета */}
+      {showViewCalculationModal && viewingCalculation && <ViewCalculationModal />}
+      
+      {/* Структурные расчеты теперь на отдельной странице */}
     </div>
   );
 };
