@@ -51,7 +51,7 @@ const UAVProtectionCalculationsPage = ({ isAuthenticated, authToken }) => {
       id: 'shock_wave',
       name: 'Расчёт воздействия ударной волны',
       description: 'Расчет воздействия ударной волны от взрыва БПЛА на конструкции',
-      norms: ['ГОСТ Р 58888-2020', 'СП 1.13130.2020', 'СП 20.13330.2016'],
+      norms: ['СП 542.1325800.2024', 'СП 1.13130.2020', 'СП 20.13330.2016'],
       icon: '💥',
       parameters: [
         { name: 'uav_mass', label: 'Масса БПЛА', unit: 'кг', type: 'number', required: true },
@@ -76,7 +76,7 @@ const UAVProtectionCalculationsPage = ({ isAuthenticated, authToken }) => {
       id: 'impact_penetration',
       name: 'Расчёт попадания БПЛА в конструкцию',
       description: 'Расчет проникающей способности БПЛА и повреждений конструкций',
-      norms: ['ГОСТ Р 58888-2020', 'СП 20.13330.2016', 'СП 16.13330.2017'],
+      norms: ['СП 542.1325800.2024', 'СП 20.13330.2016', 'СП 16.13330.2017'],
       icon: '🎯',
       parameters: [
         { name: 'uav_velocity', label: 'Скорость БПЛА', unit: 'м/с', type: 'number', required: true },
@@ -368,7 +368,7 @@ const UAVProtectionCalculationsPage = ({ isAuthenticated, authToken }) => {
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             <span className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm">
-              ГОСТ Р 58888-2020
+              СП 542.1325800.2024
             </span>
             <span className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm">
               СП 1.13130.2020

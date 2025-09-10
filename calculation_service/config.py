@@ -7,7 +7,7 @@ from typing import Optional
 # Настройки базы данных
 DATABASE_URL: str = os.getenv(
     'DATABASE_URL', 
-    'postgresql://norms_user:norms_password@norms-db:5432/norms_db'
+    'postgresql://norms_user:norms_password@localhost:5432/norms_db'
 )
 
 # Настройки JWT
@@ -16,7 +16,7 @@ JWT_ALGORITHM: str = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
 # Настройки Qdrant
-QDRANT_URL: str = os.getenv('QDRANT_URL', 'http://qdrant:6333')
+QDRANT_URL: str = os.getenv('QDRANT_URL', 'http://localhost:6333')
 QDRANT_API_KEY: Optional[str] = os.getenv('QDRANT_API_KEY')
 
 # Настройки сервера

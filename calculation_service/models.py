@@ -206,7 +206,7 @@ class VentilationCalculationParams(BaseModel):
     heat_recovery_efficiency: float = Field(0, description="КПД рекуперации тепла (0-1)")
     fan_efficiency: float = Field(0.7, description="КПД вентилятора (0-1)")
     
-    # Противодымная вентиляция (СП 7.13130.2013)
+    # Противодымная вентиляция (НПБ 250-97)
     smoke_ventilation_required: bool = Field(False, description="Требуется ли противодымная вентиляция")
     evacuation_route: bool = Field(False, description="Является ли помещение эвакуационным путем")
     fire_compartment_area: Optional[float] = Field(None, description="Площадь пожарного отсека (м²)")
@@ -410,7 +410,7 @@ class WaterSupplyCalculationParams(BaseModel):
 
 
 class FireSafetyCalculationParams(BaseModel):
-    """Параметры для расчета пожарной безопасности согласно СП 4.13130.2013, СП 5.13130.2009"""
+    """Параметры для расчета пожарной безопасности согласно 123-ФЗ, ГОСТ 12.1.004-91"""
     # Основные параметры здания
     building_type: str = Field(..., description="Тип здания (жилое/общественное/производственное)")
     building_area: float = Field(..., description="Площадь здания (м²)")
@@ -441,7 +441,7 @@ class FireSafetyCalculationParams(BaseModel):
     heat_release_rate: float = Field(1000, description="Скорость тепловыделения (кВт)")
     
     # Нормативные документы
-    normative_document: str = Field("СП 4.13130.2013", description="Нормативный документ")
+    normative_document: str = Field("123-ФЗ", description="Нормативный документ")
 
 
 class AcousticCalculationParams(BaseModel):
@@ -583,7 +583,7 @@ class UAVShockWaveCalculationParams(BaseModel):
     safety_factor: float = Field(0, description="Коэффициент безопасности")
     
     # Нормативные документы
-    normative_document: str = Field("ГОСТ Р 58888-2020", description="Нормативный документ")
+    normative_document: str = Field("СП 542.1325800.2024", description="Нормативный документ")
 
 
 class UAVImpactPenetrationCalculationParams(BaseModel):
@@ -610,4 +610,4 @@ class UAVImpactPenetrationCalculationParams(BaseModel):
     penetration_probability: float = Field(0, description="Вероятность проникновения")
     
     # Нормативные документы
-    normative_document: str = Field("ГОСТ Р 58888-2020", description="Нормативный документ")
+    normative_document: str = Field("СП 542.1325800.2024", description="Нормативный документ")
