@@ -1,122 +1,253 @@
-# AI-НК - Система нормоконтроля
-# .gitignore файл
+# AI-НК - .gitignore
+# Исключаем крупные файлы и ненужные директории
 
-# Переменные окружения
-.env
-.env.local
-.env.production
-.env.staging
+# ===========================================
+# КРУПНЫЕ ФАЙЛЫ И АРХИВЫ
+# ===========================================
 
-# SSL сертификаты
-ssl/
-*.crt
-*.key
-*.pem
-*.p12
+# Архивы пакетов развертывания
+*.tar.gz
+*.zip
+*.rar
+*.7z
 
-# Логи
-logs/
-*.log
+# Проверочные суммы
+*.md5
+*.sha256
+*.sha1
+
+# ===========================================
+# PYTHON ВИРТУАЛЬНЫЕ ОКРУЖЕНИЯ
+# ===========================================
+
+# Виртуальные окружения
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+.venv*/
+calc_env/
+gpt_oss_env/
+local_rag_env/
+training_env/
+test_env/
+
+# Python кэш
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ===========================================
+# NODE.JS
+# ===========================================
+
+# Node modules
+node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+.npm
+.yarn-integrity
+
+# ===========================================
+# МОДЕЛИ И ДАННЫЕ
+# ===========================================
+
+# Модели машинного обучения
+models/
+*.model
+*.pkl
+*.joblib
+*.h5
+*.pb
+*.onnx
+
+# Большие файлы данных
+*.csv
+*.json
+*.parquet
+*.feather
+
+# ===========================================
+# ЛОГИ И ВРЕМЕННЫЕ ФАЙЛЫ
+# ===========================================
+
+# Логи
+*.log
+logs/
+*.out
+*.err
 
 # Временные файлы
-temp/
-tmp/
 *.tmp
 *.temp
+*.swp
+*.swo
+*~
+
+# ===========================================
+# СИСТЕМНЫЕ ФАЙЛЫ
+# ===========================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+
+# ===========================================
+# IDE И РЕДАКТОРЫ
+# ===========================================
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# PyCharm
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+.netrwhist
+
+# ===========================================
+# SSL И БЕЗОПАСНОСТЬ
+# ===========================================
+
+# SSL сертификаты
+ssl/
+*.pem
+*.key
+*.crt
+*.csr
+
+# Конфигурационные файлы с паролями
+.env
+.env.local
+.env.production
+.env.development
+.env.test
+config.ini
+secrets.json
+
+# ===========================================
+# ДАННЫЕ И ЗАГРУЗКИ
+# ===========================================
 
 # Загруженные файлы
 uploads/
-*.pdf
-*.docx
-*.xlsx
-*.dwg
-*.ifc
+downloads/
+data/
+postgres_data/
+redis_data/
+qdrant_data/
 
 # Резервные копии
 backups/
 *.backup
 *.bak
 
-# Кэш
-.cache/
-.parcel-cache/
-.next/
-.nuxt/
-dist/
-build/
-
-# Зависимости
-node_modules/
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
+# ===========================================
+# DOCKER
+# ===========================================
 
 # Docker
 .dockerignore
+docker-compose.override.yml
 
-# Базы данных
-*.db
-*.sqlite
-*.sqlite3
+# ===========================================
+# ПАКЕТЫ РАЗВЕРТЫВАНИЯ
+# ===========================================
 
-# Модели Ollama
-models/
-*.gguf
-*.bin
+# Пакеты развертывания
+ai-nk-deployment/packages/ai-nk-deployment-*/
+deployment-packages/
 
-# Тестовые файлы
-test_*
+# ===========================================
+# ТЕСТОВЫЕ ФАЙЛЫ
+# ===========================================
+
+# Тестовые документы
+test*.pdf
+test*.docx
+test*.txt
 *_test.*
-*.test.*
+test_*/
 
-# Документация сборки
-docs/_build/
+# ===========================================
+# ОТЧЕТЫ И ДОКУМЕНТАЦИЯ
+# ===========================================
 
-# Прометей данные
-prometheus_data/
+# Временные отчеты
+*_report.pdf
+*_report.docx
+final_*.pdf
+report_*.pdf
 
-# Grafana данные
-grafana_data/
+# ===========================================
+# КЭШ И ВРЕМЕННЫЕ ДИРЕКТОРИИ
+# ===========================================
 
-# PostgreSQL данные
-postgres_data/
+# Кэш
+.cache/
+cache/
+__pycache__/
 
-# Redis данные
-redis_data/
+# Временные директории
+tmp/
+temp/
+.tmp/
 
-# Qdrant данные
-qdrant_data/
+# ===========================================
+# СПЕЦИФИЧНЫЕ ДЛЯ AI-НК
+# ===========================================
 
-# Ollama данные
-ollama_data/
+# GPT-OSS (если это отдельный проект)
+gpt-oss/
 
-# Docker images
-*.tar.gz
-ai-nk-*.tar.gz
-docker-images/
+# Локальные тесты
+test_scripts/
+test_sctipts/
+
+# Уникальные тестовые файлы
+unique_test*.pdf
+unique_test*.txt
+
+# Документы для тестирования
+TestDocs/
