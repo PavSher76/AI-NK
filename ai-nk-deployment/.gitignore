@@ -1,0 +1,81 @@
+# AI-НК Deployment - .gitignore
+# Исключаем крупные файлы и пакеты из репозитория
+
+# Архивы пакетов развертывания
+*.tar.gz
+*.zip
+
+# Проверочные суммы
+*.md5
+*.sha256
+
+# Временные файлы пакетов
+packages/ai-nk-deployment-*/
+
+# Логи
+*.log
+logs/
+
+# Временные файлы
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# IDE файлы
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Docker
+.dockerignore
+
+# SSL сертификаты (для безопасности)
+ssl/certs/*.pem
+ssl/keys/*.pem
+
+# Конфигурационные файлы с паролями
+.env
+.env.local
+.env.production
+.env.development
+
+# Резервные копии
+backups/
+*.backup
+
+# Данные базы данных
+data/
+postgres_data/
+redis_data/
+qdrant_data/
+
+# Загруженные файлы
+uploads/
+
+# Кэш
+.cache/
+cache/
+
+# Временные директории
+tmp/
+temp/
