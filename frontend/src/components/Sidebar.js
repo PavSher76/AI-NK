@@ -21,7 +21,8 @@ import {
   Flame,
   Volume2,
   Sun,
-  Mountain
+  Mountain,
+  Shield
 } from 'lucide-react';
 
 const Sidebar = ({ 
@@ -145,6 +146,12 @@ const Sidebar = ({
           label: 'Инженерно-геологические',
           icon: Mountain,
           onClick: () => handlePageClick('geological-calculations')
+        },
+        {
+          id: 'uav-protection-calculations',
+          label: 'Защита от БПЛА',
+          icon: Shield,
+          onClick: () => handlePageClick('uav-protection-calculations')
         }
       ]
     },

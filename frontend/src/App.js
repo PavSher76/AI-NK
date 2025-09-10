@@ -39,6 +39,7 @@ import FireSafetyCalculationsPage from './pages/FireSafetyCalculationsPage';
 import AcousticCalculationsPage from './pages/AcousticCalculationsPage';
 import LightingCalculationsPage from './pages/LightingCalculationsPage';
 import GeologicalCalculationsPage from './pages/GeologicalCalculationsPage';
+import UAVProtectionCalculationsPage from './pages/UAVProtectionCalculationsPage';
 import DocumentsPage from './pages/DocumentsPage';
 import NTDConsultation from './components/NTDConsultation';
 
@@ -660,6 +661,13 @@ function App() {
 
           {currentPage === 'geological-calculations' && (
             <GeologicalCalculationsPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
+            />
+          )}
+
+          {currentPage === 'uav-protection-calculations' && (
+            <UAVProtectionCalculationsPage
               isAuthenticated={isAuthenticated}
               authToken={authToken}
             />

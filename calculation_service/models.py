@@ -558,3 +558,56 @@ class GeologicalCalculationParams(BaseModel):
     
     # Нормативные документы
     normative_document: str = Field("СП 22.13330.2016", description="Нормативный документ")
+
+
+class UAVShockWaveCalculationParams(BaseModel):
+    """Параметры расчета воздействия ударной волны от БПЛА"""
+    # Основные параметры БПЛА
+    uav_mass: float = Field(..., description="Масса БПЛА (кг)")
+    distance: float = Field(..., description="Расстояние до объекта (м)")
+    explosive_type: str = Field(..., description="Тип взрывчатого вещества")
+    explosion_height: float = Field(..., description="Высота взрыва (м)")
+    
+    # Параметры конструкции
+    structure_material: str = Field(..., description="Материал конструкции")
+    structure_thickness: float = Field(..., description="Толщина конструкции (мм)")
+    structure_area: float = Field(100, description="Площадь конструкции (м²)")
+    
+    # Параметры взрыва
+    explosive_equivalent: float = Field(1.0, description="Эквивалент взрывчатого вещества (кг ТНТ)")
+    blast_pressure: float = Field(0, description="Давление взрыва (кПа)")
+    
+    # Результаты расчета
+    shock_wave_pressure: float = Field(0, description="Давление ударной волны (кПа)")
+    structural_damage: str = Field("", description="Оценка повреждений конструкции")
+    safety_factor: float = Field(0, description="Коэффициент безопасности")
+    
+    # Нормативные документы
+    normative_document: str = Field("ГОСТ Р 58888-2020", description="Нормативный документ")
+
+
+class UAVImpactPenetrationCalculationParams(BaseModel):
+    """Параметры расчета попадания БПЛА в конструкцию"""
+    # Основные параметры БПЛА
+    uav_velocity: float = Field(..., description="Скорость БПЛА (м/с)")
+    uav_mass: float = Field(..., description="Масса БПЛА (кг)")
+    uav_material: str = Field(..., description="Материал БПЛА")
+    uav_shape: str = Field("cylindrical", description="Форма БПЛА")
+    
+    # Параметры конструкции
+    structure_thickness: float = Field(..., description="Толщина конструкции (мм)")
+    structure_strength: float = Field(..., description="Прочность материала (МПа)")
+    structure_material: str = Field(..., description="Материал конструкции")
+    
+    # Параметры удара
+    impact_angle: float = Field(90, description="Угол удара (град)")
+    impact_area: float = Field(0.01, description="Площадь контакта (м²)")
+    
+    # Результаты расчета
+    penetration_depth: float = Field(0, description="Глубина проникновения (мм)")
+    impact_force: float = Field(0, description="Сила удара (кН)")
+    structural_damage: str = Field("", description="Оценка повреждений конструкции")
+    penetration_probability: float = Field(0, description="Вероятность проникновения")
+    
+    # Нормативные документы
+    normative_document: str = Field("ГОСТ Р 58888-2020", description="Нормативный документ")

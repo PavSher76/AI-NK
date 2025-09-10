@@ -849,6 +849,45 @@ async def execute_geological_calculation(
         raise HTTPException(status_code=500, detail=f"Failed to execute geological calculation: {str(e)}")
 
 
+# Получение типов расчетов защиты от БПЛА
+@app.get("/calculations/uav_protection/types")
+async def get_uav_protection_calculation_types():
+    """Получение типов расчетов защиты от БПЛА"""
+    if is_shutting_down:
+        raise HTTPException(status_code=503, detail="Service is shutting down")
+    
+    try:
+        types = calculation_engine.get_calculation_types()
+        uav_types = [t for t in types if t.type == "uav_protection"]
+        return {"types": [t.dict() for t in uav_types]}
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting UAV protection calculation types: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get UAV protection calculation types")
+
+@app.post("/calculations/uav_protection/execute")
+async def execute_uav_protection_calculation(
+    calculation_data: dict
+):
+    """Выполнение расчета защиты от БПЛА (для совместимости с фронтендом)"""
+    if is_shutting_down:
+        raise HTTPException(status_code=503, detail="Service is shutting down")
+    
+    try:
+        calculation_type = calculation_data.get("calculation_type")
+        parameters = calculation_data.get("parameters", {})
+        
+        logger.info(f"🔍 [DEBUG] Executing UAV protection calculation: {calculation_type}")
+        logger.info(f"🔍 [DEBUG] Parameters: {parameters}")
+        
+        results = calculation_engine.execute_calculation_by_type("uav_protection", parameters)
+        return results
+        
+    except Exception as e:
+        logger.error(f"❌ Error executing UAV protection calculation: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to execute UAV protection calculation: {str(e)}")
+
+
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",

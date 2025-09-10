@@ -14,7 +14,8 @@ from models import (
     DegasificationCalculationParams, ElectricalLoadCalculationParams,
     WaterSupplyCalculationParams, FireSafetyCalculationParams,
     AcousticCalculationParams, LightingCalculationParams,
-    GeologicalCalculationParams,
+    GeologicalCalculationParams, UAVShockWaveCalculationParams,
+    UAVImpactPenetrationCalculationParams,
     CalculationTypeInfo, CalculationCategoryInfo
 )
 from database import db_manager
@@ -89,6 +90,11 @@ class CalculationEngine:
                 "name": "Инженерно-геологические расчеты",
                 "description": "Расчеты оснований и грунтов согласно СП 22.13330.2016",
                 "categories": ["bearing_capacity", "settlement", "slope_stability", "seismic_analysis", "groundwater"]
+            },
+            "uav_protection": {
+                "name": "Защита от БПЛА",
+                "description": "Расчеты защиты от воздействия беспилотных летательных аппаратов",
+                "categories": ["shock_wave", "impact_penetration"]
             }
         }
     
@@ -402,6 +408,24 @@ class CalculationEngine:
                     "normative_document": {"type": "string", "title": "Нормативный документ", "default": "СП 22.13330.2016"}
                 },
                 "required": ["site_area", "site_length", "site_width", "soil_type"]
+            },
+            "uav_protection": {
+                "type": "object",
+                "properties": {
+                    "calculation_subtype": {"type": "string", "title": "Тип расчета", "enum": ["shock_wave", "impact_penetration"]},
+                    "uav_mass": {"type": "number", "title": "Масса БПЛА (кг)"},
+                    "distance": {"type": "number", "title": "Расстояние до объекта (м)"},
+                    "explosive_type": {"type": "string", "title": "Тип взрывчатого вещества", "enum": ["TNT", "RDX", "PETN", "HMX"]},
+                    "explosion_height": {"type": "number", "title": "Высота взрыва (м)"},
+                    "structure_material": {"type": "string", "title": "Материал конструкции", "enum": ["concrete", "steel", "brick", "wood"]},
+                    "structure_thickness": {"type": "number", "title": "Толщина конструкции (мм)"},
+                    "uav_velocity": {"type": "number", "title": "Скорость БПЛА (м/с)"},
+                    "uav_material": {"type": "string", "title": "Материал БПЛА", "enum": ["aluminum", "carbon_fiber", "steel", "plastic"]},
+                    "structure_strength": {"type": "number", "title": "Прочность материала (МПа)"},
+                    "impact_angle": {"type": "number", "title": "Угол удара (град)", "default": 90},
+                    "normative_document": {"type": "string", "title": "Нормативный документ", "default": "ГОСТ Р 58888-2020"}
+                },
+                "required": ["calculation_subtype", "uav_mass", "structure_material", "structure_thickness"]
             }
         }
         return schemas.get(calculation_type, {})
@@ -574,6 +598,8 @@ class CalculationEngine:
                 results = self._execute_lighting_calculation(parameters)
             elif calculation.type == "geological":
                 results = self._execute_geological_calculation(parameters)
+            elif calculation.type == "uav_protection":
+                results = self._execute_uav_protection_calculation(parameters)
             else:
                 raise ValueError(f"Unknown calculation type: {calculation.type}")
             
@@ -657,6 +683,8 @@ class CalculationEngine:
                 results = self._execute_lighting_calculation(parameters)
             elif calculation_type == "geological":
                 results = self._execute_geological_calculation(parameters)
+            elif calculation_type == "uav_protection":
+                results = self._execute_uav_protection_calculation(parameters)
             else:
                 raise ValueError(f"Unknown calculation type: {calculation_type}")
             
@@ -3274,6 +3302,294 @@ class CalculationEngine:
         
         recommendations.append("Проведите дополнительные геологические изыскания")
         recommendations.append("Обеспечьте дренаж при высоком уровне грунтовых вод")
+        
+        return recommendations
+
+    # ===== ЗАЩИТА ОТ БПЛА =====
+
+    def _execute_uav_protection_calculation(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Выполнение расчетов защиты от БПЛА согласно ГОСТ Р 58888-2020"""
+        try:
+            logger.info(f"🔍 [UAV_PROTECTION] Starting UAV protection calculation")
+            
+            calculation_subtype = parameters.get("calculation_subtype", "shock_wave")
+            
+            if calculation_subtype == "shock_wave":
+                return self._execute_uav_shock_wave_calculation(parameters)
+            elif calculation_subtype == "impact_penetration":
+                return self._execute_uav_impact_penetration_calculation(parameters)
+            else:
+                raise ValueError(f"Unknown UAV protection calculation subtype: {calculation_subtype}")
+                
+        except Exception as e:
+            logger.error(f"❌ UAV protection calculation error: {e}")
+            raise
+
+    def _execute_uav_shock_wave_calculation(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Расчет воздействия ударной волны от БПЛА"""
+        try:
+            params = UAVShockWaveCalculationParams(**parameters)
+            
+            # 1. РАСЧЕТ ЭКВИВАЛЕНТА ВЗРЫВЧАТОГО ВЕЩЕСТВА
+            explosive_equivalent = self._calculate_explosive_equivalent(params)
+            
+            # 2. РАСЧЕТ ДАВЛЕНИЯ УДАРНОЙ ВОЛНЫ
+            shock_wave_pressure = self._calculate_shock_wave_pressure(params, explosive_equivalent)
+            
+            # 3. РАСЧЕТ ПОВРЕЖДЕНИЙ КОНСТРУКЦИИ
+            structural_damage = self._calculate_structural_damage_from_shock_wave(params, shock_wave_pressure)
+            
+            # 4. РАСЧЕТ КОЭФФИЦИЕНТА БЕЗОПАСНОСТИ
+            safety_factor = self._calculate_uav_safety_factor(params, shock_wave_pressure)
+            
+            # 5. РЕКОМЕНДАЦИИ ПО ЗАЩИТЕ
+            protection_recommendations = self._get_uav_protection_recommendations(params, shock_wave_pressure, structural_damage)
+            
+            return {
+                "calculation_type": "uav_shock_wave",
+                "explosive_equivalent_kg_tnt": explosive_equivalent,
+                "shock_wave_pressure_kpa": shock_wave_pressure,
+                "structural_damage_assessment": structural_damage,
+                "safety_factor": safety_factor,
+                "protection_recommendations": protection_recommendations,
+                "meets_safety_requirements": safety_factor >= 1.0,
+                "normative_document": params.normative_document,
+                "calculation_parameters": {
+                    "uav_mass_kg": params.uav_mass,
+                    "distance_m": params.distance,
+                    "explosive_type": params.explosive_type,
+                    "explosion_height_m": params.explosion_height,
+                    "structure_material": params.structure_material,
+                    "structure_thickness_mm": params.structure_thickness
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ UAV shock wave calculation error: {e}")
+            raise
+
+    def _execute_uav_impact_penetration_calculation(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Расчет попадания БПЛА в конструкцию"""
+        try:
+            params = UAVImpactPenetrationCalculationParams(**parameters)
+            
+            # 1. РАСЧЕТ СИЛЫ УДАРА
+            impact_force = self._calculate_uav_impact_force(params)
+            
+            # 2. РАСЧЕТ ГЛУБИНЫ ПРОНИКНОВЕНИЯ
+            penetration_depth = self._calculate_uav_penetration_depth(params, impact_force)
+            
+            # 3. РАСЧЕТ ВЕРОЯТНОСТИ ПРОНИКНОВЕНИЯ
+            penetration_probability = self._calculate_uav_penetration_probability(params, penetration_depth)
+            
+            # 4. ОЦЕНКА ПОВРЕЖДЕНИЙ КОНСТРУКЦИИ
+            structural_damage = self._calculate_structural_damage_from_impact(params, penetration_depth)
+            
+            # 5. РЕКОМЕНДАЦИИ ПО ЗАЩИТЕ
+            protection_recommendations = self._get_uav_impact_protection_recommendations(params, penetration_depth, structural_damage)
+            
+            return {
+                "calculation_type": "uav_impact_penetration",
+                "impact_force_kn": impact_force,
+                "penetration_depth_mm": penetration_depth,
+                "penetration_probability": penetration_probability,
+                "structural_damage_assessment": structural_damage,
+                "protection_recommendations": protection_recommendations,
+                "meets_safety_requirements": penetration_probability < 0.5,
+                "normative_document": params.normative_document,
+                "calculation_parameters": {
+                    "uav_velocity_ms": params.uav_velocity,
+                    "uav_mass_kg": params.uav_mass,
+                    "uav_material": params.uav_material,
+                    "structure_thickness_mm": params.structure_thickness,
+                    "structure_strength_mpa": params.structure_strength,
+                    "structure_material": params.structure_material,
+                    "impact_angle_deg": params.impact_angle
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ UAV impact penetration calculation error: {e}")
+            raise
+
+    def _calculate_explosive_equivalent(self, params: UAVShockWaveCalculationParams) -> float:
+        """Расчет эквивалента взрывчатого вещества в кг ТНТ"""
+        # Коэффициенты эквивалентности для разных типов взрывчатых веществ
+        explosive_equivalents = {
+            "TNT": 1.0,
+            "RDX": 1.6,
+            "PETN": 1.7,
+            "HMX": 1.8
+        }
+        
+        equivalent_factor = explosive_equivalents.get(params.explosive_type, 1.0)
+        return params.uav_mass * equivalent_factor
+
+    def _calculate_shock_wave_pressure(self, params: UAVShockWaveCalculationParams, explosive_equivalent: float) -> float:
+        """Расчет давления ударной волны по формуле Садовского"""
+        # Расстояние от центра взрыва до объекта
+        R = math.sqrt(params.distance**2 + params.explosion_height**2)
+        
+        # Масштабированное расстояние
+        Z = R / (explosive_equivalent**(1/3))
+        
+        # Давление ударной волны (кПа)
+        if Z < 0.1:
+            pressure = 1000  # Максимальное давление
+        elif Z < 1.0:
+            pressure = 1000 * (0.1 / Z)**2
+        else:
+            pressure = 1000 * (0.1 / Z)**2 * math.exp(-Z + 0.1)
+        
+        return max(pressure, 0.1)  # Минимальное давление 0.1 кПа
+
+    def _calculate_structural_damage_from_shock_wave(self, params: UAVShockWaveCalculationParams, pressure: float) -> Dict[str, Any]:
+        """Оценка повреждений конструкции от ударной волны"""
+        # Критические давления для разных материалов (кПа)
+        critical_pressures = {
+            "concrete": 200,
+            "steel": 500,
+            "brick": 100,
+            "wood": 50
+        }
+        
+        critical_pressure = critical_pressures.get(params.structure_material, 100)
+        
+        if pressure < critical_pressure * 0.5:
+            damage_level = "Минимальные повреждения"
+            damage_factor = 0.1
+        elif pressure < critical_pressure:
+            damage_level = "Умеренные повреждения"
+            damage_factor = 0.5
+        elif pressure < critical_pressure * 2:
+            damage_level = "Серьезные повреждения"
+            damage_factor = 0.8
+        else:
+            damage_level = "Критические повреждения"
+            damage_factor = 1.0
+        
+        return {
+            "damage_level": damage_level,
+            "damage_factor": damage_factor,
+            "critical_pressure_kpa": critical_pressure,
+            "pressure_ratio": pressure / critical_pressure
+        }
+
+    def _calculate_uav_safety_factor(self, params: UAVShockWaveCalculationParams, pressure: float) -> float:
+        """Расчет коэффициента безопасности"""
+        critical_pressures = {
+            "concrete": 200,
+            "steel": 500,
+            "brick": 100,
+            "wood": 50
+        }
+        
+        critical_pressure = critical_pressures.get(params.structure_material, 100)
+        return critical_pressure / pressure if pressure > 0 else 1000
+
+    def _calculate_uav_impact_force(self, params: UAVImpactPenetrationCalculationParams) -> float:
+        """Расчет силы удара БПЛА"""
+        # Кинетическая энергия
+        kinetic_energy = 0.5 * params.uav_mass * (params.uav_velocity ** 2)
+        
+        # Сила удара (кН)
+        impact_force = kinetic_energy / (params.impact_area * 1000)  # Переводим в кН
+        
+        return impact_force
+
+    def _calculate_uav_penetration_depth(self, params: UAVImpactPenetrationCalculationParams, impact_force: float) -> float:
+        """Расчет глубины проникновения БПЛА"""
+        # Коэффициенты прочности материалов БПЛА
+        uav_strength_coefficients = {
+            "aluminum": 0.8,
+            "carbon_fiber": 1.2,
+            "steel": 1.5,
+            "plastic": 0.3
+        }
+        
+        # Коэффициенты прочности материалов конструкции
+        structure_strength_coefficients = {
+            "concrete": 1.0,
+            "steel": 2.0,
+            "brick": 0.6,
+            "wood": 0.4
+        }
+        
+        uav_coeff = uav_strength_coefficients.get(params.uav_material, 1.0)
+        structure_coeff = structure_strength_coefficients.get(params.structure_material, 1.0)
+        
+        # Глубина проникновения (мм)
+        penetration_depth = (impact_force * uav_coeff) / (params.structure_strength * structure_coeff) * 1000
+        
+        return min(penetration_depth, params.structure_thickness)
+
+    def _calculate_uav_penetration_probability(self, params: UAVImpactPenetrationCalculationParams, penetration_depth: float) -> float:
+        """Расчет вероятности проникновения"""
+        if penetration_depth >= params.structure_thickness:
+            return 1.0
+        else:
+            return penetration_depth / params.structure_thickness
+
+    def _calculate_structural_damage_from_impact(self, params: UAVImpactPenetrationCalculationParams, penetration_depth: float) -> Dict[str, Any]:
+        """Оценка повреждений конструкции от удара"""
+        penetration_ratio = penetration_depth / params.structure_thickness
+        
+        if penetration_ratio < 0.2:
+            damage_level = "Минимальные повреждения"
+            damage_factor = 0.1
+        elif penetration_ratio < 0.5:
+            damage_level = "Умеренные повреждения"
+            damage_factor = 0.3
+        elif penetration_ratio < 0.8:
+            damage_level = "Серьезные повреждения"
+            damage_factor = 0.6
+        else:
+            damage_level = "Критические повреждения"
+            damage_factor = 1.0
+        
+        return {
+            "damage_level": damage_level,
+            "damage_factor": damage_factor,
+            "penetration_ratio": penetration_ratio,
+            "penetration_depth_mm": penetration_depth
+        }
+
+    def _get_uav_protection_recommendations(self, params: UAVShockWaveCalculationParams, pressure: float, damage: Dict[str, Any]) -> List[str]:
+        """Рекомендации по защите от ударной волны"""
+        recommendations = []
+        
+        if pressure > 100:
+            recommendations.append("КРИТИЧНО: Высокое давление ударной волны")
+            recommendations.append("Рекомендуется установка защитных экранов")
+            recommendations.append("Увеличьте расстояние до объекта или используйте более прочные материалы")
+        
+        if damage["damage_factor"] > 0.5:
+            recommendations.append("КРИТИЧНО: Высокий уровень повреждений")
+            recommendations.append("Рекомендуется усиление конструкции")
+            recommendations.append("Установите дополнительные защитные элементы")
+        
+        recommendations.append("Обеспечьте мониторинг воздушного пространства")
+        recommendations.append("Разработайте план действий при обнаружении БПЛА")
+        
+        return recommendations
+
+    def _get_uav_impact_protection_recommendations(self, params: UAVImpactPenetrationCalculationParams, penetration_depth: float, damage: Dict[str, Any]) -> List[str]:
+        """Рекомендации по защите от попадания БПЛА"""
+        recommendations = []
+        
+        if penetration_depth >= params.structure_thickness:
+            recommendations.append("КРИТИЧНО: Полное проникновение БПЛА")
+            recommendations.append("Рекомендуется увеличение толщины конструкции")
+            recommendations.append("Установите дополнительные защитные слои")
+        
+        if damage["damage_factor"] > 0.5:
+            recommendations.append("КРИТИЧНО: Высокий уровень повреждений")
+            recommendations.append("Рекомендуется усиление конструкции")
+            recommendations.append("Используйте более прочные материалы")
+        
+        recommendations.append("Обеспечьте систему обнаружения БПЛА")
+        recommendations.append("Установите защитные сетки или экраны")
+        recommendations.append("Разработайте план эвакуации при угрозе")
         
         return recommendations
 
