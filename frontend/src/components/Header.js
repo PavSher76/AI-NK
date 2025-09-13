@@ -1,10 +1,11 @@
 import React from 'react';
-import { Menu, Bell, Settings, User } from 'lucide-react';
+import { Menu, Bell, User, Cog } from 'lucide-react';
 
 const Header = ({ 
   currentPage, 
   onToggleSidebar,
-  isSidebarOpen 
+  isSidebarOpen,
+  onSystemSettingsClick
 }) => {
   const getPageTitle = () => {
     switch (currentPage) {
@@ -87,10 +88,11 @@ const Header = ({
         </button>
         
         <button
+          onClick={onSystemSettingsClick}
           className="p-2.5 rounded-xl hover:bg-gray-100 transition-all duration-300 group"
-          title="Настройки"
+          title="Системные настройки"
         >
-          <Settings className="w-5 h-5 text-gray-600 group-hover:text-gray-900 transition-colors" />
+          <Cog className="w-5 h-5 text-gray-600 group-hover:text-gray-900 transition-colors" />
         </button>
         
         <div className="w-px h-8 bg-gray-200"></div>

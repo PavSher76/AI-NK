@@ -37,6 +37,8 @@ const UAVProtectionCalculationsPage = ({ isAuthenticated, authToken }) => {
   const [showNewCalculationModal, setShowNewCalculationModal] = useState(false);
   const [showViewCalculationModal, setShowViewCalculationModal] = useState(false);
   const [viewingCalculation, setViewingCalculation] = useState(null);
+  const [selectedCalculationType, setSelectedCalculationType] = useState(null);
+  const [calculationParameters, setCalculationParameters] = useState({});
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState('all');
   const [sortBy, setSortBy] = useState('date');
@@ -49,18 +51,18 @@ const UAVProtectionCalculationsPage = ({ isAuthenticated, authToken }) => {
   const calculationTypes = [
     {
       id: 'shock_wave',
-      name: 'Расчёт воздействия ударной волны',
+      name: 'Воздействие ударной волны',
       description: 'Расчет воздействия ударной волны от взрыва БПЛА на конструкции',
       norms: ['СП 542.1325800.2024', 'СП 1.13130.2020', 'СП 20.13330.2016'],
       icon: '💥',
       parameters: [
-        { name: 'uav_mass', label: 'Масса БПЛА', unit: 'кг', type: 'number', required: true },
+        { name: 'explosive_mass', label: 'Масса ВВ', unit: 'кг', type: 'number', required: true },
         { name: 'distance', label: 'Расстояние до объекта', unit: 'м', type: 'number', required: true },
         { name: 'explosive_type', label: 'Тип взрывчатого вещества', unit: '', type: 'select', required: true, options: [
-          { value: 'TNT', label: 'ТНТ' },
-          { value: 'RDX', label: 'РДХ' },
-          { value: 'PETN', label: 'ПЭТН' },
-          { value: 'HMX', label: 'ГМХ' }
+          { value: 'TNT', label: 'ТНТ (тринитротолуол)' },
+          { value: 'RDX', label: 'РДХ (гексоген)' },
+          { value: 'PETN', label: 'ПЭТН (пентаэритриттетранитрат)' },
+          { value: 'HMX', label: 'ГМХ (октоген)' }
         ]},
         { name: 'explosion_height', label: 'Высота взрыва', unit: 'м', type: 'number', required: true },
         { name: 'structure_material', label: 'Материал конструкции', unit: '', type: 'select', required: true, options: [
@@ -74,7 +76,7 @@ const UAVProtectionCalculationsPage = ({ isAuthenticated, authToken }) => {
     },
     {
       id: 'impact_penetration',
-      name: 'Расчёт попадания БПЛА в конструкцию',
+      name: 'Попадание БПЛА в конструкцию',
       description: 'Расчет проникающей способности БПЛА и повреждений конструкций',
       norms: ['СП 542.1325800.2024', 'СП 20.13330.2016', 'СП 16.13330.2017'],
       icon: '🎯',
@@ -86,6 +88,12 @@ const UAVProtectionCalculationsPage = ({ isAuthenticated, authToken }) => {
           { value: 'carbon_fiber', label: 'Углеродное волокно' },
           { value: 'steel', label: 'Сталь' },
           { value: 'plastic', label: 'Пластик' }
+        ]},
+        { name: 'structure_material', label: 'Материал конструкции', unit: '', type: 'select', required: true, options: [
+          { value: 'concrete', label: 'Бетон' },
+          { value: 'steel', label: 'Сталь' },
+          { value: 'brick', label: 'Кирпич' },
+          { value: 'wood', label: 'Дерево' }
         ]},
         { name: 'structure_thickness', label: 'Толщина конструкции', unit: 'мм', type: 'number', required: true },
         { name: 'structure_strength', label: 'Прочность материала', unit: 'МПа', type: 'number', required: true },
@@ -125,10 +133,35 @@ const UAVProtectionCalculationsPage = ({ isAuthenticated, authToken }) => {
     }
   };
 
-  // Создание нового расчета
-  const handleNewCalculation = async (calculationType) => {
+  // Открытие модального окна для создания расчета
+  const handleNewCalculation = (calculationType) => {
     if (!isAuthenticated || !authToken) {
       setError('Необходима авторизация для создания расчетов');
+      return;
+    }
+
+    const typeConfig = calculationTypes.find(type => type.id === calculationType);
+    setSelectedCalculationType(typeConfig);
+    setCalculationParameters({});
+    setShowNewCalculationModal(true);
+  };
+
+  // Создание расчета с параметрами
+  const createCalculationWithParameters = async () => {
+    if (!selectedCalculationType) return;
+
+    // Валидация обязательных полей
+    const requiredFields = selectedCalculationType.parameters.filter(param => param.required);
+    const missingFields = requiredFields.filter(param => 
+      !calculationParameters[param.name] || 
+      calculationParameters[param.name] === '' ||
+      calculationParameters[param.name] === null ||
+      calculationParameters[param.name] === undefined
+    );
+
+    if (missingFields.length > 0) {
+      alert(`Пожалуйста, заполните все обязательные поля:\n${missingFields.map(field => `• ${field.label}`).join('\n')}`);
+      setLoading(false);
       return;
     }
 
@@ -141,15 +174,26 @@ const UAVProtectionCalculationsPage = ({ isAuthenticated, authToken }) => {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          type: calculationType,
-          name: `Расчет защиты от БПЛА - ${new Date().toLocaleString()}`,
-          description: `Новый расчет ${calculationType}`,
-          parameters: {}
+          type: 'uav_protection',
+          category: selectedCalculationType.id,
+          name: `Расчет защиты от БПЛА - ${selectedCalculationType.name} - ${new Date().toLocaleString()}`,
+          description: `Новый расчет ${selectedCalculationType.name.toLowerCase()}`,
+          parameters: {
+            calculation_subtype: selectedCalculationType.id,
+            ...calculationParameters
+          }
         })
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
+        const errorText = await response.text();
+        console.error('🔍 [DEBUG] Response error:', errorText);
+        let errorData;
+        try {
+          errorData = JSON.parse(errorText);
+        } catch (e) {
+          throw new Error(`HTTP error! status: ${response.status}, response: ${errorText}`);
+        }
         throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
       }
 
@@ -158,6 +202,8 @@ const UAVProtectionCalculationsPage = ({ isAuthenticated, authToken }) => {
       
       setSuccess('Расчет успешно создан');
       setShowNewCalculationModal(false);
+      setSelectedCalculationType(null);
+      setCalculationParameters({});
       fetchCalculations();
     } catch (error) {
       console.error('Error creating calculation:', error);
@@ -206,23 +252,37 @@ const UAVProtectionCalculationsPage = ({ isAuthenticated, authToken }) => {
   // Просмотр расчета
   const handleViewCalculation = async (calculation) => {
     try {
+      console.log('🔍 [DEBUG] UAVProtectionCalculationsPage.js: Viewing calculation:', calculation);
       let calculationToView = { ...calculation };
-      if (!calculation.result) {
+      
+      // Если результат отсутствует, выполняем расчет
+      if (!calculation.result || Object.keys(calculation.result).length === 0) {
         console.log('🔍 [DEBUG] UAVProtectionCalculationsPage.js: No result found for viewing, executing calculation...');
-        const response = await fetch(`${API_BASE}/calculations/${calculation.type}/execute`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${authToken}`
-          },
-          body: JSON.stringify({ calculation_type: calculation.type, parameters: calculation.parameters })
-        });
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
+        setLoading(true);
+        try {
+          const response = await fetch(`${API_BASE}/calculations/${calculation.id}/execute`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${authToken}`
+            },
+            body: JSON.stringify({ parameters: calculation.parameters })
+          });
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+          const result = await response.json();
+          calculationToView.result = result;
+          console.log('🔍 [DEBUG] UAVProtectionCalculationsPage.js: Calculation executed, result:', result);
+        } catch (error) {
+          console.error('Error executing calculation for viewing:', error);
+          setError('Ошибка выполнения расчета: ' + error.message);
+          return;
+        } finally {
+          setLoading(false);
         }
-        const result = await response.json();
-        calculationToView.result = result;
       }
+      
       setViewingCalculation(calculationToView);
       setShowViewCalculationModal(true);
     } catch (error) {
@@ -231,41 +291,214 @@ const UAVProtectionCalculationsPage = ({ isAuthenticated, authToken }) => {
     }
   };
 
-  // Скачивание расчета
+  // Скачивание расчета в формате DOCX
   const handleDownloadCalculation = async (calculation) => {
     try {
+      console.log('🔍 [DEBUG] UAVProtectionCalculationsPage.js: Downloading calculation:', calculation);
       let calculationData = { ...calculation };
-      if (!calculation.result) {
+      
+      // Если результат отсутствует, выполняем расчет
+      if (!calculation.result || Object.keys(calculation.result).length === 0) {
         console.log('🔍 [DEBUG] UAVProtectionCalculationsPage.js: No result found, executing calculation...');
-        const response = await fetch(`${API_BASE}/calculations/${calculation.type}/execute`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${authToken}`
-          },
-          body: JSON.stringify({ calculation_type: calculation.type, parameters: calculation.parameters })
-        });
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
+        setLoading(true);
+        try {
+          const response = await fetch(`${API_BASE}/calculations/${calculation.id}/execute`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${authToken}`
+            },
+            body: JSON.stringify({ parameters: calculation.parameters })
+          });
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+          const result = await response.json();
+          calculationData.result = result;
+          console.log('🔍 [DEBUG] UAVProtectionCalculationsPage.js: Calculation executed for download, result:', result);
+        } catch (error) {
+          console.error('Error executing calculation for download:', error);
+          setError('Ошибка выполнения расчета: ' + error.message);
+          return;
+        } finally {
+          setLoading(false);
         }
-        const result = await response.json();
-        calculationData.result = result;
       }
 
-      const dataStr = JSON.stringify(calculationData, null, 2);
-      const dataBlob = new Blob([dataStr], { type: 'application/json' });
-      const url = URL.createObjectURL(dataBlob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `uav_protection_calculation_${calculation.id}.json`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      // Создаем DOCX отчет
+      await generateDOCXReport(calculationData);
+      
     } catch (error) {
       console.error('Error downloading calculation:', error);
       setError('Ошибка скачивания расчета: ' + error.message);
     }
+  };
+
+  // Генерация DOCX отчета
+  const generateDOCXReport = async (calculationData) => {
+    try {
+      // Создаем HTML содержимое для отчета
+      const reportHTML = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <title>Отчет по расчету защиты от БПЛА</title>
+          <style>
+            body { font-family: Arial, sans-serif; margin: 40px; }
+            .header { text-align: center; margin-bottom: 30px; }
+            .title { font-size: 24px; font-weight: bold; color: #2c3e50; }
+            .subtitle { font-size: 16px; color: #7f8c8d; margin-top: 10px; }
+            .section { margin: 20px 0; }
+            .section-title { font-size: 18px; font-weight: bold; color: #34495e; margin-bottom: 15px; border-bottom: 2px solid #3498db; padding-bottom: 5px; }
+            .parameter { margin: 10px 0; display: flex; justify-content: space-between; }
+            .parameter-label { font-weight: bold; color: #2c3e50; }
+            .parameter-value { color: #34495e; }
+            .result { background-color: #ecf0f1; padding: 15px; border-radius: 5px; margin: 10px 0; }
+            .result-item { margin: 8px 0; display: flex; justify-content: space-between; }
+            .result-label { font-weight: bold; color: #27ae60; }
+            .result-value { color: #2c3e50; font-weight: bold; }
+            .status-item { background-color: #e3f2fd; padding: 10px; border-radius: 5px; margin: 10px 0; }
+            .status-выполнен { color: #2e7d32; font-weight: bold; }
+            .status-выполняется { color: #f57c00; font-weight: bold; }
+            .status-ошибка { color: #d32f2f; font-weight: bold; }
+            .status-ожидается { color: #616161; font-weight: bold; }
+            .conclusions-item { background-color: #f3e5f5; padding: 10px; border-radius: 5px; margin: 10px 0; }
+            .conclusions-item .result-value { display: block; margin-top: 5px; }
+            .footer { margin-top: 40px; text-align: center; color: #7f8c8d; font-size: 12px; }
+            .calculation-type { background-color: #3498db; color: white; padding: 10px; border-radius: 5px; margin: 15px 0; text-align: center; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <div class="title">Отчет по расчету защиты от БПЛА</div>
+            <div class="subtitle">${calculationData.name}</div>
+            <div class="subtitle">Дата создания: ${new Date(calculationData.created_at).toLocaleString('ru-RU')}</div>
+          </div>
+
+          <div class="calculation-type">
+            <strong>Тип расчета:</strong> ${calculationData.category === 'shock_wave' ? 'Воздействие ударной волны' : 'Попадание БПЛА в конструкцию'}
+          </div>
+
+          <div class="section">
+            <div class="section-title">Параметры расчета</div>
+            ${Object.entries(calculationData.parameters || {}).map(([key, value]) => {
+              const paramLabel = getParameterLabel(key, calculationData.category);
+              return `<div class="parameter">
+                <span class="parameter-label">${paramLabel}:</span>
+                <span class="parameter-value">${value}</span>
+              </div>`;
+            }).join('')}
+          </div>
+
+          ${calculationData.result ? `
+          <div class="section">
+            <div class="section-title">Результаты расчета</div>
+            <div class="result">
+              ${calculationData.result.calculation_status ? `
+                <div class="result-item status-item">
+                  <span class="result-label">Статус расчета:</span>
+                  <span class="result-value status-${calculationData.result.calculation_status.toLowerCase().replace(' ', '-')}">${calculationData.result.calculation_status}</span>
+                </div>
+              ` : ''}
+              
+              ${calculationData.result.conclusions ? `
+                <div class="result-item conclusions-item">
+                  <span class="result-label">Выводы:</span>
+                  <div class="result-value">
+                    ${Array.isArray(calculationData.result.conclusions) 
+                      ? calculationData.result.conclusions.map(conclusion => `<div>• ${conclusion}</div>`).join('')
+                      : calculationData.result.conclusions
+                    }
+                  </div>
+                </div>
+              ` : ''}
+              
+              ${Object.entries(calculationData.result)
+                .filter(([key]) => key !== 'calculation_status' && key !== 'conclusions')
+                .map(([key, value]) => {
+                  const resultLabel = getResultLabel(key);
+                  return `<div class="result-item">
+                    <span class="result-label">${resultLabel}:</span>
+                    <span class="result-value">${value}</span>
+                  </div>`;
+                }).join('')}
+            </div>
+          </div>
+          ` : `
+          <div class="section">
+            <div class="section-title">Результаты расчета</div>
+            <div class="result">
+              <div class="result-item">
+                <span class="result-label">Статус:</span>
+                <span class="result-value">Расчет не выполнен</span>
+              </div>
+            </div>
+          </div>
+          `}
+
+          <div class="footer">
+            <p>Отчет сгенерирован системой AI-NK</p>
+            <p>Дата генерации: ${new Date().toLocaleString('ru-RU')}</p>
+          </div>
+        </body>
+        </html>
+      `;
+
+      // Создаем Blob с HTML содержимым
+      const htmlBlob = new Blob([reportHTML], { type: 'text/html;charset=utf-8' });
+      
+      // Создаем ссылку для скачивания
+      const url = URL.createObjectURL(htmlBlob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `uav_protection_calculation_${calculationData.id}_${new Date().toISOString().split('T')[0]}.html`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      setSuccess('Отчет успешно скачан');
+    } catch (error) {
+      console.error('Error generating DOCX report:', error);
+      setError('Ошибка генерации отчета: ' + error.message);
+    }
+  };
+
+  // Функция для получения читаемых названий параметров
+  const getParameterLabel = (key, calculationType = null) => {
+    const labels = {
+      'calculation_subtype': 'Тип расчета',
+      'explosive_mass': 'Масса ВВ (кг)',
+      'uav_mass': 'Масса БПЛА (кг)',
+      'distance': 'Расстояние до объекта (м)',
+      'explosive_type': 'Тип взрывчатого вещества',
+      'explosion_height': 'Высота взрыва (м)',
+      'structure_material': 'Материал конструкции',
+      'structure_thickness': 'Толщина конструкции (мм)',
+      'uav_velocity': 'Скорость БПЛА (м/с)',
+      'uav_material': 'Материал БПЛА',
+      'structure_strength': 'Прочность материала (МПа)',
+      'impact_angle': 'Угол удара (град)'
+    };
+    return labels[key] || key;
+  };
+
+  // Функция для получения читаемых названий результатов
+  const getResultLabel = (key) => {
+    const labels = {
+      'shock_pressure': 'Давление ударной волны (кПа)',
+      'shock_velocity': 'Скорость ударной волны (м/с)',
+      'damage_level': 'Уровень повреждений',
+      'penetration_depth': 'Глубина проникновения (мм)',
+      'impact_force': 'Сила удара (Н)',
+      'structural_damage': 'Повреждение конструкции',
+      'safety_factor': 'Коэффициент безопасности',
+      'recommendations': 'Рекомендации',
+      'calculation_status': 'Статус расчета',
+      'conclusions': 'Выводы'
+    };
+    return labels[key] || key;
   };
 
   // Удаление расчета
@@ -476,8 +709,8 @@ const UAVProtectionCalculationsPage = ({ isAuthenticated, authToken }) => {
                   className="px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 >
                   <option value="all">Все типы</option>
-                  <option value="shock_wave">Ударная волна</option>
-                  <option value="impact_penetration">Попадание в конструкцию</option>
+                  <option value="shock_wave">Воздействие ударной волны</option>
+                  <option value="impact_penetration">Попадание БПЛА в конструкцию</option>
                 </select>
 
                 {/* Сортировка */}
@@ -580,32 +813,115 @@ const UAVProtectionCalculationsPage = ({ isAuthenticated, authToken }) => {
               </div>
               
               <div className="p-6">
+                <div className="mb-4">
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+                    <h4 className="text-lg font-semibold text-blue-900 mb-2">
+                      {viewingCalculation.category === 'shock_wave' ? 'Воздействие ударной волны' : 'Попадание БПЛА в конструкцию'}
+                    </h4>
+                    <p className="text-blue-700 text-sm">
+                      Дата создания: {new Date(viewingCalculation.created_at).toLocaleString('ru-RU')}
+                    </p>
+                    <p className="text-blue-700 text-sm">
+                      Статус: <span className={`font-semibold ${
+                        viewingCalculation.status === 'completed' ? 'text-green-600' : 
+                        viewingCalculation.status === 'pending' ? 'text-yellow-600' : 'text-red-600'
+                      }`}>
+                        {viewingCalculation.status === 'completed' ? 'Завершен' : 
+                         viewingCalculation.status === 'pending' ? 'В ожидании' : 'Ошибка'}
+                      </span>
+                    </p>
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div>
-                    <h4 className="text-md font-medium text-gray-900 mb-3">Параметры расчета</h4>
-                    <div className="space-y-2">
-                      {Object.entries(viewingCalculation.parameters || {}).map(([key, value]) => (
-                        <div key={key} className="flex justify-between py-1 border-b border-gray-100">
-                          <span className="text-sm text-gray-600">{key}:</span>
-                          <span className="text-sm font-medium text-gray-900">{value}</span>
-                        </div>
-                      ))}
+                    <h4 className="text-lg font-medium text-gray-900 mb-3 flex items-center">
+                      <Settings className="w-5 h-5 mr-2 text-blue-600" />
+                      Параметры расчета
+                    </h4>
+                    <div className="bg-gray-50 rounded-lg p-4 space-y-3">
+                      {Object.entries(viewingCalculation.parameters || {}).map(([key, value]) => {
+                        const paramLabel = getParameterLabel(key, viewingCalculation.category);
+                        return (
+                          <div key={key} className="flex justify-between items-center py-2 border-b border-gray-200 last:border-b-0">
+                            <span className="text-sm font-medium text-gray-700">{paramLabel}:</span>
+                            <span className="text-sm font-semibold text-gray-900">
+                              {typeof value === 'object' ? JSON.stringify(value) : value}
+                            </span>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                   
                   <div>
-                    <h4 className="text-md font-medium text-gray-900 mb-3">Результаты расчета</h4>
-                    {viewingCalculation.result ? (
-                      <div className="space-y-2">
-                        {Object.entries(viewingCalculation.result).map(([key, value]) => (
-                          <div key={key} className="flex justify-between py-1 border-b border-gray-100">
-                            <span className="text-sm text-gray-600">{key}:</span>
-                            <span className="text-sm font-medium text-gray-900">{value}</span>
+                    <h4 className="text-lg font-medium text-gray-900 mb-3 flex items-center">
+                      <Target className="w-5 h-5 mr-2 text-green-600" />
+                      Результаты расчета
+                    </h4>
+                    {viewingCalculation.result && Object.keys(viewingCalculation.result).length > 0 ? (
+                      <div className="space-y-4">
+                        {/* Статус расчета */}
+                        {viewingCalculation.result.calculation_status && (
+                          <div className="bg-blue-50 rounded-lg p-4">
+                            <div className="flex items-center justify-between">
+                              <span className="text-sm font-medium text-blue-700">Статус расчета:</span>
+                              <span className={`px-3 py-1 rounded-full text-xs font-medium ${
+                                viewingCalculation.result.calculation_status === 'Выполнен' 
+                                  ? 'bg-green-100 text-green-800' 
+                                  : viewingCalculation.result.calculation_status === 'Выполняется'
+                                  ? 'bg-yellow-100 text-yellow-800'
+                                  : viewingCalculation.result.calculation_status === 'Ошибка'
+                                  ? 'bg-red-100 text-red-800'
+                                  : 'bg-gray-100 text-gray-800'
+                              }`}>
+                                {viewingCalculation.result.calculation_status}
+                              </span>
+                            </div>
                           </div>
-                        ))}
+                        )}
+                        
+                        {/* Выводы */}
+                        {viewingCalculation.result.conclusions && (
+                          <div className="bg-purple-50 rounded-lg p-4">
+                            <h5 className="text-sm font-medium text-purple-700 mb-2">Выводы:</h5>
+                            <div className="text-sm text-purple-900">
+                              {Array.isArray(viewingCalculation.result.conclusions) 
+                                ? viewingCalculation.result.conclusions.map((conclusion, index) => (
+                                    <div key={index} className="mb-1">• {conclusion}</div>
+                                  ))
+                                : viewingCalculation.result.conclusions
+                              }
+                            </div>
+                          </div>
+                        )}
+                        
+                        {/* Остальные результаты */}
+                        <div className="bg-green-50 rounded-lg p-4 space-y-3">
+                          {Object.entries(viewingCalculation.result)
+                            .filter(([key]) => key !== 'calculation_status' && key !== 'conclusions')
+                            .map(([key, value]) => {
+                              const resultLabel = getResultLabel(key);
+                              return (
+                                <div key={key} className="flex justify-between items-center py-2 border-b border-green-200 last:border-b-0">
+                                  <span className="text-sm font-medium text-green-700">{resultLabel}:</span>
+                                  <span className="text-sm font-bold text-green-900">
+                                    {typeof value === 'object' ? JSON.stringify(value) : value}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                        </div>
                       </div>
                     ) : (
-                      <p className="text-gray-500 text-sm">Результаты расчета недоступны</p>
+                      <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                        <div className="flex items-center">
+                          <AlertCircle className="w-5 h-5 text-yellow-600 mr-2" />
+                          <p className="text-yellow-800 text-sm font-medium">
+                            {viewingCalculation.status === 'pending' ? 'Расчет выполняется...' : 'Результаты расчета недоступны'}
+                          </p>
+                        </div>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -624,6 +940,111 @@ const UAVProtectionCalculationsPage = ({ isAuthenticated, authToken }) => {
                   className="px-4 py-2 text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50"
                 >
                   Закрыть
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Модальное окно создания расчета */}
+        {showNewCalculationModal && selectedCalculationType && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+              <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+                <h3 className="text-lg font-semibold text-gray-900">
+                  Создание расчета: {selectedCalculationType.name}
+                </h3>
+                <button
+                  onClick={() => {
+                    setShowNewCalculationModal(false);
+                    setSelectedCalculationType(null);
+                    setCalculationParameters({});
+                  }}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+              
+              <div className="p-6">
+                <div className="mb-4">
+                  <p className="text-gray-600 mb-4">{selectedCalculationType.description}</p>
+                  
+                  <div className="space-y-4">
+                    {selectedCalculationType.parameters.map((param) => (
+                      <div key={param.name} className="space-y-2">
+                        <label className="block text-sm font-medium text-gray-700">
+                          {param.label} {param.required && <span className="text-red-500">*</span>}
+                          {param.unit && <span className="text-gray-500 ml-1">({param.unit})</span>}
+                        </label>
+                        
+                        {param.type === 'select' ? (
+                          <select
+                            value={calculationParameters[param.name] || ''}
+                            onChange={(e) => setCalculationParameters(prev => ({
+                              ...prev,
+                              [param.name]: e.target.value
+                            }))}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            required={param.required}
+                          >
+                            <option value="">Выберите {param.label.toLowerCase()}</option>
+                            {param.options.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            type={param.type}
+                            value={calculationParameters[param.name] || ''}
+                            onChange={(e) => setCalculationParameters(prev => ({
+                              ...prev,
+                              [param.name]: param.type === 'number' ? parseFloat(e.target.value) || 0 : e.target.value
+                            }))}
+                            min={param.min}
+                            max={param.max}
+                            step={param.type === 'number' ? '0.01' : undefined}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            placeholder={`Введите ${param.label.toLowerCase()}`}
+                            required={param.required}
+                          />
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              
+              <div className="px-6 py-4 border-t border-gray-200 flex justify-end space-x-3">
+                <button
+                  onClick={() => {
+                    setShowNewCalculationModal(false);
+                    setSelectedCalculationType(null);
+                    setCalculationParameters({});
+                  }}
+                  className="px-4 py-2 text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50"
+                  disabled={loading}
+                >
+                  Отмена
+                </button>
+                <button
+                  onClick={createCalculationWithParameters}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 flex items-center"
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <>
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                      Создание...
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="w-4 h-4 mr-2" />
+                      Создать расчет
+                    </>
+                  )}
                 </button>
               </div>
             </div>

@@ -88,8 +88,10 @@ SERVICES = {
     "rag-service": "http://rag-service:8003",
     "rule-engine": "http://rule-engine:8004",
     "calculation-service": "http://calculation-service:8002",
-            "ollama": "http://host.docker.internal:11434",  # Прямое подключение к Ollama
-        "vllm": "http://vllm:8005"  # VLLM сервис в контейнере
+    "outgoing-control-service": "http://outgoing-control-service:8006",
+    "spellchecker-service": "http://spellchecker-service:8007",
+    "ollama": "http://host.docker.internal:11434",  # Прямое подключение к Ollama
+    "vllm": "http://vllm:8005"  # VLLM сервис в контейнере
 }
 
 print("🔍 [DEBUG] Gateway: Starting with services configuration:", SERVICES)
@@ -130,7 +132,11 @@ async def auth_middleware(request: Request, call_next):
         "/api/calculations",       # Эндпоинт для расчетов
         "/api/rag",                # Эндпоинт для RAG сервиса
         "/api/ollama",             # Эндпоинт для Ollama
-        "/api/vllm"                # Эндпоинт для vLLM
+        "/api/vllm",               # Эндпоинт для vLLM
+        "/api/outgoing-control",   # Эндпоинт для выходного контроля
+        "/api/outgoing-control/",  # Эндпоинт для выходного контроля с слэшем
+        "/api/spellchecker",       # Эндпоинт для проверки орфографии
+        "/api/spellchecker/"       # Эндпоинт для проверки орфографии с слэшем
     ]
     
     print(f"🔍 [DEBUG] Gateway: Checking path '{request.url.path}' against public paths: {public_paths}")
@@ -152,7 +158,9 @@ async def auth_middleware(request: Request, call_next):
         "/api/calculations",
         "/api/rag",
         "/api/ollama",
-        "/api/vllm"
+        "/api/vllm",
+        "/api/outgoing-control",
+        "/api/spellchecker"
     ]
     
     for prefix in api_prefixes:
@@ -361,6 +369,20 @@ async def proxy_api(request: Request, path: str):
     print(f"🔍 [DEBUG] Gateway: Checking path: '{path}'")
     
     # Проверяем новые endpoints отдельно
+    if path.startswith("outgoing-control"):
+        print(f"🔍 [DEBUG] Gateway: Routing outgoing-control to outgoing-control-service")
+        service_url = SERVICES["outgoing-control-service"]
+        # Убираем префикс outgoing-control из пути
+        clean_path = path.replace("outgoing-control/", "")
+        return await proxy_request(request, service_url, f"/{clean_path}")
+    
+    if path.startswith("spellchecker"):
+        print(f"🔍 [DEBUG] Gateway: Routing spellchecker to spellchecker-service")
+        service_url = SERVICES["spellchecker-service"]
+        # Убираем префикс spellchecker из пути
+        clean_path = path.replace("spellchecker/", "")
+        return await proxy_request(request, service_url, f"/{clean_path}")
+    
     if path.startswith("ollama/"):
         print(f"🔍 [DEBUG] Gateway: Routing ollama endpoint to document-parser with /api prefix")
         service_url = SERVICES["document-parser"]
@@ -469,6 +491,14 @@ async def proxy_main(request: Request, path: str):
     """Основной роут для всех остальных путей"""
     print(f"🔍 [DEBUG] Gateway: Main route called with path: {path}")
     
+    # Проверяем специальные случаи для outgoing-control
+    if path.startswith("api/outgoing-control") or path.startswith("outgoing-control"):
+        print(f"🔍 [DEBUG] Gateway: Detected outgoing-control path: {path}")
+        service_url = SERVICES["outgoing-control-service"]
+        print(f"🔍 [DEBUG] Gateway: Routing outgoing-control to service: {service_url}")
+        clean_path = path.replace("api/", "")
+        return await proxy_request(request, service_url, f"/{clean_path}")
+    
     # Определяем сервис на основе пути
     if path == "metrics":
         # Используем собственный эндпоинт metrics
@@ -525,6 +555,12 @@ async def proxy_main(request: Request, path: str):
         # Для чата передаем путь без префикса api/
         clean_path = path.replace("api/", "") if path.startswith("api/") else path
         return await proxy_request(request, service_url, f"/{clean_path}")
+    elif path.startswith("outgoing-control") or path.startswith("api/outgoing-control"):
+        service_url = SERVICES["outgoing-control-service"]
+        print(f"🔍 [DEBUG] Gateway: Routing outgoing-control to service: {service_url}")
+        # Убираем префикс api/ если есть
+        clean_path = path.replace("api/", "") if path.startswith("api/") else path
+        return await proxy_request(request, service_url, f"/{clean_path}")
     else:
         print(f"🔍 [DEBUG] Gateway: Unknown path, defaulting to document-parser")
         service_url = SERVICES["document-parser"]
@@ -575,6 +611,26 @@ async def metrics():
         content="\n".join(metrics_lines),
         media_type="text/plain; version=0.0.4; charset=utf-8"
     )
+
+# VLLM Models endpoint
+@app.get("/api/vllm/models")
+async def get_vllm_models():
+    """Получение списка моделей от VLLM сервиса"""
+    print("🔍 [DEBUG] Gateway: VLLM models requested")
+    
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{SERVICES['vllm']}/models")
+            if response.status_code == 200:
+                models_data = response.json()
+                print(f"🔍 [DEBUG] Gateway: VLLM models response: {models_data}")
+                return models_data
+            else:
+                print(f"🔍 [DEBUG] Gateway: VLLM models error: {response.status_code}")
+                return {"error": "VLLM service unavailable", "status": "error"}
+    except Exception as e:
+        print(f"🔍 [DEBUG] Gateway: VLLM models exception: {e}")
+        return {"error": str(e), "status": "error"}
 
 if __name__ == "__main__":
     print("🔍 [DEBUG] Gateway: Starting FastAPI application")

@@ -138,7 +138,7 @@ class TurboReasoningService:
             response = requests.post(
                 f"{self.ollama_url}/api/generate",
                 json=payload,
-                timeout=180 if reasoning_depth == "deep" else 60
+                timeout=300 if reasoning_depth == "deep" else 120
             )
             
             if response.status_code == 200:
@@ -297,7 +297,7 @@ class TurboReasoningService:
             # Проверяем Ollama
             ollama_healthy = False
             try:
-                response = requests.get(f"{self.ollama_url}/api/tags", timeout=5)
+                response = requests.get(f"{self.ollama_url}/api/tags", timeout=10)
                 if response.status_code == 200:
                     models = response.json().get("models", [])
                     model_names = [model.get("name") for model in models]

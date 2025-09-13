@@ -1,0 +1,147 @@
+# Многоэтапная сборка для AI-NK проекта
+# Этап 1: Сборка Frontend
+FROM node:18-alpine AS frontend-builder
+
+# Устанавливаем зависимости для сборки
+RUN apk add --no-cache python3 make g++
+
+# Копируем frontend
+WORKDIR /app/frontend
+COPY frontend/package*.json ./
+RUN npm ci --only=production
+
+# Копируем исходный код frontend
+COPY frontend/src ./src
+COPY frontend/public ./public
+COPY frontend/tailwind.config.js ./
+COPY frontend/postcss.config.js ./
+
+# Собираем frontend
+RUN npm run build
+
+# Этап 2: Сборка Python зависимостей
+FROM python:3.11-slim AS python-builder
+
+# Устанавливаем системные зависимости
+RUN apt-get update && apt-get install -y \
+    libmagic1 \
+    postgresql-client \
+    tesseract-ocr \
+    tesseract-ocr-rus \
+    tesseract-ocr-eng \
+    poppler-utils \
+    libglib2.0-0 \
+    libgomp1 \
+    gcc \
+    g++ \
+    python3-dev \
+    fonts-dejavu \
+    fonts-liberation \
+    libhunspell-dev \
+    libhunspell-1.7-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Создаем виртуальное окружение
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Копируем requirements для всех сервисов
+WORKDIR /app
+COPY document_parser/requirements.txt ./document_parser/
+COPY rag_service/requirements.txt ./rag_service/
+COPY rule_engine/requirements.txt ./rule_engine/
+COPY gateway/requirements.txt ./gateway/
+COPY calculation_service/requirements.txt ./calculation_service/
+COPY outgoing_control_service/requirements.txt ./outgoing_control_service/
+COPY spellchecker_service/requirements.txt ./spellchecker_service/
+COPY vllm_service/requirements.txt ./vllm_service/
+
+# Объединяем все requirements в один файл
+RUN cat document_parser/requirements.txt rag_service/requirements.txt rule_engine/requirements.txt gateway/requirements.txt calculation_service/requirements.txt outgoing_control_service/requirements.txt spellchecker_service/requirements.txt vllm_service/requirements.txt | grep -v "^#" | sort -u > requirements.txt
+
+# Устанавливаем Python зависимости
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Этап 3: Финальный образ
+FROM python:3.11-slim AS ai-nk-production
+
+# Устанавливаем системные зависимости
+RUN apt-get update && apt-get install -y \
+    libmagic1 \
+    postgresql-client \
+    tesseract-ocr \
+    tesseract-ocr-rus \
+    tesseract-ocr-eng \
+    poppler-utils \
+    libglib2.0-0 \
+    libgomp1 \
+    nginx \
+    curl \
+    wget \
+    fonts-dejavu \
+    fonts-liberation \
+    libhunspell-1.7-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Создаем пользователя для безопасности
+RUN useradd -m -u 1000 ai-nk && \
+    mkdir -p /app /var/log/ai-nk /var/run/ai-nk /app/uploads /app/temp /app/logs /app/data /app/reports && \
+    chown -R ai-nk:ai-nk /app /var/log/ai-nk /var/run/ai-nk
+
+# Копируем виртуальное окружение из builder
+COPY --from=python-builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Копируем собранный frontend
+COPY --from=frontend-builder /app/frontend/build /app/frontend/build
+
+# Копируем исходный код всех сервисов
+WORKDIR /app
+COPY document_parser/ ./document_parser/
+COPY rag_service/ ./rag_service/
+COPY rule_engine/ ./rule_engine/
+COPY gateway/ ./gateway/
+COPY calculation_service/ ./calculation_service/
+COPY outgoing_control_service/ ./outgoing_control_service/
+COPY spellchecker_service/ ./spellchecker_service/
+COPY vllm_service/ ./vllm_service/
+COPY config.py ./
+
+# Копируем конфигурационные файлы
+COPY nginx.conf /etc/nginx/nginx.conf
+COPY sql/ ./sql/
+COPY report_format/ ./report_format/
+COPY keycloak/ ./keycloak/
+COPY ssl/ ./ssl/
+COPY configs/ ./configs/
+
+# Создаем необходимые директории и устанавливаем права
+RUN mkdir -p /app/uploads /app/temp /app/logs /app/data /app/reports /app/models && \
+    chown -R ai-nk:ai-nk /app && \
+    chmod -R 755 /app
+
+# Копируем скрипты запуска
+COPY scripts/start.sh /app/start.sh
+COPY scripts/init.sh /app/init.sh
+RUN chmod +x /app/start.sh /app/init.sh
+
+# Устанавливаем переменные окружения
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+ENV TZ=Europe/Moscow
+ENV LANG=ru_RU.UTF-8
+ENV LC_ALL=ru_RU.UTF-8
+
+# Переключаемся на пользователя ai-nk
+USER ai-nk
+
+# Открываем порты
+EXPOSE 80 443 8001 8002 8003 8004 8005 8006 8007 5432 6379 6333 9090 3000 8081
+
+# Healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost/health || exit 1
+
+# Точка входа
+ENTRYPOINT ["/app/start.sh"]

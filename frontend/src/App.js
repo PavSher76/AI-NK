@@ -21,6 +21,7 @@ import {
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import SettingsPanel from './components/SettingsPanel';
+import SystemSettings from './components/SystemSettings';
 // import AuthModal from './components/AuthModal'; // Отключено
 
 // Pages
@@ -40,6 +41,7 @@ import AcousticCalculationsPage from './pages/AcousticCalculationsPage';
 import LightingCalculationsPage from './pages/LightingCalculationsPage';
 import GeologicalCalculationsPage from './pages/GeologicalCalculationsPage';
 import UAVProtectionCalculationsPage from './pages/UAVProtectionCalculationsPage';
+import OutgoingControlPage from './pages/OutgoingControlPage';
 import DocumentsPage from './pages/DocumentsPage';
 import NTDConsultation from './components/NTDConsultation';
 
@@ -50,6 +52,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showSystemSettings, setShowSystemSettings] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [authToken, setAuthToken] = useState('');
@@ -234,7 +237,8 @@ function App() {
           status: 'available',
           type: model.details?.family || 'unknown',
           size: model.size,
-          parameter_size: model.details?.parameter_size || 'unknown'
+          parameter_size: model.details?.parameter_size || 'unknown',
+          owned_by: model.details?.family || 'Ollama'
         }));
         
         console.log('loadModels: Преобразованные данные:', modelsData);
@@ -508,6 +512,7 @@ function App() {
           currentPage={currentPage}
           onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
           isSidebarOpen={isSidebarOpen}
+          onSystemSettingsClick={() => setShowSystemSettings(true)}
         />
 
         {/* Page Content */}
@@ -550,6 +555,13 @@ function App() {
               reasoningDepth={reasoningDepth}
               onReasoningDepthChange={setReasoningDepth}
               reasoningModes={reasoningModes}
+            />
+          )}
+
+          {currentPage === 'outgoing-control' && (
+            <OutgoingControlPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
             />
           )}
 
@@ -705,6 +717,13 @@ function App() {
         onClose={() => setShowAuthModal(false)}
         onAuthSuccess={handleAuthSuccess}
       /> */}
+
+      {/* Системные настройки */}
+      <SystemSettings
+        isOpen={showSystemSettings}
+        onClose={() => setShowSystemSettings(false)}
+        authToken={authToken}
+      />
     </div>
   );
 }

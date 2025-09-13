@@ -12,10 +12,11 @@ from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 
 import qdrant_client
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.exceptions import RequestValidationError
 import uvicorn
 
 # Импорт наших модулей
@@ -108,6 +109,21 @@ async def log_requests(request, call_next):
     
     logger.info(f"🔍 [RESPONSE] {request_id}: {response.status_code} ({process_time:.3f}s)")
     return response
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Обработчик ошибок валидации Pydantic"""
+    logger.error(f"❌ [VALIDATION_ERROR] Request validation failed: {exc.errors()}")
+    logger.error(f"❌ [VALIDATION_ERROR] Request body: {await request.body()}")
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": "Validation error",
+            "errors": exc.errors(),
+            "body": str(await request.body())
+        }
+    )
 
 
 # Обработчики сигналов для graceful shutdown
@@ -240,6 +256,7 @@ async def create_calculation(
         raise HTTPException(status_code=503, detail="Service is shutting down")
     
     try:
+        logger.info(f"🔍 [CREATE_CALCULATION] Received calculation data: {calculation.dict()}")
         calculation_id = db_manager.create_calculation(calculation, user_id=1)  # Используем фиксированный user_id для демо
         created_calculation = db_manager.get_calculation(calculation_id)
         
@@ -544,28 +561,8 @@ async def execute_ventilation_calculation(
         raise HTTPException(status_code=500, detail=f"Failed to execute ventilation calculation: {str(e)}")
 
 
-# Общий эндпоинт для выполнения расчетов по типу
-@app.post("/calculations/{calculation_type}/execute")
-async def execute_calculation_by_type_endpoint(
-    calculation_type: str,
-    calculation_data: dict
-):
-    """Выполнение расчета по типу"""
-    if is_shutting_down:
-        raise HTTPException(status_code=503, detail="Service is shutting down")
-    
-    try:
-        parameters = calculation_data.get("parameters", {})
-        
-        # Выполнение расчета
-        results = calculation_engine.execute_calculation_by_type(calculation_type, parameters)
-        
-        logger.info(f"✅ {calculation_type} calculation executed successfully")
-        return results
-        
-    except Exception as e:
-        logger.error(f"❌ Error executing {calculation_type} calculation: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to execute {calculation_type} calculation: {str(e)}")
+# Общий эндпоинт для выполнения расчетов по типу (удален из-за конфликта с {calculation_id})
+# Используйте специфичные эндпоинты для каждого типа расчета
 
 
 # Экспорт расчетов в DOCX

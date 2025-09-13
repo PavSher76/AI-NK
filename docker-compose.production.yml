@@ -1,0 +1,276 @@
+version: '3.8'
+
+services:
+  # Основной сервис AI-NK
+  ai-nk:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+    container_name: ai-nk-system
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8001:8001"  # Document Parser
+      - "8002:8002"  # Rule Engine
+      - "8003:8003"  # RAG Service
+      - "8004:8004"  # Calculation Service
+      - "8005:8005"  # VLLM Service
+      - "8006:8006"  # Outgoing Control Service
+      - "8007:8007"  # Spellchecker Service
+      - "8443:8443"  # Gateway
+    volumes:
+      - ai-nk-data:/app/data
+      - ai-nk-logs:/app/logs
+      - ai-nk-uploads:/app/uploads
+      - ai-nk-reports:/app/reports
+      - ai-nk-models:/app/models
+    environment:
+      # Database Configuration
+      - POSTGRES_HOST=${POSTGRES_HOST:-norms-db}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_DB=${POSTGRES_DB:-norms_db}
+      - POSTGRES_USER=${POSTGRES_USER:-norms_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-norms_password}
+      
+      # Redis Configuration
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-redispass}
+      
+      # Qdrant Configuration
+      - QDRANT_HOST=${QDRANT_HOST:-qdrant}
+      - QDRANT_PORT=${QDRANT_PORT:-6333}
+      
+      # Service URLs
+      - GATEWAY_URL=https://ai-nk:8443
+      - DOCUMENT_PARSER_URL=http://ai-nk:8001
+      - RAG_SERVICE_URL=http://ai-nk:8003
+      - RULE_ENGINE_URL=http://ai-nk:8002
+      - CALCULATION_SERVICE_URL=http://ai-nk:8004
+      - VLLM_SERVICE_URL=http://ai-nk:8005
+      - OUTGOING_CONTROL_SERVICE_URL=http://ai-nk:8006
+      - SPELLCHECKER_SERVICE_URL=http://ai-nk:8007
+      
+      # Security
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-secret-key-here}
+      - JWT_ALGORITHM=${JWT_ALGORITHM:-HS256}
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      
+      # File Upload Limits
+      - MAX_FILE_SIZE=${MAX_FILE_SIZE:-104857600}
+      - MAX_CHECKABLE_DOCUMENT_SIZE=${MAX_CHECKABLE_DOCUMENT_SIZE:-104857600}
+      - MAX_NORMATIVE_DOCUMENT_SIZE=${MAX_NORMATIVE_DOCUMENT_SIZE:-209715200}
+      
+      # Timeouts
+      - LLM_REQUEST_TIMEOUT=${LLM_REQUEST_TIMEOUT:-120}
+      - PAGE_PROCESSING_TIMEOUT=${PAGE_PROCESSING_TIMEOUT:-300}
+      
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - TZ=${TZ:-Europe/Moscow}
+    depends_on:
+      - norms-db
+      - qdrant
+      - redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - ai-nk-network
+
+  # PostgreSQL с pgvector для нормативных документов
+  norms-db:
+    image: pgvector/pgvector:pg15
+    container_name: ai-nk-norms-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-norms_db}
+      POSTGRES_USER: ${POSTGRES_USER:-norms_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-norms_password}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+      TZ: ${TZ:-Europe/Moscow}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - norms_db_data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-norms_user} -d ${POSTGRES_DB:-norms_db}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - ai-nk-network
+
+  # Qdrant для векторного поиска
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: ai-nk-qdrant
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      - TZ=${TZ:-Europe/Moscow}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - ai-nk-network
+
+  # Redis для кэширования
+  redis:
+    image: redis:7-alpine
+    container_name: ai-nk-redis
+    command: redis-server --requirepass ${REDIS_PASSWORD:-redispass}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    environment:
+      - TZ=${TZ:-Europe/Moscow}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - ai-nk-network
+
+  # Keycloak для аутентификации (опционально)
+  keycloak-db:
+    image: postgres:15-alpine
+    container_name: ai-nk-keycloak-db
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: keycloak
+      TZ: ${TZ:-Europe/Moscow}
+    volumes:
+      - keycloak_db_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - ai-nk-network
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.3.2
+    container_name: ai-nk-keycloak
+    command: start --http-enabled=true --http-port=8080 --hostname-strict=false
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_PROFILE: prod
+      QUARKUS_PROFILE: prod
+      KC_HTTP_ENABLED: true
+      KC_HTTPS_ENABLED: false
+      KC_HTTP_PORT: 8080
+      KC_HOSTNAME_STRICT: false
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: keycloak
+      TZ: ${TZ:-Europe/Moscow}
+    ports:
+      - "${KEYCLOAK_PORT:-8081}:8080"
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - ai-nk-network
+
+  # Prometheus для мониторинга (опционально)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ai-nk-prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    environment:
+      - TZ=${TZ:-Europe/Moscow}
+    volumes:
+      - prometheus_data:/prometheus
+      - ./configs/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    networks:
+      - ai-nk-network
+
+  # Grafana для визуализации (опционально)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: ai-nk-grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_PLUGINS_PREINSTALL=grafana-clock-panel,grafana-simple-json-datasource
+      - TZ=${TZ:-Europe/Moscow}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./configs/grafana:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - ai-nk-network
+
+volumes:
+  ai-nk-data:
+    driver: local
+  ai-nk-logs:
+    driver: local
+  ai-nk-uploads:
+    driver: local
+  ai-nk-reports:
+    driver: local
+  ai-nk-models:
+    driver: local
+  norms_db_data:
+    driver: local
+  qdrant_data:
+    driver: local
+  redis_data:
+    driver: local
+  keycloak_db_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  ai-nk-network:
+    driver: bridge
+    name: ai-nk-network

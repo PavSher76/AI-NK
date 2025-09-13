@@ -549,6 +549,7 @@ class CalculationEngine:
             logger.info(f"🔍 [DEBUG] Calculation object: {calculation}")
             logger.info(f"🔍 [DEBUG] Calculation type: {calculation.type}, ID: {calculation_id}")
             logger.info(f"🔍 [DEBUG] Calculation type class: {type(calculation.type)}")
+            logger.info(f"🔍 [DEBUG] Calculation type value: '{calculation.type}', length: {len(str(calculation.type))}")
             
             # Обновление статуса на "выполняется"
             db_manager.update_calculation_results(calculation_id, {}, "running")
@@ -635,6 +636,8 @@ class CalculationEngine:
     def execute_calculation_by_type(self, calculation_type: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """Выполнение расчета по типу (для совместимости с фронтендом)"""
         start_time = time.time()
+        
+        logger.info(f"🔍 [DEBUG] execute_calculation_by_type called with type: '{calculation_type}', class: {type(calculation_type)}")
         
         try:
             # Выполнение расчета в зависимости от типа

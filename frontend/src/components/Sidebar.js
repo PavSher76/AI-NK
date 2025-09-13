@@ -7,12 +7,8 @@ import {
   Calculator,
   User, 
   LogOut,
-  CheckCircle,
-  AlertCircle,
-  RefreshCw,
   X,
   HelpCircle,
-  Activity,
   Building,
   Thermometer,
   Wind,
@@ -22,7 +18,8 @@ import {
   Volume2,
   Sun,
   Mountain,
-  Shield
+  Shield,
+  FileCheck
 } from 'lucide-react';
 
 const Sidebar = ({ 
@@ -40,21 +37,6 @@ const Sidebar = ({
     onPageChange(page);
   };
 
-  const getStatusIcon = (status) => {
-    if (status === true) {
-      return <CheckCircle className="w-4 h-4 text-green-500" />;
-    } else if (status === false) {
-      return <AlertCircle className="w-4 h-4 text-red-500" />;
-    } else {
-      return <RefreshCw className="w-4 h-4 text-yellow-500 animate-spin" />;
-    }
-  };
-
-  const getStatusText = (status) => {
-    if (status === true) return 'Работает';
-    if (status === false) return 'Ошибка';
-    return 'Проверка...';
-  };
 
   const navigationItems = [
     {
@@ -68,6 +50,12 @@ const Sidebar = ({
       label: 'Чат с ИИ',
       icon: MessageSquare,
       onClick: () => handlePageClick('chat')
+    },
+    {
+      id: 'outgoing-control',
+      label: 'Выходной контроль корреспонденции',
+      icon: FileCheck,
+      onClick: () => handlePageClick('outgoing-control')
     },
     {
       id: 'ntd-consultation',
@@ -278,48 +266,6 @@ const Sidebar = ({
 
       {/* Нижняя часть с информацией о пользователе и выходом */}
       <div className="p-4 border-t border-gray-100 space-y-4">
-        {/* Статус системы */}
-        <div className="bg-gradient-to-br from-gray-50 to-gray-100 rounded-xl p-4 border border-gray-200">
-          <div className="text-sm font-semibold text-gray-800 mb-3 flex items-center">
-            <Activity className="w-4 h-4 mr-2 text-primary-600" />
-            Статус системы
-          </div>
-          <div className="space-y-2">
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-gray-600 font-medium">Gateway</span>
-              <div className="flex items-center space-x-2">
-                {getStatusIcon(systemStatus?.gateway)}
-                <span className={`text-xs font-medium px-2 py-1 rounded-lg ${
-                  systemStatus?.gateway ? 'status-success' : 'status-error'
-                }`}>
-                  {getStatusText(systemStatus?.gateway)}
-                </span>
-              </div>
-            </div>
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-gray-600 font-medium">Ollama</span>
-              <div className="flex items-center space-x-2">
-                {getStatusIcon(systemStatus?.ollama)}
-                <span className={`text-xs font-medium px-2 py-1 rounded-lg ${
-                  systemStatus?.ollama ? 'status-success' : 'status-error'
-                }`}>
-                  {getStatusText(systemStatus?.ollama)}
-                </span>
-              </div>
-            </div>
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-gray-600 font-medium">Keycloak</span>
-              <div className="flex items-center space-x-2">
-                {getStatusIcon(systemStatus?.keycloak)}
-                <span className={`text-xs font-medium px-2 py-1 rounded-lg ${
-                  systemStatus?.keycloak ? 'status-success' : 'status-error'
-                }`}>
-                  {getStatusText(systemStatus?.keycloak)}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
 
         {/* Информация о пользователе */}
         {isAuthenticated && userInfo && (

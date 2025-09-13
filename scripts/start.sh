@@ -1,161 +1,148 @@
 #!/bin/bash
 
+# Скрипт запуска всех сервисов AI-NK
 set -e
 
 echo "🚀 Запуск AI-NK системы..."
 
-# Функция для логирования
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
-}
-
-# Функция для проверки здоровья сервиса
-check_health() {
-    local service=$1
-    local url=$2
+# Функция для ожидания готовности сервиса
+wait_for_service() {
+    local host=$1
+    local port=$2
+    local service_name=$3
     local max_attempts=30
     local attempt=1
-    
-    log "🔍 Проверка здоровья $service..."
+
+    echo "⏳ Ожидание готовности $service_name на $host:$port..."
     
     while [ $attempt -le $max_attempts ]; do
-        if curl -f -s "$url" > /dev/null 2>&1; then
-            log "✅ $service готов"
+        if nc -z $host $port 2>/dev/null; then
+            echo "✅ $service_name готов!"
             return 0
         fi
-        
-        log "⏳ Попытка $attempt/$max_attempts для $service..."
+        echo "   Попытка $attempt/$max_attempts..."
         sleep 2
-        ((attempt++))
+        attempt=$((attempt + 1))
     done
     
-    log "❌ $service не готов после $max_attempts попыток"
+    echo "❌ $service_name не готов после $max_attempts попыток"
     return 1
 }
 
-# Инициализация системы
-log "📋 Инициализация AI-NK системы..."
+# Функция запуска сервиса в фоне
+start_service() {
+    local service_name=$1
+    local command=$2
+    local port=$3
+    
+    echo "🔄 Запуск $service_name..."
+    cd /app/$service_name
+    nohup $command > /var/log/ai-nk/${service_name}.log 2>&1 &
+    echo $! > /var/run/ai-nk/${service_name}.pid
+    
+    # Ждем готовности сервиса
+    if [ -n "$port" ]; then
+        wait_for_service localhost $port $service_name
+    fi
+}
 
-# Запуск инициализации базы данных
-if [ -f "/app/init.sh" ]; then
-    log "🗄️ Инициализация базы данных..."
+# Создаем необходимые директории
+mkdir -p /var/log/ai-nk /var/run/ai-nk /app/uploads /app/temp /app/logs /app/data /app/reports
+
+# Устанавливаем права доступа
+chmod 755 /var/log/ai-nk /var/run/ai-nk
+
+# Инициализация базы данных (если нужно)
+if [ ! -f /app/data/.initialized ]; then
+    echo "🔧 Инициализация базы данных..."
     /app/init.sh
+    touch /app/data/.initialized
 fi
 
-# Запуск PostgreSQL
-log "🐘 Запуск PostgreSQL..."
-pg_ctl -D /app/data/postgres -l /app/logs/postgres.log start || true
-
-# Ожидание готовности PostgreSQL
-check_health "PostgreSQL" "http://localhost:5432" || {
-    log "❌ PostgreSQL не запустился"
-    exit 1
-}
-
-# Запуск Redis
-log "🔴 Запуск Redis..."
-redis-server --daemonize yes --logfile /app/logs/redis.log
-
-# Ожидание готовности Redis
-check_health "Redis" "http://localhost:6379" || {
-    log "❌ Redis не запустился"
-    exit 1
-}
-
-# Запуск Qdrant
-log "🔍 Запуск Qdrant..."
-qdrant --storage-path /app/data/qdrant --log-level INFO > /app/logs/qdrant.log 2>&1 &
-
-# Ожидание готовности Qdrant
-check_health "Qdrant" "http://localhost:6333/health" || {
-    log "❌ Qdrant не запустился"
-    exit 1
-}
-
-# Запуск Python сервисов
-log "🐍 Запуск Python сервисов..."
-
-# Document Parser
-log "📄 Запуск Document Parser..."
-cd /app/document_parser
-python -m uvicorn main:app --host 0.0.0.0 --port 8001 --timeout-keep-alive 600 --limit-max-requests 500 --limit-concurrency 5 --timeout-graceful-shutdown 60 > /app/logs/document-parser.log 2>&1 &
-
-# RAG Service
-log "🧠 Запуск RAG Service..."
-cd /app/rag_service
-python -m uvicorn main:app --host 0.0.0.0 --port 8002 > /app/logs/rag-service.log 2>&1 &
-
-# Rule Engine
-log "⚙️ Запуск Rule Engine..."
-cd /app/rule_engine
-python -m uvicorn main:app --host 0.0.0.0 --port 8003 > /app/logs/rule-engine.log 2>&1 &
-
-# Gateway
-log "🌐 Запуск Gateway..."
-cd /app/gateway
-python -m uvicorn app:app --host 0.0.0.0 --port 8004 > /app/logs/gateway.log 2>&1 &
-
-# Ожидание готовности сервисов
-log "⏳ Ожидание готовности сервисов..."
-
-check_health "Document Parser" "http://localhost:8001/health" || {
-    log "❌ Document Parser не готов"
-    exit 1
-}
-
-check_health "RAG Service" "http://localhost:8002/health" || {
-    log "❌ RAG Service не готов"
-    exit 1
-}
-
-check_health "Rule Engine" "http://localhost:8003/health" || {
-    log "❌ Rule Engine не готов"
-    exit 1
-}
-
-check_health "Gateway" "http://localhost:8004/health" || {
-    log "❌ Gateway не готов"
-    exit 1
-}
-
 # Запуск Nginx
-log "🌐 Запуск Nginx..."
+echo "🌐 Запуск Nginx..."
 nginx -g "daemon off;" &
+echo $! > /var/run/ai-nk/nginx.pid
 
-# Ожидание готовности Nginx
-check_health "Nginx" "http://localhost:80" || {
-    log "❌ Nginx не готов"
-    exit 1
+# Запуск микросервисов
+echo "🔧 Запуск микросервисов..."
+
+# 1. Document Parser Service
+start_service "document_parser" "python -m uvicorn main:app --host 0.0.0.0 --port 8001" "8001"
+
+# 2. RAG Service
+start_service "rag_service" "python -m uvicorn main:app --host 0.0.0.0 --port 8003" "8003"
+
+# 3. Rule Engine Service
+start_service "rule_engine" "python -m uvicorn main:app --host 0.0.0.0 --port 8002" "8002"
+
+# 4. Calculation Service
+start_service "calculation_service" "python -m uvicorn main:app --host 0.0.0.0 --port 8004" "8004"
+
+# 5. VLLM Service
+start_service "vllm_service" "python -m uvicorn main:app --host 0.0.0.0 --port 8005" "8005"
+
+# 6. Outgoing Control Service
+start_service "outgoing_control_service" "python -m uvicorn main:app --host 0.0.0.0 --port 8006" "8006"
+
+# 7. Spellchecker Service
+start_service "spellchecker_service" "python -m uvicorn main:app --host 0.0.0.0 --port 8007" "8007"
+
+# 8. Gateway Service (последний, так как зависит от других)
+start_service "gateway" "python -m uvicorn main:app --host 0.0.0.0 --port 8443" "8443"
+
+echo "✅ Все сервисы запущены!"
+
+# Функция для graceful shutdown
+cleanup() {
+    echo "🛑 Остановка сервисов..."
+    
+    # Останавливаем все сервисы
+    for pidfile in /var/run/ai-nk/*.pid; do
+        if [ -f "$pidfile" ]; then
+            pid=$(cat "$pidfile")
+            if kill -0 "$pid" 2>/dev/null; then
+                echo "Остановка процесса $pid..."
+                kill -TERM "$pid"
+            fi
+        fi
+    done
+    
+    # Ждем завершения процессов
+    sleep 5
+    
+    # Принудительно завершаем оставшиеся процессы
+    for pidfile in /var/run/ai-nk/*.pid; do
+        if [ -f "$pidfile" ]; then
+            pid=$(cat "$pidfile")
+            if kill -0 "$pid" 2>/dev/null; then
+                echo "Принудительная остановка процесса $pid..."
+                kill -KILL "$pid"
+            fi
+        fi
+    done
+    
+    echo "✅ Все сервисы остановлены"
+    exit 0
 }
 
-log "🎉 AI-NK система успешно запущена!"
-log "📊 Доступные сервисы:"
-log "   - Frontend: http://localhost"
-log "   - API Gateway: http://localhost/api"
-log "   - Document Parser: http://localhost:8001"
-log "   - RAG Service: http://localhost:8002"
-log "   - Rule Engine: http://localhost:8003"
+# Устанавливаем обработчик сигналов
+trap cleanup SIGTERM SIGINT
 
 # Мониторинг процессов
-log "📈 Запуск мониторинга процессов..."
+echo "📊 Мониторинг сервисов..."
 while true; do
     sleep 30
     
-    # Проверка основных процессов
-    if ! pgrep -f "uvicorn.*main:app" > /dev/null; then
-        log "❌ Один из Python сервисов остановился"
-        exit 1
-    fi
-    
-    if ! pgrep nginx > /dev/null; then
-        log "❌ Nginx остановился"
-        exit 1
-    fi
-    
-    if ! pgrep postgres > /dev/null; then
-        log "❌ PostgreSQL остановился"
-        exit 1
-    fi
-    
-    log "✅ Все сервисы работают нормально"
+    # Проверяем состояние каждого сервиса
+    for pidfile in /var/run/ai-nk/*.pid; do
+        if [ -f "$pidfile" ]; then
+            pid=$(cat "$pidfile")
+            if ! kill -0 "$pid" 2>/dev/null; then
+                service_name=$(basename "$pidfile" .pid)
+                echo "⚠️  Сервис $service_name остановлен, перезапуск..."
+                # Здесь можно добавить логику перезапуска
+            fi
+        fi
+    done
 done

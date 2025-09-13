@@ -142,7 +142,14 @@ class DatabaseManager:
                 result = cursor.fetchone()
                 if result:
                     logger.info(f"🔍 [DEBUG] Database result: {result}")
-                    calculation = CalculationResponse(**dict(result))
+                    # Преобразуем результат в словарь и обрабатываем NULL значения
+                    calc_dict = dict(result)
+                    if calc_dict.get('parameters') is None:
+                        calc_dict['parameters'] = {}
+                    if calc_dict.get('result') is None:
+                        calc_dict['result'] = None
+                    
+                    calculation = CalculationResponse(**calc_dict)
                     logger.info(f"🔍 [DEBUG] CalculationResponse object: {calculation}")
                     logger.info(f"🔍 [DEBUG] CalculationResponse type: {calculation.type}")
                     return calculation
@@ -180,7 +187,16 @@ class DatabaseManager:
                 cursor.execute(query, params)
                 results = cursor.fetchall()
                 
-                return [CalculationResponse(**dict(row)) for row in results]
+                calculations = []
+                for row in results:
+                    calc_dict = dict(row)
+                    if calc_dict.get('parameters') is None:
+                        calc_dict['parameters'] = {}
+                    if calc_dict.get('result') is None:
+                        calc_dict['result'] = None
+                    calculations.append(CalculationResponse(**calc_dict))
+                
+                return calculations
                 
         except Exception as e:
             logger.error(f"❌ Error getting calculations: {e}")

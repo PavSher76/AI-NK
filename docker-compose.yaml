@@ -443,6 +443,61 @@ services:
       timeout: 10s
       retries: 3
 
+  # Outgoing Control Service для проверки исходящей корреспонденции
+  outgoing-control-service:
+    build: ./outgoing_control_service
+    ports:
+      - "8006:8006"
+    environment:
+      - TZ=Europe/Moscow
+      - SPELLCHECKER_SERVICE_URL=http://spellchecker-service:8007
+    volumes:
+      - outgoing_control_uploads:/app/uploads
+      - outgoing_control_reports:/app/reports
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    depends_on:
+      - spellchecker-service
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+          cpus: '0.2'
+    # CPU Shares для macOS (низкий приоритет Outgoing Control)
+    cpu_shares: 128
+
+  # Сервис проверки орфографии и грамматики
+  spellchecker-service:
+    build: ./spellchecker_service
+    ports:
+      - "8007:8007"
+    environment:
+      - TZ=Europe/Moscow
+      - LANGUAGETOOL_HOME=/opt/languagetool
+    volumes:
+      - spellchecker_logs:/app/logs
+      - spellchecker_cache:/app/cache
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+    # CPU Shares для macOS (средний приоритет SpellChecker)
+    cpu_shares: 512
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8007/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   # RAG Service для поиска по нормам - ВЫСОКИЙ ПРИОРИТЕТ
   rag-service:
     build: 
@@ -496,11 +551,19 @@ volumes:
     driver: local
   grafana_data:
     driver: local
+  spellchecker_logs:
+    driver: local
+  spellchecker_cache:
+    driver: local
   norms_db_data:
     driver: local
   qdrant_data:
     driver: local
   rag_models:
+    driver: local
+  outgoing_control_uploads:
+    driver: local
+  outgoing_control_reports:
     driver: local
 
 networks:

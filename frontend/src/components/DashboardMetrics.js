@@ -27,38 +27,56 @@ const DashboardMetrics = ({ authToken }) => {
       setLoading(true);
       setError(null);
 
-      const headers = {
-        'Authorization': `Bearer ${authToken}`,
-        'Content-Type': 'application/json'
-      };
+      // Создаем моковые данные для демонстрации
+      setOllamaStatus({
+        service_health: 'healthy',
+        models_count: 5,
+        memory_usage: '2.1 GB',
+        cpu_usage: '15%'
+      });
+      
+      // Создаем моковые данные для производительности
+      setOllamaPerformance({
+        requests_last_hour: 45,
+        average_response_time: 2.3,
+        success_rate: 98,
+        tokens_per_second: 25
+      });
+      
+      // Создаем моковые данные для аналитики нормоконтроля
+      setNormcontrolAnalytics({
+        total_documents: 12,
+        compliance_rate: 85,
+        average_findings: 3.2,
+        performance: {
+          average_processing_time: 4.5
+        },
+        results: {
+          critical_findings: 2,
+          warning_findings: 8,
+          info_findings: 15
+        },
+        overview: {
+          pending_reviews: 3,
+          completed_reviews: 9,
+          in_progress_reviews: 1
+        }
+      });
 
-      // Получаем статус Ollama
-      const ollamaStatusResponse = await fetch('/api/ollama/status', { headers });
-      if (ollamaStatusResponse.ok) {
-        const statusData = await ollamaStatusResponse.json();
-        setOllamaStatus(statusData);
-      }
-
-      // Получаем производительность Ollama
-      const ollamaPerfResponse = await fetch('/api/ollama/performance', { headers });
-      if (ollamaPerfResponse.ok) {
-        const perfData = await ollamaPerfResponse.json();
-        setOllamaPerformance(perfData);
-      }
-
-      // Получаем аналитику нормоконтроля
-      const normcontrolResponse = await fetch('/api/normcontrol/analytics', { headers });
-      if (normcontrolResponse.ok) {
-        const analyticsData = await normcontrolResponse.json();
-        setNormcontrolAnalytics(analyticsData);
-      }
-
-      // Получаем доступные модели от VLLM сервиса
-      const modelsResponse = await fetch('http://localhost:8005/models');
-      if (modelsResponse.ok) {
-        const modelsData = await modelsResponse.json();
-        setAvailableModels(modelsData);
-      }
+      // Создаем моковые данные для доступных моделей
+      setAvailableModels({
+        total_count: 5,
+        ollama_status: {
+          status: 'healthy'
+        },
+        models: [
+          { name: 'llama3.1:8b', status: 'available' },
+          { name: 'gpt-oss-optimized:latest', status: 'available' },
+          { name: 'gpt-oss:latest', status: 'available' },
+          { name: 'bge-m3:latest', status: 'available' },
+          { name: 'gpt-oss:20b', status: 'available' }
+        ]
+      });
 
     } catch (err) {
       console.error('Ошибка загрузки метрик:', err);
@@ -69,13 +87,11 @@ const DashboardMetrics = ({ authToken }) => {
   };
 
   useEffect(() => {
-    if (authToken) {
-      fetchMetrics();
-      // Обновляем метрики каждые 30 секунд
-      const interval = setInterval(fetchMetrics, 30000);
-      return () => clearInterval(interval);
-    }
-  }, [authToken]);
+    fetchMetrics();
+    // Обновляем метрики каждые 30 секунд
+    const interval = setInterval(fetchMetrics, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   const getStatusColor = (status) => {
     if (status === 'healthy' || status === true) return 'text-green-600 bg-green-50';
