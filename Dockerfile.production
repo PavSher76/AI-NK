@@ -1,9 +1,12 @@
 # Многоэтапная сборка для AI-NK проекта
 # Этап 1: Сборка Frontend
-FROM node:18-alpine AS frontend-builder
+FROM node:20-alpine AS frontend-builder
 
 # Устанавливаем зависимости для сборки
 RUN apk add --no-cache python3 make g++
+
+# Обновляем npm до последней версии
+RUN npm install -g npm@latest
 
 # Копируем frontend
 WORKDIR /app/frontend
