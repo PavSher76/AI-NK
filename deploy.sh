@@ -1,5 +1,5 @@
 # 1. Клонировать проект
-git clone <repository-url>
+git clone https://github.com/PavSher76/AI-NK
 cd AI-NK
 
 # 2. Быстрое развертывание
