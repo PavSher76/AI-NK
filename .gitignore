@@ -84,6 +84,8 @@ models/
 # Большие файлы данных
 *.csv
 *.json
+!frontend/package.json
+!frontend/package-lock.json
 *.parquet
 *.feather
 
