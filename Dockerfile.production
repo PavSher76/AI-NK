@@ -7,7 +7,8 @@ RUN apk add --no-cache python3 make g++
 
 # Копируем frontend
 WORKDIR /app/frontend
-COPY frontend/package*.json ./
+COPY frontend/package.json ./
+COPY frontend/package-lock.json ./
 RUN npm ci --only=production
 
 # Копируем исходный код frontend
@@ -56,8 +57,31 @@ COPY outgoing_control_service/requirements.txt ./outgoing_control_service/
 COPY spellchecker_service/requirements.txt ./spellchecker_service/
 COPY vllm_service/requirements.txt ./vllm_service/
 
-# Объединяем все requirements в один файл
-RUN cat document_parser/requirements.txt rag_service/requirements.txt rule_engine/requirements.txt gateway/requirements.txt calculation_service/requirements.txt outgoing_control_service/requirements.txt spellchecker_service/requirements.txt vllm_service/requirements.txt | grep -v "^#" | sort -u > requirements.txt
+# Создаем объединенный requirements.txt
+RUN echo "# AI-NK Production Requirements" > requirements.txt && \
+    echo "# Document Parser" >> requirements.txt && \
+    cat document_parser/requirements.txt >> requirements.txt && \
+    echo "" >> requirements.txt && \
+    echo "# RAG Service" >> requirements.txt && \
+    cat rag_service/requirements.txt >> requirements.txt && \
+    echo "" >> requirements.txt && \
+    echo "# Rule Engine" >> requirements.txt && \
+    cat rule_engine/requirements.txt >> requirements.txt && \
+    echo "" >> requirements.txt && \
+    echo "# Gateway" >> requirements.txt && \
+    cat gateway/requirements.txt >> requirements.txt && \
+    echo "" >> requirements.txt && \
+    echo "# Calculation Service" >> requirements.txt && \
+    cat calculation_service/requirements.txt >> requirements.txt && \
+    echo "" >> requirements.txt && \
+    echo "# Outgoing Control Service" >> requirements.txt && \
+    cat outgoing_control_service/requirements.txt >> requirements.txt && \
+    echo "" >> requirements.txt && \
+    echo "# Spellchecker Service" >> requirements.txt && \
+    cat spellchecker_service/requirements.txt >> requirements.txt && \
+    echo "" >> requirements.txt && \
+    echo "# VLLM Service" >> requirements.txt && \
+    cat vllm_service/requirements.txt >> requirements.txt
 
 # Устанавливаем Python зависимости
 RUN pip install --no-cache-dir --upgrade pip && \
@@ -137,7 +161,7 @@ ENV LC_ALL=ru_RU.UTF-8
 USER ai-nk
 
 # Открываем порты
-EXPOSE 80 443 8001 8002 8003 8004 8005 8006 8007 5432 6379 6333 9090 3000 8081
+EXPOSE 80 443 8001 8002 8003 8004 8005 8006 8007 8443 5432 6379 6333 9090 3000 8081
 
 # Healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
