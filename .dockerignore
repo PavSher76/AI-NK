@@ -48,7 +48,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
+# build/ - исключено, так как может блокировать frontend/build
 develop-eggs/
 dist/
 downloads/
