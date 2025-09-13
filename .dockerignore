@@ -1,0 +1,120 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+README.md
+DEPLOYMENT.md
+TRAINING_GUIDE.md
+QUICK_START_TRAINING.md
+
+# Development files
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Node modules (will be installed in container)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Testing
+.coverage
+.pytest_cache/
+.tox/
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Scripts (except deployment)
+scripts/
+!scripts/start.sh
+!scripts/init.sh
+
+# Frontend build artifacts (will be built in container)
+frontend/build/
+frontend/node_modules/
+
+# Data directories (will be mounted as volumes)
+data/
+uploads/
+logs/
+
+# Test files
+TestDocs/
+test_*.py
+*_test.py
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Archives
+*.tar.gz
+*.zip
+*.rar
+
+# Large files
+*.iso
+*.img
+*.vmdk
