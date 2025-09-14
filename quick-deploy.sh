@@ -95,7 +95,22 @@ fi
 
 # Установка прав доступа
 echo "🔧 Настройка прав доступа..."
-chmod +x build-and-deploy.sh scripts/start.sh scripts/init.sh 2>/dev/null || true
+chmod +x build-and-deploy.sh scripts/start.sh scripts/init.sh scripts/generate-ssl.sh 2>/dev/null || true
+
+# Генерация SSL сертификатов
+echo "🔐 Проверка и создание SSL сертификатов..."
+if [ ! -f "ssl/frontend.crt" ] || [ ! -f "ssl/frontend.key" ] || [ ! -f "ssl/gateway.crt" ] || [ ! -f "ssl/gateway.key" ]; then
+    echo "📜 SSL сертификаты отсутствуют, создаем новые..."
+    ./scripts/generate-ssl.sh
+    if [ $? -ne 0 ]; then
+        echo "❌ Ошибка при создании SSL сертификатов"
+        echo "💡 Убедитесь, что OpenSSL установлен: sudo apt-get install openssl"
+        exit 1
+    fi
+    echo "✅ SSL сертификаты созданы успешно"
+else
+    echo "✅ SSL сертификаты уже существуют"
+fi
 
 # Проверка доступного места на диске (важно для QNAP)
 echo "💾 Проверка доступного места на диске..."
@@ -188,8 +203,9 @@ echo "🎉 Развертывание на QNAP завершено!"
 echo "=================================="
 echo ""
 echo "🌐 Веб-интерфейс: http://localhost"
-echo "🔒 HTTPS: https://localhost"
+echo "🔒 HTTPS: https://localhost (с самоподписанным сертификатом)"
 echo "📊 API: https://localhost:8443"
+echo "🔐 Keycloak: https://localhost:8081"
 echo ""
 echo "📋 Управление системой на QNAP:"
 echo "  Статус:     $COMPOSE_CMD -f docker-compose.production.yml ps"

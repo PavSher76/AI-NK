@@ -1,7 +1,7 @@
 # AI-NK Makefile
 # ==============
 
-.PHONY: help build start stop restart status logs clean deploy quick-deploy
+.PHONY: help build start stop restart status logs clean deploy quick-deploy ssl generate-ssl update-ssl
 
 # Переменные
 COMPOSE_FILE = docker-compose.production.yml
@@ -24,6 +24,7 @@ help: ## Показать справку
 	@echo "$(YELLOW)Examples:$(NC)"
 	@echo "  make deploy        # Полное развертывание"
 	@echo "  make quick-deploy  # Быстрое развертывание"
+	@echo "  make ssl           # Создать SSL сертификаты"
 	@echo "  make logs          # Просмотр логов"
 	@echo "  make clean         # Очистка системы"
 
@@ -156,10 +157,25 @@ monitor: ## Мониторинг ресурсов в реальном време
 	@echo "$(BLUE)Resource monitoring (Ctrl+C to exit)...$(NC)"
 	@watch -n 2 'docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}\t{{.BlockIO}}"'
 
+# SSL сертификаты
+ssl: generate-ssl ## Создать SSL сертификаты (алиас для generate-ssl)
+
+generate-ssl: ## Создать SSL сертификаты
+	@echo "$(BLUE)Generating SSL certificates...$(NC)"
+	@chmod +x scripts/generate-ssl.sh
+	@./scripts/generate-ssl.sh
+	@echo "$(GREEN)✅ SSL certificates generated$(NC)"
+
+update-ssl: ## Обновить SSL сертификаты
+	@echo "$(BLUE)Updating SSL certificates...$(NC)"
+	@chmod +x scripts/update-ssl.sh
+	@./scripts/update-ssl.sh
+	@echo "$(GREEN)✅ SSL certificates updated$(NC)"
+
 # Установка прав доступа
 install:
 	@echo "$(BLUE)Setting up permissions...$(NC)"
-	@chmod +x build-and-deploy.sh quick-deploy.sh scripts/start.sh scripts/init.sh
+	@chmod +x build-and-deploy.sh quick-deploy.sh scripts/start.sh scripts/init.sh scripts/generate-ssl.sh scripts/update-ssl.sh
 	@echo "$(GREEN)✅ Permissions set$(NC)"
 
 # Проверка зависимостей
@@ -194,8 +210,10 @@ info:
 	@echo "  Redis:      localhost:6379"
 	@echo ""
 	@echo "$(YELLOW)Management Commands:$(NC)"
-	@echo "  make status    - Show system status"
-	@echo "  make logs      - Show logs"
-	@echo "  make stop      - Stop system"
-	@echo "  make restart   - Restart system"
-	@echo "  make clean     - Clean system"
+	@echo "  make status      - Show system status"
+	@echo "  make logs        - Show logs"
+	@echo "  make stop        - Stop system"
+	@echo "  make restart     - Restart system"
+	@echo "  make ssl         - Create SSL certificates"
+	@echo "  make update-ssl  - Update SSL certificates"
+	@echo "  make clean       - Clean system"
