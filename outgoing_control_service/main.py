@@ -17,15 +17,13 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Импорты для обработки документов
-import PyPDF2
-from docx import Document
-from pdfminer.high_level import extract_text, extract_pages
-from pdfminer.layout import LAParams, LTTextContainer
-from pdfminer.pdfinterp import PDFResourceManager, PDFPageInterpreter
-from pdfminer.converter import TextConverter
-from pdfminer.pdfpage import PDFPage
-from io import StringIO
 import requests
+
+# Импорт общего модуля утилит
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from utils import parse_document, parse_document_from_bytes, clean_text, hierarchical_text_chunking
 
 # Локальный fallback проверщик (упрощенный)
 
@@ -1246,331 +1244,38 @@ async def delete_document(document_id: str):
 
 # Вспомогательные функции
 
-def extract_text_with_pdfminer(file_path: str) -> Dict[str, Any]:
-    """Извлечение текста из PDF с помощью pdfminer"""
-    try:
-        pages = []
-        full_text = ""
-        
-        # Настройки для лучшего извлечения текста
-        laparams = LAParams(
-            word_margin=0.1,
-            char_margin=2.0,
-            line_margin=0.5,
-            boxes_flow=0.5,
-            all_texts=True
-        )
-        
-        # Извлекаем текст по страницам
-        for page_num, page_layout in enumerate(extract_pages(file_path, laparams=laparams), 1):
-            page_text = ""
-            
-            # Извлекаем текст из элементов страницы
-            for element in page_layout:
-                if isinstance(element, LTTextContainer):
-                    page_text += element.get_text()
-            
-            # Очищаем текст страницы
-            cleaned_page_text = clean_extracted_text(page_text)
-            
-            pages.append({
-                "page_number": page_num,
-                "text": cleaned_page_text
-            })
-            full_text += cleaned_page_text + "\n"
-        
-        logger.info(f"📄 [PDFMINER] Извлечено {len(pages)} страниц из PDF")
-        return {
-            "text": full_text,
-            "pages": pages
-        }
-        
-    except Exception as e:
-        logger.error(f"❌ [PDFMINER] Ошибка извлечения текста: {str(e)}")
-        raise Exception(f"Ошибка извлечения текста с pdfminer: {str(e)}")
+# Функция extract_text_with_pdfminer удалена - используется общий модуль utils
 
-def clean_pdf_text(text: str) -> str:
-    """Специальная очистка текста, извлеченного из PDF"""
-    import re
-    
-    # Удаляем невидимые символы и специальные пробелы
-    text = re.sub(r'[\u00A0\u2000-\u200F\u2028-\u202F\u205F\u3000]', ' ', text)
-    
-    # Исправляем разрывы слов в PDF (пробел между буквами одного слова)
-    # Паттерн: буква + пробел + буква (внутри слова)
-    # Применяем несколько раз для сложных случаев
-    for _ in range(3):
-        text = re.sub(r'([а-яё])\s+([а-яё])', r'\1\2', text)
-    
-    # Исправляем разрывы между словами и знаками препинания
-    text = re.sub(r'([а-яё])\s+([.,!?;:])', r'\1\2', text)
-    text = re.sub(r'([.,!?;:])\s+([а-яё])', r'\1 \2', text)
-    
-    # Исправляем специфичные проблемы с разрывами слов
-    text = re.sub(r'\bсмежны\s+х\b', 'смежных', text)
-    text = re.sub(r'\bпро\s+ектирование\b', 'проектирование', text)
-    text = re.sub(r'\bтребова\s+ниям\b', 'требованиям', text)
-    text = re.sub(r'\bсв\s+одов\b', 'сводов', text)
-    text = re.sub(r'\bустанов\s+ленные\b', 'установленные', text)
-    text = re.sub(r'\bтехнических\s+решен\s+ий\b', 'технических решений', text)
-    text = re.sub(r'\bдальнейшему\s+производству\b', 'дальнейшему производству', text)
-    text = re.sub(r'\bсодержащих\s+установ\s+ленные\b', 'содержащих установленные', text)
-    text = re.sub(r'\bтех\s+нический\b', 'технический', text)
-    text = re.sub(r'\bбезопасн\s+ости\b', 'безопасности', text)
-    text = re.sub(r'\bрегулировании\s+и\b', 'регулировании', text)
-    text = re.sub(r'\bзданий\s+и\s+соор\s+ужений\b', 'зданий и сооружений', text)
-    text = re.sub(r'\bпротивопожарной\s+защиты\b', 'противопожарной защиты', text)
-    text = re.sub(r'\bэвакуационные\s+пути\b', 'эвакуационные пути', text)
-    text = re.sub(r'\bобеспечения\s+огнестойкости\b', 'обеспечения огнестойкости', text)
-    text = re.sub(r'\bограничение\s+распространения\b', 'ограничение распространения', text)
-    text = re.sub(r'\bобъектах\s+за\s+щиты\b', 'объектах защиты', text)
-    text = re.sub(r'\bобъемно-планировочным\s+и\b', 'объемно-планировочным', text)
-    text = re.sub(r'\bконструктивным\s+решениям\b', 'конструктивным решениям', text)
-    text = re.sub(r'\bпроизводственные\s+здания\b', 'производственные здания', text)
-    text = re.sub(r'\bактуализированная\s+редакция\b', 'актуализированная редакция', text)
-    text = re.sub(r'\bадминистративные\s+и\s+бытовые\b', 'административные и бытовые', text)
-    text = re.sub(r'\bзда\s+ния\b', 'здания', text)
-    text = re.sub(r'\bактуализированная\s+ре\s+дакция\b', 'актуализированная редакция', text)
-    text = re.sub(r'\bкровли\s+актуализированная\b', 'кровли. Актуализированная', text)
-    text = re.sub(r'\bтепловая\s+защита\b', 'тепловая защита', text)
-    text = re.sub(r'\bактуализированная\s+ре\s+дакция\b', 'актуализированная редакция', text)
-    text = re.sub(r'\bестественное\s+и\s+иску\s+ственное\b', 'естественное и искусственное', text)
-    text = re.sub(r'\bосвещение\s+актуализированная\b', 'освещение. Актуализированная', text)
-    text = re.sub(r'\bредакция\s+снип\b', 'редакция СНиП', text)
-    
-    # Исправляем проблему с "саатветствии" -> "саа тветствии"
-    text = re.sub(r'\bсаа\s+тветствии\b', 'саатветствии', text)
-    text = re.sub(r'\bв\s+соответствии\b', 'в соответствии', text)
-    text = re.sub(r'\bв\s+соответствие\b', 'в соответствие', text)
-    text = re.sub(r'\bв\s+соответствии\b', 'в соответствии', text)
-    
-    # Исправляем другие частые проблемы с пробелами в PDF
-    text = re.sub(r'\bв\s+соответствии\s+с\b', 'в соответствии с', text)
-    text = re.sub(r'\bв\s+соответствие\s+с\b', 'в соответствие с', text)
-    text = re.sub(r'\bв\s+соответствии\s+с\b', 'в соответствии с', text)
-    
-    # Удаляем множественные пробелы в строках, но сохраняем переносы строк
-    text = re.sub(r'[ \t]+', ' ', text)
-    
-    # Удаляем пробелы в начале и конце строк
-    lines = text.split('\n')
-    lines = [line.strip() for line in lines]
-    text = '\n'.join(lines)
-    
-    # Удаляем лишние переносы строк (более 2 подряд)
-    text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
-    
-    # Удаляем пробелы перед знаками препинания
-    text = re.sub(r'\s+([.,!?;:])', r'\1', text)
-    
-    # Удаляем пробелы после открывающих скобок и перед закрывающими
-    text = re.sub(r'\(\s+', '(', text)
-    text = re.sub(r'\s+\)', ')', text)
-    
-    # Удаляем пробелы в кавычках
-    text = re.sub(r'"\s+', '"', text)
-    text = re.sub(r'\s+"', '"', text)
-    
-    return text.strip()
+# Функция clean_pdf_text удалена - используется clean_text из общего модуля utils
 
 def clean_extracted_text(text: str) -> str:
-    """Очистка извлеченного текста от лишних пробелов и символов с сохранением структуры"""
-    import re
-    
-    # Удаляем невидимые символы и специальные пробелы
-    text = re.sub(r'[\u00A0\u2000-\u200F\u2028-\u202F\u205F\u3000]', ' ', text)
-    
-    # Удаляем множественные пробелы в строках, но сохраняем переносы строк
-    text = re.sub(r'[ \t]+', ' ', text)
-    
-    # Удаляем пробелы в начале и конце строк
-    lines = text.split('\n')
-    lines = [line.strip() for line in lines]
-    text = '\n'.join(lines)
-    
-    # Удаляем лишние переносы строк (более 2 подряд)
-    text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
-    
-    # Удаляем пробелы перед знаками препинания
-    text = re.sub(r'\s+([.,!?;:])', r'\1', text)
-    
-    # Удаляем пробелы после открывающих скобок и перед закрывающими
-    text = re.sub(r'\(\s+', '(', text)
-    text = re.sub(r'\s+\)', ')', text)
-    
-    # Удаляем пробелы в кавычках
-    text = re.sub(r'"\s+', '"', text)
-    text = re.sub(r'\s+"', '"', text)
-    
-    return text.strip()
+    """Очистка извлеченного текста с использованием общего модуля utils"""
+    return clean_text(text, preserve_structure=True)
 
 def hierarchical_text_chunking(text: str) -> List[Dict[str, Any]]:
-    """Иерархическое разделение текста на чанки: Раздел → Абзац → Предложение"""
-    import re
-    
-    chunks = []
-    chunk_id = 1
-    
-    # Сначала разделяем на абзацы (по двойным переносам строк)
-    paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
-    
-    current_section = ""
-    section_number = 1
-    
-    for para_num, paragraph in enumerate(paragraphs, 1):
-        if not paragraph:
-            continue
-        
-        # Проверяем, является ли абзац заголовком раздела
-        if re.match(r'^\d+\.?\s+[А-ЯЁ]', paragraph):
-            current_section = paragraph
-            section_number += 1
-            # Заголовок как отдельный чанк
-            chunk = {
-                "chunk_id": chunk_id,
-                "text": paragraph,
-                "hierarchy": {
-                    "section_number": section_number,
-                    "section_title": paragraph,
-                    "paragraph_number": para_num,
-                    "sentence_number": 1
-                },
-                "metadata": {
-                    "length": len(paragraph),
-                    "word_count": len(paragraph.split()),
-                    "type": "header"
-                }
-            }
-            chunks.append(chunk)
-            chunk_id += 1
-            continue
-        
-        # Разделяем абзац на предложения
-        # Более точное разделение предложений для русского языка
-        sentence_pattern = r'(?<=[.!?])\s+(?=[А-ЯЁ])|(?<=[.!?])\s*\n(?=[А-ЯЁ])'
-        sentences = re.split(sentence_pattern, paragraph)
-        
-        # Очищаем предложения от лишних пробелов
-        sentences = [s.strip() for s in sentences if s.strip()]
-        
-        for sent_num, sentence in enumerate(sentences, 1):
-            if not sentence:
-                continue
-            
-            # Создаем иерархический чанк
-            chunk = {
-                "chunk_id": chunk_id,
-                "text": sentence,
-                "hierarchy": {
-                    "section_number": section_number,
-                    "section_title": current_section,
-                    "paragraph_number": para_num,
-                    "sentence_number": sent_num
-                },
-                "metadata": {
-                    "length": len(sentence),
-                    "word_count": len(sentence.split()),
-                    "type": "sentence"
-                }
-            }
-            chunks.append(chunk)
-            chunk_id += 1
-    
-    # Если не удалось разделить на разделы, используем простую структуру
-    if not chunks:
-        # Разделяем на абзацы
-        paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
-        
-        for para_num, paragraph in enumerate(paragraphs, 1):
-            if not paragraph:
-                continue
-                
-            # Разделяем абзац на предложения
-            sentence_pattern = r'(?<=[.!?])\s+(?=[А-ЯЁ])|(?<=[.!?])\s*\n(?=[А-ЯЁ])'
-            sentences = re.split(sentence_pattern, paragraph)
-            sentences = [s.strip() for s in sentences if s.strip()]
-            
-            for sent_num, sentence in enumerate(sentences, 1):
-                if not sentence:
-                    continue
-                
-                chunk = {
-                    "chunk_id": chunk_id,
-                    "text": sentence,
-                    "hierarchy": {
-                        "section_number": 1,
-                        "section_title": "Основной текст",
-                        "paragraph_number": para_num,
-                        "sentence_number": sent_num
-                    },
-                    "metadata": {
-                        "length": len(sentence),
-                        "word_count": len(sentence.split()),
-                        "type": "sentence"
-                    }
-                }
-                chunks.append(chunk)
-                chunk_id += 1
-    
-    return chunks
+    """Иерархическое разделение текста на чанки с использованием общего модуля utils"""
+    from utils import hierarchical_text_chunking as utils_hierarchical_chunking
+    return utils_hierarchical_chunking(text)
 
 async def parse_document(file_path: str) -> Dict[str, Any]:
-    """Парсинг документа"""
+    """Парсинг документа с использованием общего модуля utils"""
     try:
-        text = ""
-        pages = []
+        # Используем универсальный парсер из модуля utils
+        from utils import parse_document as utils_parse_document
+        result = utils_parse_document(file_path)
         
-        if file_path.endswith('.pdf'):
-            # Парсинг PDF с помощью pdfminer
-            pdfminer_result = extract_text_with_pdfminer(file_path)
-            text = pdfminer_result["text"]
-            pages = pdfminer_result["pages"]
-            logger.info(f"📄 [DOCUMENT_PROCESS] PDF извлечен с pdfminer: {len(pages)} страниц")
+        if not result.get("success", False):
+            raise Exception(f"Ошибка парсинга документа: {result.get('error', 'Неизвестная ошибка')}")
         
-        elif file_path.endswith(('.doc', '.docx')):
-            # Парсинг DOCX
-            doc = Document(file_path)
-            for paragraph in doc.paragraphs:
-                text += paragraph.text + "\n"
-            logger.info(f"📄 [DOCUMENT_PROCESS] DOCX has following content: {text}")
-            # Применяем очистку текста для DOCX
-            cleaned_text = clean_extracted_text(text)
-            pages.append({
-                "page_number": 1,
-                "text": cleaned_text
-            })
-            text = cleaned_text
-        
-        elif file_path.endswith('.txt'):
-            # Парсинг TXT
-            with open(file_path, 'r', encoding='utf-8') as file:
-                text = file.read()
-            logger.info(f"📄 [DOCUMENT_PROCESS] TXT has following content: {text}")
-            pages.append({
-                "page_number": 1,
-                "text": text
-            })
-        
-        # Очищаем извлеченный текст
-        cleaned_text = clean_extracted_text(text)
-        
-        # Разбиваем на чанки иерархически
-        chunks = hierarchical_text_chunking(cleaned_text)
-        
-        # Обновляем страницы с очищенным текстом
-        cleaned_pages = []
-        for page in pages:
-            cleaned_pages.append({
-                "page_number": page["page_number"],
-                "text": clean_extracted_text(page["text"])
-            })
-        
+        # Адаптируем результат к ожидаемому формату
         return {
-            "text": cleaned_text,
-            "pages": cleaned_pages,
-            "chunks": chunks
+            "text": result["text"],
+            "pages": result.get("pages", []),
+            "chunks": result.get("chunks", [])
         }
+        
     except Exception as e:
+        logger.error(f"❌ [DOCUMENT_PROCESS] Ошибка парсинга документа {file_path}: {e}")
         raise Exception(f"Ошибка парсинга документа: {str(e)}")
 
 def extract_score(analysis_text: str) -> int:

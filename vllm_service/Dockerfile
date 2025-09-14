@@ -15,6 +15,9 @@ COPY requirements.txt .
 # Устанавливаем Python зависимости
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Копируем модуль utils
+COPY utils /app/utils
+
 # Копируем исходный код
 COPY . .
 

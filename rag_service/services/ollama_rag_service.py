@@ -8,6 +8,7 @@ import re
 import requests
 import json
 import os
+import sys
 from .qdrant_service import QdrantService
 from .reranker_service import BGERerankerService
 from .bge_reranker_service import BGERankingService
@@ -15,6 +16,10 @@ from .hybrid_search_service import HybridSearchService
 from .mmr_service import MMRService
 from .intent_classifier_service import IntentClassifierService
 from .context_builder_service import ContextBuilderService
+
+# Импорт общего модуля утилит
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+from utils import parse_document, parse_document_from_bytes
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -1384,35 +1389,27 @@ class OllamaRAGService:
             return ""
 
     async def extract_text_from_pdf(self, file_path: str) -> str:
-        """Извлечение текста из PDF"""
+        """Извлечение текста из PDF с использованием общего модуля utils"""
         try:
-            import PyPDF2
-            
-            text = ""
-            with open(file_path, 'rb') as file:
-                pdf_reader = PyPDF2.PdfReader(file)
-                for page_num in range(len(pdf_reader.pages)):
-                    page = pdf_reader.pages[page_num]
-                    text += page.extract_text() + "\n"
-            
-            return text.strip()
-            
+            result = parse_document(file_path)
+            if result.get("success", False):
+                return result.get("text", "")
+            else:
+                logger.error(f"❌ [EXTRACT_PDF] Error extracting text from PDF: {result.get('error', 'Unknown error')}")
+                return ""
         except Exception as e:
             logger.error(f"❌ [EXTRACT_PDF] Error extracting text from PDF: {e}")
             return ""
 
     async def extract_text_from_docx(self, file_path: str) -> str:
-        """Извлечение текста из DOCX"""
+        """Извлечение текста из DOCX с использованием общего модуля utils"""
         try:
-            from docx import Document
-            
-            doc = Document(file_path)
-            text = ""
-            for paragraph in doc.paragraphs:
-                text += paragraph.text + "\n"
-            
-            return text.strip()
-            
+            result = parse_document(file_path)
+            if result.get("success", False):
+                return result.get("text", "")
+            else:
+                logger.error(f"❌ [EXTRACT_DOCX] Error extracting text from DOCX: {result.get('error', 'Unknown error')}")
+                return ""
         except Exception as e:
             logger.error(f"❌ [EXTRACT_DOCX] Error extracting text from DOCX: {e}")
             return ""

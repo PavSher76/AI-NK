@@ -8,7 +8,12 @@ import hashlib
 import re
 import io
 
-# Импорты для обработки документов
+# Импорт общего модуля утилит
+import sys
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from utils import parse_document, parse_document_from_bytes
+
+# Импорты для обработки документов (оставляем для обратной совместимости)
 try:
     from docx import Document as DocxDocument
     DOCX_AVAILABLE = True
@@ -251,122 +256,111 @@ class ChatDocumentService:
             return {"success": False, "error": str(e)}
     
     def _extract_text_from_docx(self, file_content: bytes) -> Dict[str, Any]:
-        """Извлечение текста из DOCX файла"""
+        """Извлечение текста из DOCX файла с использованием общего модуля utils"""
         try:
-            if not DOCX_AVAILABLE:
-                return {"success": False, "error": "python-docx library not available"}
+            # Используем общий модуль utils для извлечения текста
+            result = parse_document_from_bytes(file_content, "document.docx")
             
-            # Создаем временный файл в памяти
-            docx_file = io.BytesIO(file_content)
-            doc = DocxDocument(docx_file)
-            
-            # Извлекаем весь текст
-            full_text = []
-            chunks = []
-            chunk_index = 0
-            
-            for paragraph in doc.paragraphs:
-                if paragraph.text.strip():
-                    full_text.append(paragraph.text)
-                    
-                    # Создаем чанки из параграфов
-                    if len(paragraph.text) > 100:
-                        # Разбиваем длинные параграфы
-                        words = paragraph.text.split()
-                        for i in range(0, len(words), 50):  # 50 слов на чанк
-                            chunk_text = ' '.join(words[i:i+50])
+            if result.get("success", False):
+                # Адаптируем результат к ожидаемому формату
+                chunks = []
+                paragraphs = result.get("paragraphs", [])
+                tables = result.get("tables", [])
+                chunk_index = 0
+                
+                # Обрабатываем параграфы
+                for para in paragraphs:
+                    para_text = para.get("text", "")
+                    if para_text.strip():
+                        # Создаем чанки из параграфов
+                        if len(para_text) > 100:
+                            # Разбиваем длинные параграфы
+                            words = para_text.split()
+                            for i in range(0, len(words), 50):  # 50 слов на чанк
+                                chunk_text = ' '.join(words[i:i+50])
+                                chunks.append({
+                                    'content': chunk_text,
+                                    'page': 1,
+                                    'section': f'paragraph_{chunk_index}'
+                                })
+                                chunk_index += 1
+                        else:
                             chunks.append({
-                                'content': chunk_text,
+                                'content': para_text,
                                 'page': 1,
                                 'section': f'paragraph_{chunk_index}'
                             })
                             chunk_index += 1
-                    else:
+                
+                # Обрабатываем таблицы
+                for table in tables:
+                    table_text = table.get("text", "")
+                    if table_text.strip():
                         chunks.append({
-                            'content': paragraph.text,
+                            'content': table_text,
                             'page': 1,
-                            'section': f'paragraph_{chunk_index}'
+                            'section': f'table_{chunk_index}'
                         })
                         chunk_index += 1
-            
-            # Обрабатываем таблицы
-            for table in doc.tables:
-                table_text = []
-                for row in table.rows:
-                    row_text = []
-                    for cell in row.cells:
-                        if cell.text.strip():
-                            row_text.append(cell.text.strip())
-                    if row_text:
-                        table_text.append(' | '.join(row_text))
                 
-                if table_text:
-                    table_content = '\n'.join(table_text)
-                    full_text.append(f"\n[ТАБЛИЦА]\n{table_content}\n")
-                    chunks.append({
-                        'content': table_content,
-                        'page': 1,
-                        'section': f'table_{chunk_index}'
-                    })
-                    chunk_index += 1
-            
-            extracted_text = '\n\n'.join(full_text)
-            
-            logger.info(f"✅ [TEXT_EXTRACTION] DOCX file processed: {len(chunks)} chunks")
-            return {
-                "success": True,
-                "text": extracted_text,
-                "chunks": chunks,
-                "pages": 1
-            }
+                logger.info(f"✅ [TEXT_EXTRACTION] DOCX file processed: {len(chunks)} chunks")
+                return {
+                    "success": True,
+                    "text": result.get("text", ""),
+                    "chunks": chunks,
+                    "pages": 1
+                }
+            else:
+                return {"success": False, "error": result.get("error", "Unknown error")}
+                
         except Exception as e:
             logger.error(f"❌ [TEXT_EXTRACTION] Error processing DOCX: {e}")
             return {"success": False, "error": str(e)}
     
     def _extract_text_from_pdf(self, file_content: bytes) -> Dict[str, Any]:
-        """Извлечение текста из PDF файла"""
+        """Извлечение текста из PDF файла с использованием общего модуля utils"""
         try:
-            if not PDF_AVAILABLE:
-                return {"success": False, "error": "PyPDF2 library not available"}
+            # Используем общий модуль utils для извлечения текста
+            result = parse_document_from_bytes(file_content, "document.pdf")
             
-            pdf_file = io.BytesIO(file_content)
-            pdf_reader = PyPDF2.PdfReader(pdf_file)
-            
-            full_text = []
-            chunks = []
-            
-            for page_num, page in enumerate(pdf_reader.pages, 1):
-                page_text = page.extract_text()
-                if page_text.strip():
-                    full_text.append(page_text)
+            if result.get("success", False):
+                # Адаптируем результат к ожидаемому формату
+                chunks = []
+                pages = result.get("pages", [])
+                
+                for page in pages:
+                    page_num = page.get("page_number", 1)
+                    page_text = page.get("text", "")
                     
-                    # Создаем чанки по страницам
-                    if len(page_text) > 1000:
-                        # Разбиваем длинные страницы
-                        words = page_text.split()
-                        for i in range(0, len(words), 100):  # 100 слов на чанк
-                            chunk_text = ' '.join(words[i:i+100])
+                    if page_text.strip():
+                        # Создаем чанки по страницам
+                        if len(page_text) > 1000:
+                            # Разбиваем длинные страницы
+                            words = page_text.split()
+                            for i in range(0, len(words), 100):  # 100 слов на чанк
+                                chunk_text = ' '.join(words[i:i+100])
+                                chunks.append({
+                                    'content': chunk_text,
+                                    'page': page_num,
+                                    'section': f'page_{page_num}_chunk_{i//100 + 1}'
+                                })
+                        else:
                             chunks.append({
-                                'content': chunk_text,
+                                'content': page_text,
                                 'page': page_num,
-                                'section': f'page_{page_num}_chunk_{i//100 + 1}'
+                                'section': f'page_{page_num}'
                             })
-                    else:
-                        chunks.append({
-                            'content': page_text,
-                            'page': page_num,
-                            'section': f'page_{page_num}'
-                        })
-            
-            extracted_text = '\n\n'.join(full_text)
-            
-            logger.info(f"✅ [TEXT_EXTRACTION] PDF file processed: {len(chunks)} chunks")
-            return {
-                "success": True,
-                "text": extracted_text,
-                "chunks": chunks,
-                "pages": len(pdf_reader.pages)
-            }
+                
+                logger.info(f"✅ [TEXT_EXTRACTION] PDF file processed: {len(chunks)} chunks")
+                return {
+                    "success": True,
+                    "text": result.get("text", ""),
+                    "chunks": chunks,
+                    "pages": len(pages)
+                }
+            else:
+                return {"success": False, "error": result.get("error", "Unknown error")}
+                
         except Exception as e:
             logger.error(f"❌ [TEXT_EXTRACTION] Error processing PDF: {e}")
             return {"success": False, "error": str(e)}
