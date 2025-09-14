@@ -1,0 +1,442 @@
+version: '3.8'
+
+services:
+  # Redis для кэширования
+  redis:
+    image: redis:7-alpine
+    container_name: ai-nk-redis
+    command: redis-server --requirepass ${REDIS_PASSWORD:-redispass}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    environment:
+      - TZ=Europe/Moscow
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # PostgreSQL для Keycloak
+  keycloak-db:
+    image: postgres:15-alpine
+    container_name: ai-nk-keycloak-db
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: keycloak
+      TZ: Europe/Moscow
+    volumes:
+      - keycloak_db_data:/var/lib/postgresql/data
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Keycloak для аутентификации
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.3.2
+    container_name: ai-nk-keycloak
+    command: start --http-enabled=true --http-port=8080 --hostname-strict=false --import-realm --import-realm-strategy=OVERWRITE_EXISTING
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_PROFILE: prod
+      QUARKUS_PROFILE: prod
+      KC_HTTP_ENABLED: true
+      KC_HTTPS_ENABLED: false
+      KC_HTTP_PORT: 8080
+      KC_HOSTNAME_STRICT: false
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: keycloak
+      TZ: Europe/Moscow
+    ports:
+      - "${KEYCLOAK_PORT:-8081}:8080"
+    volumes:
+      - ./keycloak/ai-nk-realm.json:/opt/keycloak/data/import/ai-nk-realm.json:ro
+      - ./ssl/keycloak.keystore:/opt/keycloak/ssl/keycloak.keystore:ro
+      - ./keycloak/conf/keycloak.conf:/opt/keycloak/conf/keycloak.conf:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # VLLM + Ollama Integration Service
+  vllm:
+    build: ./vllm_service
+    container_name: ai-nk-vllm
+    ports:
+      - "8005:8005"
+    environment:
+      - DOCKER_ENV=true
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - OLLAMA_MAX_TOKENS=2048
+      - OLLAMA_TEMPERATURE=0.7
+      - OLLAMA_TOP_P=0.9
+      - OLLAMA_TIMEOUT=120
+      - OLLAMA_CACHE_DURATION=30
+      - TZ=Europe/Moscow
+      - LOG_LEVEL=INFO
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # API Gateway
+  gateway:
+    build: 
+      context: .
+      dockerfile: gateway/Dockerfile
+    container_name: ai-nk-gateway
+    ports:
+      - "${GATEWAY_PORT:-8443}:8443"
+    environment:
+      - "UPSTREAM_URL=http://localhost:8005"
+      - "OIDC_ISSUER="
+      - "OIDC_AUDIENCE="
+      - "OIDC_JWKS_URL="
+      - "REDIS_URL=redis://:${REDIS_PASSWORD:-redispass}@redis:6379/0"
+      - "RATE_LIMIT_DEFAULT_RPM=300"
+      - "RATE_LIMIT_RPM_BY_ROLE={\"admin\": 1000, \"user\": 300}"
+      - TZ=Europe/Moscow
+    volumes:
+      - ./ssl:/app/ssl:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # Frontend
+  frontend:
+    build: ./frontend
+    container_name: ai-nk-frontend
+    ports:
+      - "${FRONTEND_PORT:-443}:443"
+    environment:
+      - TZ=Europe/Moscow
+    volumes:
+      - ./ssl/frontend.crt:/etc/nginx/ssl/frontend.crt:ro
+      - ./ssl/frontend.key:/etc/nginx/ssl/frontend.key:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    depends_on:
+      - gateway
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-k", "-f", "https://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Prometheus для мониторинга
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ai-nk-prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    environment:
+      - TZ=Europe/Moscow
+    volumes:
+      - prometheus_data:/prometheus
+      - ./configs/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+
+  # Grafana для визуализации
+  grafana:
+    image: grafana/grafana:latest
+    container_name: ai-nk-grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_PLUGINS_PREINSTALL=grafana-clock-panel,grafana-simple-json-datasource
+      - TZ=Europe/Moscow
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./configs/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./configs/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # PostgreSQL с pgvector для нормативных документов
+  norms-db:
+    image: pgvector/pgvector:pg15
+    container_name: ai-nk-norms-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-norms_db}
+      POSTGRES_USER: ${POSTGRES_USER:-norms_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-norms_password}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+      # Настройки логирования PostgreSQL для отладки подключений
+      POSTGRES_SHARED_PRELOAD_LIBRARIES: "pg_stat_statements"
+      # Переменные для настройки логирования
+      POSTGRES_LOG_STATEMENT: "all"
+      POSTGRES_LOG_LINE_PREFIX: "%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h "
+      POSTGRES_LOG_MIN_DURATION_STATEMENT: 0
+      POSTGRES_LOG_CONNECTIONS: "on"
+      POSTGRES_LOG_DISCONNECTIONS: "on"
+      TZ: Europe/Moscow
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - norms_db_data:/var/lib/postgresql/data
+      - ./sql/init_norms_db.sql:/docker-entrypoint-initdb.d/01_init_norms_db.sql:ro
+      - ./sql/configure_logging.sql:/docker-entrypoint-initdb.d/02_configure_logging.sql:ro
+      - ./sql/configure_keycloak_auth.sql:/docker-entrypoint-initdb.d/03_configure_keycloak_auth.sql:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    restart: unless-stopped
+
+  # Qdrant для векторного поиска
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: ai-nk-qdrant
+    ports:
+      - "${QDANT_PORT:-6333}:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    environment:
+      - TZ=Europe/Moscow
+    restart: unless-stopped
+
+  # Парсер документов
+  document-parser:
+    build: ./document_parser
+    container_name: ai-nk-document-parser
+    ports:
+      - "8001:8001"
+    environment:
+      - POSTGRES_HOST=norms-db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-norms_db}
+      - POSTGRES_USER=${POSTGRES_USER:-norms_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-norms_password}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redispass}@redis:6379/0
+      # Настройки лимитов загрузки файлов
+      - MAX_CHECKABLE_DOCUMENT_SIZE=${MAX_CHECKABLE_DOCUMENT_SIZE:-104857600}
+      - MAX_NORMATIVE_DOCUMENT_SIZE=${MAX_NORMATIVE_DOCUMENT_SIZE:-209715200}
+      - LLM_REQUEST_TIMEOUT=${LLM_REQUEST_TIMEOUT:-120}
+      - PAGE_PROCESSING_TIMEOUT=${PAGE_PROCESSING_TIMEOUT:-300}
+      - TZ=Europe/Moscow
+    volumes:
+      - ./uploads:/app/uploads
+      - ./temp:/app/temp
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    depends_on:
+      - norms-db
+      - qdrant
+      - redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Rule Engine для проверок
+  rule-engine:
+    build: ./rule_engine
+    container_name: ai-nk-rule-engine
+    ports:
+      - "8002:8002"
+    environment:
+      - POSTGRES_HOST=norms-db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-norms_db}
+      - POSTGRES_USER=${POSTGRES_USER:-norms_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-norms_password}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - GATEWAY_URL=https://gateway:8443
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redispass}@redis:6379/0
+      - TZ=Europe/Moscow
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    depends_on:
+      - norms-db
+      - qdrant
+      - gateway
+      - redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Calculation Service для инженерных расчетов
+  calculation-service:
+    build: ./calculation_service
+    container_name: ai-nk-calculation-service
+    ports:
+      - "8004:8002"
+    environment:
+      - POSTGRES_HOST=norms-db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-norms_db}
+      - POSTGRES_USER=${POSTGRES_USER:-norms_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-norms_password}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - TZ=Europe/Moscow
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    depends_on:
+      - norms-db
+      - qdrant
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Outgoing Control Service для проверки исходящей корреспонденции
+  outgoing-control-service:
+    build: ./outgoing_control_service
+    container_name: ai-nk-outgoing-control
+    ports:
+      - "8006:8006"
+    environment:
+      - TZ=Europe/Moscow
+      - SPELLCHECKER_SERVICE_URL=http://spellchecker-service:8007
+    volumes:
+      - outgoing_control_uploads:/app/uploads
+      - outgoing_control_reports:/app/reports
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    depends_on:
+      - spellchecker-service
+    restart: unless-stopped
+
+  # Сервис проверки орфографии и грамматики
+  spellchecker-service:
+    build: ./spellchecker_service
+    container_name: ai-nk-spellchecker
+    ports:
+      - "8007:8007"
+    environment:
+      - TZ=Europe/Moscow
+      - LANGUAGETOOL_HOME=/opt/languagetool
+    volumes:
+      - spellchecker_logs:/app/logs
+      - spellchecker_cache:/app/cache
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8007/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # RAG Service для поиска по нормам
+  rag-service:
+    build: 
+      context: ./rag_service
+      dockerfile: Dockerfile
+    container_name: ai-nk-rag-service
+    ports:
+      - "8003:8003"
+    environment:
+      - POSTGRES_URL=postgresql://${POSTGRES_USER:-norms_user}:${POSTGRES_PASSWORD:-norms_password}@norms-db:5432/${POSTGRES_DB:-norms_db}
+      - QDRANT_URL=http://qdrant:6333
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redispass}@redis:6379/0
+      - TRANSFORMERS_CACHE=/app/models
+      - HF_HOME=/app/models
+      - TZ=Europe/Moscow
+      # OpenAI API Configuration for Turbo Mode
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+    volumes:
+      - rag_models:/app/models
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    depends_on:
+      - norms-db
+      - qdrant
+      - redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  redis_data:
+    driver: local
+  keycloak_db_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  spellchecker_logs:
+    driver: local
+  spellchecker_cache:
+    driver: local
+  norms_db_data:
+    driver: local
+  qdrant_data:
+    driver: local
+  rag_models:
+    driver: local
+  outgoing_control_uploads:
+    driver: local
+  outgoing_control_reports:
+    driver: local
+
+networks:
+  default:
+    name: ai-nk-network
+    driver: bridge

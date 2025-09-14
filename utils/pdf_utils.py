@@ -128,7 +128,7 @@ class PDFTextExtractor:
                         page_text += element.get_text()
                 
                 # Очищаем текст страницы
-                cleaned_page_text = self._clean_extracted_text(page_text)
+                cleaned_page_text = page_text
                 
                 pages.append({
                     "page_number": page_num,
@@ -192,7 +192,7 @@ class PDFTextExtractor:
                     page_text = page.extract_text()
                     
                     # Очищаем текст страницы
-                    cleaned_page_text = self._clean_extracted_text(page_text)
+                    cleaned_page_text = page_text
                     
                     pages.append({
                         "page_number": page_num + 1,
@@ -236,7 +236,7 @@ class PDFTextExtractor:
                 page_text = page.extract_text()
                 
                 # Очищаем текст страницы
-                cleaned_page_text = self._clean_extracted_text(page_text)
+                cleaned_page_text = page_text
                 
                 pages.append({
                     "page_number": page_num + 1,
@@ -265,97 +265,6 @@ class PDFTextExtractor:
             logger.error(f"❌ [PYPDF2_BYTES] Ошибка извлечения текста: {str(e)}")
             raise Exception(f"Ошибка извлечения текста с PyPDF2 из байтов: {str(e)}")
     
-    def _clean_extracted_text(self, text: str) -> str:
-        """
-        Очистка извлеченного текста от лишних пробелов и символов с сохранением структуры
-        
-        Args:
-            text: Исходный текст
-            
-        Returns:
-            Очищенный текст
-        """
-        import re
-        
-        # Удаляем невидимые символы и специальные пробелы
-        text = re.sub(r'[\u00A0\u2000-\u200F\u2028-\u202F\u205F\u3000]', ' ', text)
-        
-        # Исправляем разрывы слов в PDF (пробел между буквами одного слова)
-        # Паттерн: буква + пробел + буква (внутри слова)
-        # Применяем несколько раз для сложных случаев
-        for _ in range(3):
-            text = re.sub(r'([а-яё])\s+([а-яё])', r'\1\2', text)
-        
-        # Исправляем разрывы между словами и знаками препинания
-        text = re.sub(r'([а-яё])\s+([.,!?;:])', r'\1\2', text)
-        text = re.sub(r'([.,!?;:])\s+([а-яё])', r'\1 \2', text)
-        
-        # Исправляем специфичные проблемы с разрывами слов
-        text = re.sub(r'\bсмежны\s+х\b', 'смежных', text)
-        text = re.sub(r'\bпро\s+ектирование\b', 'проектирование', text)
-        text = re.sub(r'\bтребова\s+ниям\b', 'требованиям', text)
-        text = re.sub(r'\bсв\s+одов\b', 'сводов', text)
-        text = re.sub(r'\bустанов\s+ленные\b', 'установленные', text)
-        text = re.sub(r'\bтехнических\s+решен\s+ий\b', 'технических решений', text)
-        text = re.sub(r'\bдальнейшему\s+производству\b', 'дальнейшему производству', text)
-        text = re.sub(r'\bсодержащих\s+установ\s+ленные\b', 'содержащих установленные', text)
-        text = re.sub(r'\bтех\s+нический\b', 'технический', text)
-        text = re.sub(r'\bбезопасн\s+ости\b', 'безопасности', text)
-        text = re.sub(r'\bрегулировании\s+и\b', 'регулировании', text)
-        text = re.sub(r'\bзданий\s+и\s+соор\s+ужений\b', 'зданий и сооружений', text)
-        text = re.sub(r'\bпротивопожарной\s+защиты\b', 'противопожарной защиты', text)
-        text = re.sub(r'\bэвакуационные\s+пути\b', 'эвакуационные пути', text)
-        text = re.sub(r'\bобеспечения\s+огнестойкости\b', 'обеспечения огнестойкости', text)
-        text = re.sub(r'\bограничение\s+распространения\b', 'ограничение распространения', text)
-        text = re.sub(r'\bобъектах\s+за\s+щиты\b', 'объектах защиты', text)
-        text = re.sub(r'\bобъемно-планировочным\s+и\b', 'объемно-планировочным', text)
-        text = re.sub(r'\bконструктивным\s+решениям\b', 'конструктивным решениям', text)
-        text = re.sub(r'\bпроизводственные\s+здания\b', 'производственные здания', text)
-        text = re.sub(r'\bактуализированная\s+редакция\b', 'актуализированная редакция', text)
-        text = re.sub(r'\bадминистративные\s+и\s+бытовые\b', 'административные и бытовые', text)
-        text = re.sub(r'\bзда\s+ния\b', 'здания', text)
-        text = re.sub(r'\bактуализированная\s+ре\s+дакция\b', 'актуализированная редакция', text)
-        text = re.sub(r'\bкровли\s+актуализированная\b', 'кровли. Актуализированная', text)
-        text = re.sub(r'\bтепловая\s+защита\b', 'тепловая защита', text)
-        text = re.sub(r'\bактуализированная\s+ре\s+дакция\b', 'актуализированная редакция', text)
-        text = re.sub(r'\bестественное\s+и\s+иску\s+ственное\b', 'естественное и искусственное', text)
-        text = re.sub(r'\bосвещение\s+актуализированная\b', 'освещение. Актуализированная', text)
-        text = re.sub(r'\bредакция\s+снип\b', 'редакция СНиП', text)
-        
-        # Исправляем проблему с "саатветствии" -> "саа тветствии"
-        text = re.sub(r'\bсаа\s+тветствии\b', 'саатветствии', text)
-        text = re.sub(r'\bв\s+соответствии\b', 'в соответствии', text)
-        text = re.sub(r'\bв\s+соответствие\b', 'в соответствие', text)
-        text = re.sub(r'\bв\s+соответствии\b', 'в соответствии', text)
-        
-        # Исправляем другие частые проблемы с пробелами в PDF
-        text = re.sub(r'\bв\s+соответствии\s+с\b', 'в соответствии с', text)
-        text = re.sub(r'\bв\s+соответствие\s+с\b', 'в соответствие с', text)
-        text = re.sub(r'\bв\s+соответствии\s+с\b', 'в соответствии с', text)
-        
-        # Удаляем множественные пробелы в строках, но сохраняем переносы строк
-        text = re.sub(r'[ \t]+', ' ', text)
-        
-        # Удаляем пробелы в начале и конце строк
-        lines = text.split('\n')
-        lines = [line.strip() for line in lines]
-        text = '\n'.join(lines)
-        
-        # Удаляем лишние переносы строк (более 2 подряд)
-        text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
-        
-        # Удаляем пробелы перед знаками препинания
-        text = re.sub(r'\s+([.,!?;:])', r'\1', text)
-        
-        # Удаляем пробелы после открывающих скобок и перед закрывающими
-        text = re.sub(r'\(\s+', '(', text)
-        text = re.sub(r'\s+\)', ')', text)
-        
-        # Удаляем пробелы в кавычках
-        text = re.sub(r'"\s+', '"', text)
-        text = re.sub(r'\s+"', '"', text)
-        
-        return text.strip()
     
     def create_chunks(self, text: str, chunk_size: int = 1000, overlap: int = 100) -> List[Dict[str, Any]]:
         """

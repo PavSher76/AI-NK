@@ -128,7 +128,7 @@ class DOCXTextExtractor:
                     full_text += table_text + "\n"
             
             # Очищаем извлеченный текст
-            cleaned_text = self._clean_extracted_text(full_text)
+            cleaned_text = full_text
             
             logger.info(f"📄 [DOCX] Извлечено {len(paragraphs)} параграфов, {len(tables)} таблиц из DOCX")
             
@@ -248,44 +248,6 @@ class DOCXTextExtractor:
         
         return "\n".join(text_lines)
     
-    def _clean_extracted_text(self, text: str) -> str:
-        """
-        Очистка извлеченного текста от лишних пробелов и символов
-        
-        Args:
-            text: Исходный текст
-            
-        Returns:
-            Очищенный текст
-        """
-        import re
-        
-        # Удаляем невидимые символы и специальные пробелы
-        text = re.sub(r'[\u00A0\u2000-\u200F\u2028-\u202F\u205F\u3000]', ' ', text)
-        
-        # Удаляем множественные пробелы в строках, но сохраняем переносы строк
-        text = re.sub(r'[ \t]+', ' ', text)
-        
-        # Удаляем пробелы в начале и конце строк
-        lines = text.split('\n')
-        lines = [line.strip() for line in lines]
-        text = '\n'.join(lines)
-        
-        # Удаляем лишние переносы строк (более 2 подряд)
-        text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
-        
-        # Удаляем пробелы перед знаками препинания
-        text = re.sub(r'\s+([.,!?;:])', r'\1', text)
-        
-        # Удаляем пробелы после открывающих скобок и перед закрывающими
-        text = re.sub(r'\(\s+', '(', text)
-        text = re.sub(r'\s+\)', ')', text)
-        
-        # Удаляем пробелы в кавычках
-        text = re.sub(r'"\s+', '"', text)
-        text = re.sub(r'\s+"', '"', text)
-        
-        return text.strip()
     
     def create_chunks(self, text: str, chunk_size: int = 1000, overlap: int = 100) -> List[Dict[str, Any]]:
         """
