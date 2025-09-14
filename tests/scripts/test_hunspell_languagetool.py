@@ -27,9 +27,9 @@ def test_spell_check():
     """Тест проверки орфографии"""
     print("🔍 Тестирование проверки орфографии...")
     
-    # Сначала загружаем тестовый документ
+    # Загружаем тестовый документ в outgoing control service
     files = {'file': ('test.txt', TEST_TEXT, 'text/plain')}
-    upload_response = requests.post(f"{API_BASE}/upload", files=files)
+    upload_response = requests.post(f"http://localhost:8006/upload", files=files)
     
     if upload_response.status_code != 200:
         print(f"❌ Ошибка загрузки документа: {upload_response.text}")
@@ -64,7 +64,7 @@ def test_grammar_check():
     
     # Загружаем тестовый документ
     files = {'file': ('test.txt', TEST_TEXT, 'text/plain')}
-    upload_response = requests.post(f"{API_BASE}/upload", files=files)
+    upload_response = requests.post(f"http://localhost:8006/upload", files=files)
     
     if upload_response.status_code != 200:
         print(f"❌ Ошибка загрузки документа: {upload_response.text}")
@@ -98,7 +98,7 @@ def test_comprehensive_check():
     
     # Загружаем тестовый документ
     files = {'file': ('test.txt', TEST_TEXT, 'text/plain')}
-    upload_response = requests.post(f"{API_BASE}/upload", files=files)
+    upload_response = requests.post(f"http://localhost:8006/upload", files=files)
     
     if upload_response.status_code != 200:
         print(f"❌ Ошибка загрузки документа: {upload_response.text}")

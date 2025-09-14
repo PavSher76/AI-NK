@@ -1,0 +1,112 @@
+
+ОТЧЕТ О КОМПЛЕКСНОМ ТЕСТИРОВАНИИ AI-NK
+========================================
+
+Время тестирования: 2025-09-14T17:56:19.006908
+Общая успешность: 19.4%
+Всего тестов: 36
+Пройдено тестов: 7
+Время выполнения: 22.1 секунд
+
+РЕЗУЛЬТАТЫ ПО МОДУЛЯМ:
+======================
+
+
+CHAT AI:
+  Статус: FAILED
+  Успешность: 42.9% (3/7)
+  
+  service_health: ✅ ПРОЙДЕН
+  pdf_upload_analysis: ❌ ПРОВАЛЕН
+  docx_upload_analysis: ❌ ПРОВАЛЕН
+  chat_with_context: ✅ ПРОЙДЕН
+  chat_without_context: ✅ ПРОЙДЕН
+  processing_pipeline: ❌ ПРОВАЛЕН
+  error_handling: ❌ ПРОВАЛЕН
+
+
+OUTGOING CONTROL:
+  Статус: FAILED
+  Успешность: 22.2% (2/9)
+  
+  service_health: ✅ ПРОЙДЕН
+  pdf_processing: ❌ ПРОВАЛЕН
+  docx_processing: ❌ ПРОВАЛЕН
+  spellcheck_functionality: ❌ ПРОВАЛЕН
+  document_analysis: ❌ ПРОВАЛЕН
+  report_generation: ❌ ПРОВАЛЕН
+  batch_processing: ❌ ПРОВАЛЕН
+  quality_control: ❌ ПРОВАЛЕН
+  error_handling: ✅ ПРОЙДЕН
+
+
+NTD CONSULTATION:
+  Статус: FAILED
+  Успешность: 11.1% (1/9)
+  
+  service_health: ✅ ПРОЙДЕН
+  search_functionality: ❌ ПРОВАЛЕН
+  llm_processing: ❌ ПРОВАЛЕН
+  document_references: ❌ ПРОВАЛЕН
+  response_quality: ❌ ПРОВАЛЕН
+  context_awareness: ❌ ПРОВАЛЕН
+  multilingual_support: ❌ ПРОВАЛЕН
+  knowledge_base_integration: ❌ ПРОВАЛЕН
+  error_handling: ❌ ПРОВАЛЕН
+
+
+CALCULATIONS:
+  Статус: FAILED
+  Успешность: 9.1% (1/11)
+  
+  service_health: ✅ ПРОЙДЕН
+  welding_strength_calculation: ❌ ПРОВАЛЕН
+  material_properties_calculation: ❌ ПРОВАЛЕН
+  safety_factors_calculation: ❌ ПРОВАЛЕН
+  dimension_tolerances_calculation: ❌ ПРОВАЛЕН
+  thermal_expansion_calculation: ❌ ПРОВАЛЕН
+  fatigue_analysis_calculation: ❌ ПРОВАЛЕН
+  batch_calculations: ❌ ПРОВАЛЕН
+  frontend_calculations: ❌ ПРОВАЛЕН
+  calculation_accuracy: ❌ ПРОВАЛЕН
+  error_handling: ❌ ПРОВАЛЕН
+
+
+ПАРАМЕТРЫ ТЕСТИРОВАНИЯ:
+=======================
+
+TEST DOCUMENTS:
+{
+  "pdf": "TestDocs/for_check/СЗ_ТЕСТ.pdf",
+  "docx": "TestDocs/for_check/СЗ_ТЕСТ.docx",
+  "gost_pdf": "TestDocs/for_check/3401-21089-РД-01-220-221-АР_4_0_RU_IFC (1).pdf"
+}
+
+CALCULATION PARAMETERS:
+{
+  "welding_strength": {
+    "material": "steel",
+    "thickness": 10,
+    "weld_type": "butt",
+    "load": 1000
+  },
+  "material_properties": {
+    "material": "aluminum",
+    "temperature": 20,
+    "stress": 100
+  },
+  "safety_factors": {
+    "load": 1000,
+    "safety_factor": 2.5,
+    "material_yield": 250
+  }
+}
+
+TEST QUERIES:
+[
+  "требования к качеству сварных швов",
+  "ГОСТ 14771 сварка",
+  "допуски и посадки",
+  "материалы для строительства"
+]
+
