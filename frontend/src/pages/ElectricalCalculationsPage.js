@@ -53,7 +53,7 @@ const ElectricalCalculationsPage = ({ isAuthenticated, authToken }) => {
   const [sortOrder, setSortOrder] = useState('desc');
 
   // API конфигурация
-  const API_BASE = process.env.REACT_APP_API_BASE || '/api';
+  const API_BASE = process.env.REACT_APP_API_BASE || '/api/v1';
 
   // Загрузка типов электротехнических расчетов
   const fetchCalculationTypes = async () => {

@@ -42,7 +42,7 @@ const CalculationsPage = ({ isAuthenticated, authToken, calculationType = 'all' 
   const [sortOrder, setSortOrder] = useState('desc');
 
   // API конфигурация
-  const API_BASE = process.env.REACT_APP_API_BASE || '/api';
+  const API_BASE = process.env.REACT_APP_API_BASE || '/api/v1';
 
   // Виды расчетов в соответствии с нормами и методиками
   const calculationTypes = [

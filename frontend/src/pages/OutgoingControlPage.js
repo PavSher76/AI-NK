@@ -40,7 +40,7 @@ const OutgoingControlPage = ({ isAuthenticated, authToken }) => {
   const [processingStep, setProcessingStep] = useState('');
 
   // API конфигурация
-  const API_BASE = process.env.REACT_APP_API_BASE || '/api';
+  const API_BASE = process.env.REACT_APP_API_BASE || '/api/v1';
 
 
 

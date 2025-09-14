@@ -46,7 +46,7 @@ const CheckableDocuments = ({ isAuthenticated, authToken, refreshTrigger, onRefr
     console.log('🔍 [DEBUG] CheckableDocuments.js: settings state changed:', settings);
   }, [settings]);
 
-  const API_BASE = process.env.REACT_APP_API_BASE || '/api';
+  const API_BASE = process.env.REACT_APP_API_BASE || '/api/v1';
 
   // Загрузка списка проверяемых документов "как есть" без ожидания отчетов
   const fetchDocuments = async (retryCount = 0) => {
