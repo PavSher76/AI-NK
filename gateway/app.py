@@ -496,7 +496,8 @@ async def proxy_main(request: Request, path: str):
         print(f"🔍 [DEBUG] Gateway: Detected outgoing-control path: {path}")
         service_url = SERVICES["outgoing-control-service"]
         print(f"🔍 [DEBUG] Gateway: Routing outgoing-control to service: {service_url}")
-        clean_path = path.replace("api/", "")
+        # Убираем префикс api/ если есть, но оставляем outgoing-control
+        clean_path = path.replace("api/", "") if path.startswith("api/") else path
         return await proxy_request(request, service_url, f"/{clean_path}")
     
     # Определяем сервис на основе пути
@@ -558,7 +559,7 @@ async def proxy_main(request: Request, path: str):
     elif path.startswith("outgoing-control") or path.startswith("api/outgoing-control"):
         service_url = SERVICES["outgoing-control-service"]
         print(f"🔍 [DEBUG] Gateway: Routing outgoing-control to service: {service_url}")
-        # Убираем префикс api/ если есть
+        # Убираем префикс api/ если есть, но оставляем outgoing-control
         clean_path = path.replace("api/", "") if path.startswith("api/") else path
         return await proxy_request(request, service_url, f"/{clean_path}")
     else:

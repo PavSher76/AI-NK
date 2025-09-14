@@ -51,7 +51,7 @@ const ThermalCalculationsPage = ({ isAuthenticated, authToken }) => {
   const [sortOrder, setSortOrder] = useState('desc');
 
   // API конфигурация
-  const API_BASE = process.env.REACT_APP_API_BASE || '/api/v1';
+  const API_BASE = process.env.REACT_APP_API_BASE || '/api';
 
   // Загрузка типов теплотехнических расчетов
   const fetchCalculationTypes = async () => {

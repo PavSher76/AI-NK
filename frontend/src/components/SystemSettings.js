@@ -29,7 +29,7 @@ const SystemSettings = ({ isOpen, onClose, authToken }) => {
   const [success, setSuccess] = useState(null);
 
   // API конфигурация
-  const API_BASE = process.env.REACT_APP_API_BASE || '/api/v1';
+  const API_BASE = process.env.REACT_APP_API_BASE || '/api';
 
   // Загрузка системных настроек
   const fetchSystemSettings = async () => {
