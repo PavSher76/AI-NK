@@ -177,8 +177,9 @@ class UniversalDocumentParser:
             
             # Очищаем извлеченный текст
             if result.get("success", False) and result.get("text"):
-                cleaned_text = self.text_processor.clean_text(result["text"])
-                result["text"] = cleaned_text
+                # !!!ставлю запрет на очистку текста!!!
+                #cleaned_text = self.text_processor.clean_text(result["text"])
+                #result["text"] = cleaned_text
                 
                 # Обновляем страницы с очищенным текстом
                 if "pages" in result:
@@ -203,8 +204,9 @@ class UniversalDocumentParser:
             
             # Очищаем извлеченный текст
             if result.get("success", False) and result.get("text"):
-                cleaned_text = self.text_processor.clean_text(result["text"])
-                result["text"] = cleaned_text
+                # !!!ставлю запрет на очистку текста!!!
+                #cleaned_text = self.text_processor.clean_text(result["text"])
+                #result["text"] = cleaned_text
                 
                 # Обновляем параграфы с очищенным текстом
                 if "paragraphs" in result:

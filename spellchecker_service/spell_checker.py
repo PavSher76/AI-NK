@@ -5,10 +5,13 @@
 import re
 import logging
 import os
+import time
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+# Настройка логирования для модуля spell_checker
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 class AdvancedSpellChecker:
     """Продвинутый проверщик орфографии и грамматики"""
@@ -34,32 +37,69 @@ class AdvancedSpellChecker:
     
     def _init_hunspell(self):
         """Инициализация Hunspell"""
+        logger.info("🔧 [HUNSPELL] Начинаем инициализацию Hunspell")
+        start_time = time.time()
+        
         try:
             import hunspell
+            logger.info("🔧 [HUNSPELL] Модуль hunspell импортирован успешно")
             
             # Попробуем инициализировать Hunspell для русского языка
             try:
+                logger.info("🔧 [HUNSPELL] Пытаемся инициализировать для русского языка...")
                 self.hunspell = hunspell.HunSpell('/usr/share/hunspell/ru_RU.dic', '/usr/share/hunspell/ru_RU.aff')
-                logger.info("Hunspell инициализирован для русского языка")
+                logger.info("✅ [HUNSPELL] Hunspell инициализирован для русского языка")
+                
+                # Проверим работу hunspell
+                test_word = "тест"
+                is_correct = self.hunspell.spell(test_word)
+                suggestions = self.hunspell.suggest(test_word)
+                logger.info(f"🔧 [HUNSPELL] Тестовая проверка: '{test_word}' -> {is_correct}, предложения: {suggestions[:3]}")
+                
             except Exception as e:
-                logger.warning(f"Не удалось инициализировать Hunspell для ru_RU: {e}")
+                logger.warning(f"⚠️ [HUNSPELL] Не удалось инициализировать для ru_RU: {e}")
                 # Попробуем английский
                 try:
+                    logger.info("🔧 [HUNSPELL] Пытаемся инициализировать для английского языка...")
                     self.hunspell = hunspell.HunSpell('/usr/share/hunspell/en_US.dic', '/usr/share/hunspell/en_US.aff')
-                    logger.info("Hunspell инициализирован для английского языка")
+                    logger.info("✅ [HUNSPELL] Hunspell инициализирован для английского языка")
+                    
+                    # Проверим работу hunspell
+                    test_word = "test"
+                    is_correct = self.hunspell.spell(test_word)
+                    suggestions = self.hunspell.suggest(test_word)
+                    logger.info(f"🔧 [HUNSPELL] Тестовая проверка: '{test_word}' -> {is_correct}, предложения: {suggestions[:3]}")
+                    
                 except Exception as e2:
-                    logger.warning(f"Не удалось инициализировать Hunspell: {e2}")
+                    logger.warning(f"⚠️ [HUNSPELL] Не удалось инициализировать для en_US: {e2}")
                     # Попробуем без указания путей (автопоиск)
                     try:
+                        logger.info("🔧 [HUNSPELL] Пытаемся инициализировать с автопоиском словарей...")
                         self.hunspell = hunspell.HunSpell()
-                        logger.info("Hunspell инициализирован с автопоиском словарей")
+                        logger.info("✅ [HUNSPELL] Hunspell инициализирован с автопоиском словарей")
+                        
+                        # Проверим работу hunspell
+                        test_word = "test"
+                        is_correct = self.hunspell.spell(test_word)
+                        suggestions = self.hunspell.suggest(test_word)
+                        logger.info(f"🔧 [HUNSPELL] Тестовая проверка: '{test_word}' -> {is_correct}, предложения: {suggestions[:3]}")
+                        
                     except Exception as e3:
-                        logger.warning(f"Не удалось инициализировать Hunspell с автопоиском: {e3}")
+                        logger.warning(f"⚠️ [HUNSPELL] Не удалось инициализировать с автопоиском: {e3}")
+                        self.hunspell = None
             
         except ImportError:
-            logger.warning("Модуль hunspell не установлен, используется упрощенная проверка")
+            logger.warning("⚠️ [HUNSPELL] Модуль hunspell не установлен, используется упрощенная проверка")
+            self.hunspell = None
         except Exception as e:
-            logger.error(f"Ошибка инициализации Hunspell: {e}")
+            logger.error(f"❌ [HUNSPELL] Ошибка инициализации Hunspell: {e}")
+            self.hunspell = None
+        
+        init_time = time.time() - start_time
+        if self.hunspell:
+            logger.info(f"✅ [HUNSPELL] Инициализация завершена успешно за {init_time:.3f}с")
+        else:
+            logger.warning(f"⚠️ [HUNSPELL] Инициализация завершена с ошибками за {init_time:.3f}с")
     
     def _init_language_tool(self):
         """Инициализация LanguageTool"""
@@ -167,48 +207,95 @@ class AdvancedSpellChecker:
     
     def _check_spelling_hunspell(self, text: str) -> Dict[str, Any]:
         """Проверка орфографии с помощью Hunspell"""
+        logger.info(f"🔍 [HUNSPELL] Начинаем проверку орфографии с помощью Hunspell для текста длиной {len(text)} символов")
+        start_time = time.time()
+        
         try:
             words = self._extract_words(text)
+            logger.info(f"🔍 [HUNSPELL] Извлечено {len(words)} слов для проверки")
+            
             errors = []
+            checked_words = 0
+            skipped_words = 0
+            dictionary_hits = 0
+            false_positive_skips = 0
             
             for word in words:
+                checked_words += 1
+                
                 # Пропускаем короткие слова, числа и специальные символы
                 if len(word) < 3 or word.isdigit() or not word.isalpha():
+                    skipped_words += 1
+                    logger.debug(f"🔍 [HUNSPELL] Пропущено короткое слово/число: '{word}'")
                     continue
                 
                 # Пропускаем слова из расширенного словаря
                 if word.lower() in self.dictionary:
+                    dictionary_hits += 1
+                    logger.debug(f"🔍 [HUNSPELL] Слово найдено в расширенном словаре: '{word}'")
                     continue
                 
                 # Пропускаем слова, которые выглядят как корректные
                 if self._is_likely_correct_word(word):
+                    skipped_words += 1
+                    logger.debug(f"🔍 [HUNSPELL] Слово выглядит корректным: '{word}'")
                     continue
                 
-                # Проверяем слово
-                if not self.hunspell.spell(word):
+                # Проверяем слово через Hunspell
+                logger.debug(f"🔍 [HUNSPELL] Проверяем слово: '{word}'")
+                is_correct = self.hunspell.spell(word)
+                
+                if not is_correct:
+                    logger.info(f"🔍 [HUNSPELL] Найдена ошибка в слове: '{word}'")
                     suggestions = self.hunspell.suggest(word)
+                    logger.info(f"🔍 [HUNSPELL] Предложения для '{word}': {suggestions[:3]}")
+                    
                     context = self._get_word_context(text, word)
                     
                     # Дополнительная проверка - возможно это правильное слово
                     if self._is_likely_false_positive(word, suggestions):
+                        false_positive_skips += 1
+                        logger.info(f"🔍 [HUNSPELL] Слово '{word}' пропущено как ложное срабатывание")
                         continue
                     
-                    errors.append({
+                    error_data = {
                         "word": word,
                         "position": text.find(word),
                         "context": context,
                         "suggestions": suggestions[:5],  # Ограничиваем до 5 предложений
                         "type": "spelling",
                         "confidence": 0.8  # Высокая уверенность для Hunspell
-                    })
+                    }
+                    errors.append(error_data)
+                    logger.info(f"🔍 [HUNSPELL] Добавлена ошибка: {error_data}")
+                else:
+                    logger.debug(f"🔍 [HUNSPELL] Слово корректно: '{word}'")
             
-            return {
+            processing_time = time.time() - start_time
+            
+            result = {
                 "total_words": len(words),
+                "checked_words": checked_words,
+                "skipped_words": skipped_words,
+                "dictionary_hits": dictionary_hits,
+                "false_positive_skips": false_positive_skips,
                 "misspelled_count": len(errors),
                 "errors": errors,
                 "accuracy": (len(words) - len(errors)) / len(words) * 100 if words else 100,
-                "method": "hunspell"
+                "method": "hunspell",
+                "processing_time": processing_time
             }
+            
+            logger.info(f"🔍 [HUNSPELL] Проверка завершена за {processing_time:.3f}с:")
+            logger.info(f"🔍 [HUNSPELL] - Всего слов: {len(words)}")
+            logger.info(f"🔍 [HUNSPELL] - Проверено: {checked_words}")
+            logger.info(f"🔍 [HUNSPELL] - Пропущено: {skipped_words}")
+            logger.info(f"🔍 [HUNSPELL] - Найдено в словаре: {dictionary_hits}")
+            logger.info(f"🔍 [HUNSPELL] - Ложные срабатывания: {false_positive_skips}")
+            logger.info(f"🔍 [HUNSPELL] - Ошибок найдено: {len(errors)}")
+            logger.info(f"🔍 [HUNSPELL] - Точность: {result['accuracy']:.1f}%")
+            
+            return result
             
         except Exception as e:
             logger.error(f"Ошибка проверки орфографии Hunspell: {e}")
@@ -216,36 +303,72 @@ class AdvancedSpellChecker:
     
     def _check_spelling_fallback(self, text: str) -> Dict[str, Any]:
         """Резервная проверка орфографии"""
+        logger.info(f"🔍 [FALLBACK] Начинаем резервную проверку орфографии для текста длиной {len(text)} символов")
+        start_time = time.time()
+        
         words = self._extract_words(text)
+        logger.info(f"🔍 [FALLBACK] Извлечено {len(words)} слов для проверки")
+        
         errors = []
+        checked_words = 0
+        dictionary_hits = 0
+        suspicious_words = 0
         
         for word in words:
+            checked_words += 1
+            
             # Пропускаем короткие слова, числа и специальные символы
             if len(word) < 3 or word.isdigit() or not word.isalpha():
+                logger.debug(f"🔍 [FALLBACK] Пропущено короткое слово/число: '{word}'")
                 continue
             
             # Проверяем слово по словарю
             if word.lower() not in self.dictionary:
+                logger.debug(f"🔍 [FALLBACK] Слово не найдено в словаре: '{word}'")
                 # Дополнительные проверки
                 if self._is_suspicious_word(word):
+                    suspicious_words += 1
+                    logger.info(f"🔍 [FALLBACK] Найдена подозрительная ошибка в слове: '{word}'")
                     context = self._get_word_context(text, word)
                     suggestions = self._get_suggestions(word)
                     
-                    errors.append({
+                    error_data = {
                         "word": word,
                         "position": text.find(word),
                         "context": context,
                         "suggestions": suggestions,
                         "type": "spelling",
                         "confidence": 0.5  # Средняя уверенность для fallback
-                    })
+                    }
+                    errors.append(error_data)
+                    logger.info(f"🔍 [FALLBACK] Добавлена ошибка: {error_data}")
+                else:
+                    logger.debug(f"🔍 [FALLBACK] Слово не выглядит подозрительным: '{word}'")
+            else:
+                dictionary_hits += 1
+                logger.debug(f"🔍 [FALLBACK] Слово найдено в словаре: '{word}'")
+        
+        processing_time = time.time() - start_time
+        accuracy = (len(words) - len(errors)) / len(words) * 100 if words else 100
+        
+        logger.info(f"🔍 [FALLBACK] Резервная проверка завершена за {processing_time:.3f}с:")
+        logger.info(f"🔍 [FALLBACK] - Всего слов: {len(words)}")
+        logger.info(f"🔍 [FALLBACK] - Проверено: {checked_words}")
+        logger.info(f"🔍 [FALLBACK] - Найдено в словаре: {dictionary_hits}")
+        logger.info(f"🔍 [FALLBACK] - Подозрительных слов: {suspicious_words}")
+        logger.info(f"🔍 [FALLBACK] - Ошибок найдено: {len(errors)}")
+        logger.info(f"🔍 [FALLBACK] - Точность: {accuracy:.1f}%")
         
         return {
             "total_words": len(words),
+            "checked_words": checked_words,
+            "dictionary_hits": dictionary_hits,
+            "suspicious_words": suspicious_words,
             "misspelled_count": len(errors),
             "errors": errors,
-            "accuracy": (len(words) - len(errors)) / len(words) * 100 if words else 100,
-            "method": "fallback"
+            "accuracy": accuracy,
+            "method": "fallback",
+            "processing_time": processing_time
         }
     
     def check_grammar(self, text: str) -> Dict[str, Any]:
@@ -362,11 +485,22 @@ class AdvancedSpellChecker:
     
     def comprehensive_check(self, text: str) -> Dict[str, Any]:
         """Комплексная проверка орфографии и грамматики"""
+        logger.info(f"🔍 [COMPREHENSIVE] Начинаем комплексную проверку для текста длиной {len(text)} символов")
+        start_time = time.time()
+        
         # Проверка орфографии
+        logger.info("🔍 [COMPREHENSIVE] Запускаем проверку орфографии...")
+        spelling_start = time.time()
         spelling_result = self.check_spelling(text)
+        spelling_time = time.time() - spelling_start
+        logger.info(f"🔍 [COMPREHENSIVE] Проверка орфографии завершена за {spelling_time:.3f}с")
         
         # Проверка грамматики
+        logger.info("🔍 [COMPREHENSIVE] Запускаем проверку грамматики...")
+        grammar_start = time.time()
         grammar_result = self.check_grammar(text)
+        grammar_time = time.time() - grammar_start
+        logger.info(f"🔍 [COMPREHENSIVE] Проверка грамматики завершена за {grammar_time:.3f}с")
         
         # Объединяем результаты
         all_errors = spelling_result["errors"] + grammar_result["errors"]
@@ -374,16 +508,29 @@ class AdvancedSpellChecker:
         # Сортируем ошибки по позиции в тексте
         all_errors.sort(key=lambda x: x.get("offset", x.get("position", 0)))
         
+        processing_time = time.time() - start_time
+        total_errors = len(all_errors)
+        spelling_errors = spelling_result.get("misspelled_count", 0)
+        grammar_errors = grammar_result.get("error_count", 0)
+        overall_accuracy = self._calculate_overall_accuracy(spelling_result, grammar_result, text)
+        
+        logger.info(f"🔍 [COMPREHENSIVE] Комплексная проверка завершена за {processing_time:.3f}с:")
+        logger.info(f"🔍 [COMPREHENSIVE] - Ошибок орфографии: {spelling_errors}")
+        logger.info(f"🔍 [COMPREHENSIVE] - Ошибок грамматики: {grammar_errors}")
+        logger.info(f"🔍 [COMPREHENSIVE] - Всего ошибок: {total_errors}")
+        logger.info(f"🔍 [COMPREHENSIVE] - Общая точность: {overall_accuracy:.1f}%")
+        
         return {
             "spelling": spelling_result,
             "grammar": grammar_result,
-            "total_errors": len(all_errors),
+            "total_errors": total_errors,
             "all_errors": all_errors,
-            "overall_accuracy": self._calculate_overall_accuracy(spelling_result, grammar_result, text),
+            "overall_accuracy": overall_accuracy,
             "methods": {
                 "spelling": spelling_result.get("method", "unknown"),
                 "grammar": grammar_result.get("method", "unknown")
-            }
+            },
+            "processing_time": processing_time
         }
     
     def _extract_words(self, text: str) -> List[str]:
