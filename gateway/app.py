@@ -71,7 +71,7 @@ def verify_token(authorization_header: str) -> bool:
         logger.error(f"Token verification error: {e}")
         return False
 
-app = FastAPI(title="AI-NK Gateway", version="1.0.0")
+app = FastAPI(title="AI-Engineering Gateway", version="1.0.0")
 
 # CORS middleware
 app.add_middleware(
@@ -90,6 +90,8 @@ SERVICES = {
     "calculation-service": "http://calculation-service:8002",
     "outgoing-control-service": "http://outgoing-control-service:8006",
     "spellchecker-service": "http://spellchecker-service:8007",
+    "archive-service": "http://archive-service:8008",
+    "analog-objects-service": "http://analog-objects-service:8009",
     "ollama": "http://host.docker.internal:11434",  # Прямое подключение к Ollama
     "vllm": "http://vllm:8005"  # VLLM сервис в контейнере
 }
@@ -108,6 +110,7 @@ async def auth_middleware(request: Request, call_next):
         "/api/health",             # Эндпоинт для проверки здоровья RAG-сервиса
         "/api/documents",          # Эндпоинт для получения списка документов
         "/api/documents/stats",    # Эндпоинт для статистики документов
+        "/api/documents/",         # Эндпоинт для получения чанков документа (с слэшем)
         "/api/upload",             # Эндпоинт для загрузки документов
         "/api/calculation/token",  # Эндпоинт для получения JWT токена
         "/api/calculation/me",     # Эндпоинт для получения информации о пользователе
@@ -131,12 +134,16 @@ async def auth_middleware(request: Request, call_next):
         "/api/rules",              # Эндпоинт для правил
         "/api/calculations",       # Эндпоинт для расчетов
         "/api/rag",                # Эндпоинт для RAG сервиса
+        "/api/rag/reasoning-modes", # Эндпоинт для режимов рассуждения
         "/api/ollama",             # Эндпоинт для Ollama
         "/api/vllm",               # Эндпоинт для vLLM
         "/api/outgoing-control",   # Эндпоинт для выходного контроля
         "/api/outgoing-control/",  # Эндпоинт для выходного контроля с слэшем
         "/api/spellchecker",       # Эндпоинт для проверки орфографии
-        "/api/spellchecker/"       # Эндпоинт для проверки орфографии с слэшем
+        "/api/spellchecker/",      # Эндпоинт для проверки орфографии с слэшем
+        "/api/reindex-documents",  # Эндпоинт для реиндексации документов
+        "/api/reindex-documents/async",  # Эндпоинт для асинхронной реиндексации
+        "/api/reindex-documents/status"  # Эндпоинт для статуса реиндексации
     ]
     
     print(f"🔍 [DEBUG] Gateway: Checking path '{request.url.path}' against public paths: {public_paths}")
@@ -149,6 +156,7 @@ async def auth_middleware(request: Request, call_next):
     # Проверяем префиксы для API путей
     api_prefixes = [
         "/api/upload",
+        "/api/documents",
         "/api/chat",
         "/api/generate", 
         "/api/ntd-consultation",
@@ -160,7 +168,8 @@ async def auth_middleware(request: Request, call_next):
         "/api/ollama",
         "/api/vllm",
         "/api/outgoing-control",
-        "/api/spellchecker"
+        "/api/spellchecker",
+        "/api/reindex-documents"
     ]
     
     for prefix in api_prefixes:
@@ -329,6 +338,139 @@ async def proxy_request(request: Request, service_url: str, path: str = "") -> J
             status_code=500
         )
 
+# Analog Objects Service endpoints (должен быть перед /api/v1/{path:path})
+@app.api_route("/api/analog-objects", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def analog_objects_root_proxy(request: Request):
+    """Проксирование запросов к корневому пути сервиса объектов аналогов"""
+    print(f"🔍 [DEBUG] Gateway: Analog objects root proxy request")
+    
+    try:
+        # Получаем URL сервиса объектов аналогов
+        service_url = SERVICES.get("analog-objects-service")
+        if not service_url:
+            raise HTTPException(status_code=503, detail="Analog objects service not available")
+        
+        # Формируем полный URL
+        full_url = f"{service_url}/api/analog-objects"
+        
+        # Получаем тело запроса
+        body = None
+        if request.method in ["POST", "PUT", "PATCH"]:
+            body = await request.body()
+        
+        # Получаем заголовки
+        headers = dict(request.headers)
+        
+        # Удаляем заголовки, которые могут вызвать проблемы
+        headers_to_remove = ["host", "content-length"]
+        for header in headers_to_remove:
+            headers.pop(header, None)
+        
+        print(f"🔍 [DEBUG] Gateway: Forwarding to {full_url}")
+        
+        # Выполняем запрос к сервису объектов аналогов
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.request(
+                method=request.method,
+                url=full_url,
+                headers=headers,
+                content=body,
+                params=request.query_params
+            )
+            
+            print(f"🔍 [DEBUG] Gateway: Analog objects service response: {response.status_code}")
+            
+            # Возвращаем ответ
+            if response.headers.get("content-type", "").startswith("application/json"):
+                return JSONResponse(
+                    content=response.json(),
+                    status_code=response.status_code,
+                    headers=dict(response.headers)
+                )
+            else:
+                from fastapi.responses import Response
+                return Response(
+                    content=response.content,
+                    status_code=response.status_code,
+                    headers=dict(response.headers)
+                )
+            
+    except httpx.TimeoutException:
+        print(f"🔍 [DEBUG] Gateway: Analog objects service timeout")
+        raise HTTPException(status_code=504, detail="Analog objects service timeout")
+    except httpx.ConnectError:
+        print(f"🔍 [DEBUG] Gateway: Analog objects service connection error")
+        raise HTTPException(status_code=503, detail="Analog objects service unavailable")
+    except Exception as e:
+        print(f"🔍 [DEBUG] Gateway: Analog objects proxy exception: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.api_route("/api/analog-objects/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def analog_objects_proxy(path: str, request: Request):
+    """Проксирование запросов к сервису объектов аналогов"""
+    print(f"🔍 [DEBUG] Gateway: Analog objects proxy request to path: {path}")
+    
+    try:
+        # Получаем URL сервиса объектов аналогов
+        service_url = SERVICES.get("analog-objects-service")
+        if not service_url:
+            raise HTTPException(status_code=503, detail="Analog objects service not available")
+        
+        # Формируем полный URL
+        full_url = f"{service_url}/api/analog-objects/{path}"
+        
+        # Получаем тело запроса
+        body = None
+        if request.method in ["POST", "PUT", "PATCH"]:
+            body = await request.body()
+        
+        # Получаем заголовки
+        headers = dict(request.headers)
+        
+        # Удаляем заголовки, которые могут вызвать проблемы
+        headers_to_remove = ["host", "content-length"]
+        for header in headers_to_remove:
+            headers.pop(header, None)
+        
+        print(f"🔍 [DEBUG] Gateway: Forwarding to {full_url}")
+        
+        # Выполняем запрос к сервису объектов аналогов
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.request(
+                method=request.method,
+                url=full_url,
+                headers=headers,
+                content=body,
+                params=request.query_params
+            )
+            
+            print(f"🔍 [DEBUG] Gateway: Analog objects service response: {response.status_code}")
+            
+            # Возвращаем ответ
+            if response.headers.get("content-type", "").startswith("application/json"):
+                return JSONResponse(
+                    content=response.json(),
+                    status_code=response.status_code,
+                    headers=dict(response.headers)
+                )
+            else:
+                from fastapi.responses import Response
+                return Response(
+                    content=response.content,
+                    status_code=response.status_code,
+                    headers=dict(response.headers)
+                )
+            
+    except httpx.TimeoutException:
+        print(f"🔍 [DEBUG] Gateway: Analog objects service timeout")
+        raise HTTPException(status_code=504, detail="Analog objects service timeout")
+    except httpx.ConnectError:
+        print(f"🔍 [DEBUG] Gateway: Analog objects service connection error")
+        raise HTTPException(status_code=503, detail="Analog objects service unavailable")
+    except Exception as e:
+        print(f"🔍 [DEBUG] Gateway: Analog objects proxy exception: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Проксирование запросов к API v1 (должен быть перед /api/{path:path})
 @app.api_route("/api/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy_api_v1(request: Request, path: str):
@@ -357,6 +499,7 @@ async def proxy_api_v1(request: Request, path: str):
         service_url = SERVICES["document-parser"]
         print(f"🔍 [DEBUG] Gateway: Routing API v1 to document-parser (default): {service_url}")
         return await proxy_request(request, service_url, f"/{path}")
+
 
 # Проксирование запросов к document-parser
 @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
@@ -412,7 +555,18 @@ async def proxy_api(request: Request, path: str):
     elif path.startswith("reindex-documents") or path.startswith("reindex"):
         service_url = SERVICES["rag-service"]
         print(f"🔍 [DEBUG] Gateway: Routing reindex to rag-service: {service_url}")
-        return await proxy_request(request, service_url, f"/{path}")
+        # Преобразуем путь для RAG сервиса
+        if path == "reindex-documents":
+            clean_path = "reindex"
+        elif path == "reindex-documents/async":
+            clean_path = "reindex/async"
+        elif path.startswith("reindex-documents/status/"):
+            task_id = path.replace("reindex-documents/status/", "")
+            clean_path = f"reindex/status/{task_id}"
+        else:
+            clean_path = path.replace("reindex-documents", "reindex")
+        print(f"🔍 [DEBUG] Gateway: Cleaned path for RAG service: {clean_path}")
+        return await proxy_request(request, service_url, f"/{clean_path}")
     elif path.startswith("ntd-consultation"):
         service_url = SERVICES["rag-service"]
         print(f"🔍 [DEBUG] Gateway: Routing NTD consultation to rag-service: {service_url}")
@@ -523,7 +677,18 @@ async def proxy_main(request: Request, path: str):
     elif path.startswith("reindex"):
         service_url = SERVICES["rag-service"]
         print(f"🔍 [DEBUG] Gateway: Routing reindex to rag-service: {service_url}")
-        return await proxy_request(request, service_url, f"/{path}")
+        # Преобразуем путь для RAG сервиса
+        if path == "reindex-documents":
+            clean_path = "reindex"
+        elif path == "reindex-documents/async":
+            clean_path = "reindex/async"
+        elif path.startswith("reindex-documents/status/"):
+            task_id = path.replace("reindex-documents/status/", "")
+            clean_path = f"reindex/status/{task_id}"
+        else:
+            clean_path = path.replace("reindex-documents", "reindex")
+        print(f"🔍 [DEBUG] Gateway: Cleaned path for RAG service: {clean_path}")
+        return await proxy_request(request, service_url, f"/{clean_path}")
     elif path.startswith("ntd-consultation"):
         service_url = SERVICES["rag-service"]
         print(f"🔍 [DEBUG] Gateway: Routing NTD consultation to rag-service: {service_url}")
@@ -632,6 +797,74 @@ async def get_vllm_models():
     except Exception as e:
         print(f"🔍 [DEBUG] Gateway: VLLM models exception: {e}")
         return {"error": str(e), "status": "error"}
+
+# Archive Service endpoints
+@app.api_route("/api/archive/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def archive_proxy(path: str, request: Request):
+    """Проксирование запросов к сервису архива"""
+    print(f"🔍 [DEBUG] Gateway: Archive proxy request to path: {path}")
+    
+    try:
+        # Получаем URL сервиса архива
+        service_url = SERVICES.get("archive-service")
+        if not service_url:
+            raise HTTPException(status_code=503, detail="Archive service not available")
+        
+        # Формируем полный URL
+        full_url = f"{service_url}/archive/{path}"
+        
+        # Получаем тело запроса
+        body = None
+        if request.method in ["POST", "PUT", "PATCH"]:
+            body = await request.body()
+        
+        # Получаем заголовки
+        headers = dict(request.headers)
+        
+        # Удаляем заголовки, которые могут вызвать проблемы
+        headers_to_remove = ["host", "content-length"]
+        for header in headers_to_remove:
+            headers.pop(header, None)
+        
+        print(f"🔍 [DEBUG] Gateway: Forwarding to {full_url}")
+        
+        # Выполняем запрос к сервису архива
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.request(
+                method=request.method,
+                url=full_url,
+                headers=headers,
+                content=body,
+                params=request.query_params
+            )
+            
+            print(f"🔍 [DEBUG] Gateway: Archive service response: {response.status_code}")
+            
+            # Возвращаем ответ
+            if response.headers.get("content-type", "").startswith("application/json"):
+                return JSONResponse(
+                    content=response.json(),
+                    status_code=response.status_code,
+                    headers=dict(response.headers)
+                )
+            else:
+                from fastapi.responses import Response
+                return Response(
+                    content=response.content,
+                    status_code=response.status_code,
+                    headers=dict(response.headers)
+                )
+            
+    except httpx.TimeoutException:
+        print(f"🔍 [DEBUG] Gateway: Archive service timeout")
+        raise HTTPException(status_code=504, detail="Archive service timeout")
+    except httpx.ConnectError:
+        print(f"🔍 [DEBUG] Gateway: Archive service connection error")
+        raise HTTPException(status_code=503, detail="Archive service unavailable")
+    except Exception as e:
+        print(f"🔍 [DEBUG] Gateway: Archive proxy exception: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     print("🔍 [DEBUG] Gateway: Starting FastAPI application")

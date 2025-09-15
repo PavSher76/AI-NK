@@ -477,11 +477,14 @@ services:
     environment:
       - TZ=Europe/Moscow
       - LANGUAGETOOL_HOME=/opt/languagetool
+      - LANGUAGETOOL_URL=http://languagetool:8010
     volumes:
       - spellchecker_logs:/app/logs
       - spellchecker_cache:/app/cache
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
+    depends_on:
+      - languagetool
     restart: unless-stopped
     deploy:
       resources:
@@ -540,6 +543,103 @@ services:
       timeout: 10s
       retries: 3
 
+  # LanguageTool сервер для проверки грамматики
+  languagetool:
+    image: silviof/docker-languagetool:latest
+    ports:
+      - "8082:8010"
+    environment:
+      - TZ=Europe/Moscow
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+          cpus: '1.0'
+    # CPU Shares для macOS (низкий приоритет LanguageTool)
+    cpu_shares: 256
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8010/v2/languages"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Сервис архива технической документации
+  archive-service:
+    build: 
+      context: ./archive_service
+      dockerfile: Dockerfile
+    ports:
+      - "8008:8000"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-norms_user}:${POSTGRES_PASSWORD:-norms_password}@norms-db:5432/${POSTGRES_DB:-norms_db}
+      - QDRANT_URL=http://qdrant:6333
+      - ARCHIVE_UPLOAD_DIR=/app/uploads/archive
+      - ARCHIVE_MAX_FILE_SIZE=104857600  # 100 MB
+      - TZ=Europe/Moscow
+    volumes:
+      - archive_uploads:/app/uploads/archive
+      - archive_merged:/app/uploads/merged
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    depends_on:
+      - norms-db
+      - qdrant
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+          cpus: '1.0'
+    # CPU Shares для macOS (средний приоритет Archive)
+    cpu_shares: 512
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Сервис объектов аналогов
+  analog-objects-service:
+    build: 
+      context: ./analog_objects_service
+      dockerfile: Dockerfile
+    ports:
+      - "8009:8009"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-norms_user}:${POSTGRES_PASSWORD:-norms_password}@norms-db:5432/${POSTGRES_DB:-norms_db}
+      - UPLOAD_DIR=/app/uploads/analog_objects
+      - MAX_FILE_SIZE=104857600  # 100 MB
+      - TZ=Europe/Moscow
+    volumes:
+      - analog_objects_uploads:/app/uploads/analog_objects
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    depends_on:
+      - norms-db
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    # CPU Shares для macOS (низкий приоритет)
+    cpu_shares: 256
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8009/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
 volumes:
   redis_data:
     driver: local
@@ -565,8 +665,14 @@ volumes:
     driver: local
   outgoing_control_reports:
     driver: local
+  archive_uploads:
+    driver: local
+  archive_merged:
+    driver: local
+  analog_objects_uploads:
+    driver: local
 
 networks:
   default:
-    name: ai-nk-network
+    name: ai-engineering-network
     driver: bridge

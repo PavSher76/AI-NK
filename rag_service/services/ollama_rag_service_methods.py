@@ -590,7 +590,7 @@ class OllamaRAGServiceMethods:
         try:
             with self.rag_service.db_manager.get_cursor() as cursor:
                 cursor.execute("""
-                    SELECT id, filename, original_filename, file_path, document_hash, document_type
+                    SELECT id, filename, original_filename, document_hash, document_type
                     FROM uploaded_documents 
                     WHERE id = %s
                 """, (document_id,))

@@ -116,7 +116,7 @@ utils/
 
 #### Методы
 
-- `clean_text(text: str, preserve_structure: bool = True) -> str` - Очистка текста
+- ~~`clean_text(text: str, preserve_structure: bool = True) -> str` - Очистка текста~~ (УДАЛЕНО)
 - `hierarchical_chunking(text: str) -> List[TextChunk]` - Иерархическое разделение
 - `create_fixed_size_chunks(text: str, chunk_size: int = 1000, overlap: int = 100) -> List[TextChunk]` - Чанки фиксированного размера
 - `get_text_statistics(text: str) -> Dict[str, Any]` - Статистика по тексту

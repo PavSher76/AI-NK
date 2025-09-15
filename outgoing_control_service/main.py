@@ -486,6 +486,13 @@ os.makedirs(REPORTS_DIR, exist_ok=True)
 
 # База данных в памяти (в реальном проекте использовать PostgreSQL)
 documents_db = {}
+
+def update_existing_documents():
+    """Обновляет существующие документы в базе данных для совместимости с фронтендом"""
+    for doc_id, doc in documents_db.items():
+        # Всегда обновляем document_id и has_report
+        doc["document_id"] = doc_id
+        doc["has_report"] = doc.get("consolidated_report") is not None
 reports_db = {}
 settings_db = {
     "llm_prompt": """Вы - эксперт по выходному контролю технической документации (ТДО). 
@@ -748,19 +755,34 @@ async def upload_document(file: UploadFile = File(...)):
         # Генерируем уникальный ID документа
         document_id = str(uuid.uuid4())
         
+        # Начинаем отсчет времени загрузки
+        upload_start_time = datetime.now()
+        
         # Сохраняем файл
         file_path = os.path.join(UPLOAD_DIR, f"{document_id}_{file.filename}")
         async with aiofiles.open(file_path, 'wb') as f:
             content = await file.read()
             await f.write(content)
         
+        # Время завершения загрузки файла
+        upload_end_time = datetime.now()
+        upload_duration = (upload_end_time - upload_start_time).total_seconds()
+        
+        # Начинаем отсчет времени извлечения текста
+        text_extraction_start_time = datetime.now()
+        
         # Парсим документ
         parsed_content = await parse_document(file_path)
+        
+        # Время завершения извлечения текста
+        text_extraction_end_time = datetime.now()
+        text_extraction_duration = (text_extraction_end_time - text_extraction_start_time).total_seconds()
         
         # Сохраняем информацию о документе
         upload_time = datetime.now().isoformat()
         document_info = {
             "id": document_id,
+            "document_id": document_id,  # Добавляем document_id для совместимости с фронтендом
             "filename": file.filename,
             "title": file.filename.replace('.pdf', '').replace('.doc', '').replace('.docx', ''),
             "file_path": file_path,
@@ -772,7 +794,18 @@ async def upload_document(file: UploadFile = File(...)):
             "uploaded_at": upload_time,
             "spell_check_results": None,
             "expert_analysis": None,
-            "consolidated_report": None
+            "consolidated_report": None,
+            "has_report": False,  # Добавляем has_report для совместимости с фронтендом
+            # Добавляем метрики времени
+            "timing_metrics": {
+                "upload_duration_seconds": upload_duration,
+                "text_extraction_duration_seconds": text_extraction_duration,
+                "total_processing_duration_seconds": upload_duration + text_extraction_duration,
+                "upload_start_time": upload_start_time.isoformat(),
+                "upload_end_time": upload_end_time.isoformat(),
+                "text_extraction_start_time": text_extraction_start_time.isoformat(),
+                "text_extraction_end_time": text_extraction_end_time.isoformat()
+            }
         }
         
         documents_db[document_id] = document_info
@@ -1059,15 +1092,27 @@ async def expert_analysis(request: Dict[str, Any]):
             "analysis_generation_time": datetime.now().isoformat()
         }
         
+        # Получаем метрики времени из документа
+        timing_metrics = document.get('timing_metrics', {})
+        
         # Добавляем отладочную информацию в конец отчета
         debug_section = f"""
 
 ## ОТЛАДОЧНАЯ ИНФОРМАЦИЯ
 
+### МЕТРИКИ ВРЕМЕНИ ОБРАБОТКИ ДОКУМЕНТА:
+- **Время загрузки файла**: {timing_metrics.get('upload_duration_seconds', 'N/A')} секунд
+- **Время извлечения текста**: {timing_metrics.get('text_extraction_duration_seconds', 'N/A')} секунд
+- **Общее время обработки**: {timing_metrics.get('total_processing_duration_seconds', 'N/A')} секунд
+- **Начало загрузки**: {timing_metrics.get('upload_start_time', 'N/A')}
+- **Завершение загрузки**: {timing_metrics.get('upload_end_time', 'N/A')}
+- **Начало извлечения текста**: {timing_metrics.get('text_extraction_start_time', 'N/A')}
+- **Завершение извлечения текста**: {timing_metrics.get('text_extraction_end_time', 'N/A')}
+
 ### ИЗВЛЕЧЕННЫЙ ТЕКСТ ДОКУМЕНТА:
 - **Размер текста**: {len(text)} символов
 - **Количество строк**: {text.count(chr(10)) + 1}
-- **Время извлечения**: {document.get('uploaded_at', 'N/A')}
+- **Время загрузки документа**: {document.get('uploaded_at', 'N/A')}
 - **Имя файла**: {document.get('filename', 'N/A')}
 
 **СОДЕРЖИМОЕ ТЕКСТА:**
@@ -1149,6 +1194,9 @@ async def consolidate_results(request: Dict[str, Any]):
         expert_analysis = document.get("expert_analysis", {})
         original_text = document["text"]
         
+        # Получаем метрики времени
+        timing_metrics = document.get('timing_metrics', {})
+        
         # Создаем консолидированный отчет
         consolidated_report = {
             "document_id": document_id,
@@ -1160,6 +1208,22 @@ async def consolidate_results(request: Dict[str, Any]):
                 "overall_score": expert_analysis.get("overall_score", 0),
                 "compliance_status": expert_analysis.get("compliance_status", "unknown")
             },
+            "timing_metrics": {
+                "upload_duration_seconds": timing_metrics.get('upload_duration_seconds', 0),
+                "text_extraction_duration_seconds": timing_metrics.get('text_extraction_duration_seconds', 0),
+                "total_processing_duration_seconds": timing_metrics.get('total_processing_duration_seconds', 0),
+                "upload_start_time": timing_metrics.get('upload_start_time', 'N/A'),
+                "upload_end_time": timing_metrics.get('upload_end_time', 'N/A'),
+                "text_extraction_start_time": timing_metrics.get('text_extraction_start_time', 'N/A'),
+                "text_extraction_end_time": timing_metrics.get('text_extraction_end_time', 'N/A')
+            },
+            "document_metrics": {
+                "text_length": len(original_text),
+                "pages_count": len(document.get("pages", [])),
+                "chunks_count": len(document.get("chunks", [])),
+                "filename": document.get("filename", "N/A"),
+                "file_size": document.get("file_size", 0)
+            },
             "spell_check": spell_check_results,
             "expert_analysis": expert_analysis,
             "recommendations": generate_final_recommendations(spell_check_results, expert_analysis),
@@ -1169,6 +1233,7 @@ async def consolidate_results(request: Dict[str, Any]):
         # Сохраняем отчет
         documents_db[document_id]["consolidated_report"] = consolidated_report
         documents_db[document_id]["status"] = "completed"
+        documents_db[document_id]["has_report"] = True  # Отмечаем, что отчет готов
         
         # Сохраняем отчет в файл
         report_path = os.path.join(REPORTS_DIR, f"report_{document_id}.json")
@@ -1183,9 +1248,33 @@ async def consolidate_results(request: Dict[str, Any]):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка консолидации результатов: {str(e)}")
 
+@app.get("/debug/documents")
+async def debug_documents():
+    """Отладочная информация о документах"""
+    debug_info = {}
+    for doc_id, doc in documents_db.items():
+        debug_info[doc_id] = {
+            "id": doc.get("id"),
+            "document_id": doc.get("document_id"),
+            "has_report": doc.get("has_report"),
+            "status": doc.get("status"),
+            "keys": list(doc.keys())
+        }
+    return {
+        "total_docs": len(documents_db),
+        "documents": debug_info
+    }
+
 @app.get("/documents")
 async def get_documents():
     """Получение списка документов"""
+    # Исправляем документы перед возвратом
+    for doc_id, doc in documents_db.items():
+        if "document_id" not in doc or doc["document_id"] is None:
+            doc["document_id"] = doc_id
+        if "has_report" not in doc or doc["has_report"] is None:
+            doc["has_report"] = doc.get("consolidated_report") is not None
+    
     return {
         "status": "success",
         "documents": list(documents_db.values())
@@ -1250,7 +1339,8 @@ async def delete_document(document_id: str):
 
 def clean_extracted_text(text: str) -> str:
     """Очистка извлеченного текста с использованием общего модуля utils"""
-    return clean_text(text, preserve_structure=True)
+    # return clean_text(text, preserve_structure=True)
+    return text  # Возвращаем текст без очистки
 
 def hierarchical_text_chunking(text: str) -> List[Dict[str, Any]]:
     """Иерархическое разделение текста на чанки с использованием общего модуля utils"""
@@ -1376,6 +1466,12 @@ def generate_html_report(document: Dict[str, Any]) -> str:
     violations = expert_analysis.get("violations", [])
     recommendations = expert_analysis.get("recommendations", [])
     
+    # Получаем метрики времени
+    timing_metrics = document.get('timing_metrics', {})
+    upload_duration = timing_metrics.get('upload_duration_seconds', 0)
+    text_extraction_duration = timing_metrics.get('text_extraction_duration_seconds', 0)
+    total_processing_duration = timing_metrics.get('total_processing_duration_seconds', 0)
+    
     # Генерируем HTML для орфографических ошибок
     spelling_errors_html = ""
     if spelling_errors:
@@ -1444,6 +1540,17 @@ def generate_html_report(document: Dict[str, Any]) -> str:
             <p><strong>Орфографических ошибок:</strong> {len(spelling_errors)}</p>
             <p><strong>Точность орфографии:</strong> {spelling_accuracy:.1f}%</p>
             <p><strong>Нарушений:</strong> {len(violations)}</p>
+        </div>
+        
+        <div class="section">
+            <h3 class="section-title">Метрики времени обработки</h3>
+            <div class="summary">
+                <p><strong>Время загрузки файла:</strong> {upload_duration:.3f} секунд</p>
+                <p><strong>Время извлечения текста:</strong> {text_extraction_duration:.3f} секунд</p>
+                <p><strong>Общее время обработки:</strong> {total_processing_duration:.3f} секунд</p>
+                <p><strong>Размер документа:</strong> {len(document.get('text', ''))} символов</p>
+                <p><strong>Количество страниц:</strong> {len(document.get('pages', []))}</p>
+            </div>
         </div>
         
         <div class="section">

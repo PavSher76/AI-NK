@@ -1077,7 +1077,7 @@ class OllamaRAGService:
                 
                 # Получаем чанки документа
                 cursor.execute("""
-                    SELECT chunk_id, content, chapter as section_title, chunk_type, page_number as page, section
+                    SELECT chunk_id, content, chapter as section_title, page_number as page, section
                     FROM normative_chunks
                     WHERE document_id = %s
                     ORDER BY page_number, chunk_id
@@ -1090,7 +1090,7 @@ class OllamaRAGService:
                         'chunk_id': chunk['chunk_id'],
                         'content': chunk['content'],
                         'section_title': chunk['section_title'],
-                        'chunk_type': chunk['chunk_type'],
+                        'chunk_type': 'text',  # Устанавливаем тип по умолчанию
                         'page': chunk['page'],
                         'section': chunk['section'],
                         'document_title': document_title  # Добавляем название документа
@@ -1114,27 +1114,9 @@ class OllamaRAGService:
                 logger.warning(f"⚠️ [DELETE_INDEXES] No chunks found for document {document_id}")
                 return True
             
-            # Формируем список ID для удаления из Qdrant
-            point_ids = []
-            for chunk in chunks:
-                qdrant_id = hash(f"{document_id}_{chunk['chunk_id']}") % (2**63 - 1)
-                if qdrant_id < 0:
-                    qdrant_id = abs(qdrant_id)
-                point_ids.append(qdrant_id)
-            
             # Удаляем точки из Qdrant
-            if point_ids:
-                # Удаляем точки из Qdrant
-                self.qdrant_service.delete_points_by_document(document_id)
-                logger.info(f"✅ [DELETE_INDEXES] Deleted points from Qdrant for document {document_id}")
-            
-            # Удаляем чанки из PostgreSQL
-            with self.db_manager.get_cursor() as cursor:
-                cursor.execute("DELETE FROM normative_chunks WHERE document_id = %s", (document_id,))
-                deleted_chunks = cursor.rowcount
-                logger.info(f"✅ [DELETE_INDEXES] Deleted {deleted_chunks} chunks from PostgreSQL for document {document_id}")
-                # Фиксируем транзакцию
-                cursor.connection.commit()
+            self.qdrant_service.delete_points_by_document(document_id)
+            logger.info(f"✅ [DELETE_INDEXES] Deleted points from Qdrant for document {document_id}")
             
             return True
             
@@ -1150,12 +1132,17 @@ class OllamaRAGService:
             # 1. Удаляем индексы из Qdrant
             indexes_deleted = self.delete_document_indexes(document_id)
             
-            # 2. Удаляем извлеченные элементы и сам документ в одной транзакции
+            # 2. Удаляем все связанные данные и сам документ в одной транзакции
             with self.db_manager.get_cursor() as cursor:
                 # Удаляем извлеченные элементы
                 cursor.execute("DELETE FROM extracted_elements WHERE uploaded_document_id = %s", (document_id,))
                 deleted_elements = cursor.rowcount
                 logger.info(f"✅ [DELETE_DOCUMENT] Deleted {deleted_elements} extracted elements for document {document_id}")
+                
+                # Удаляем чанки документа (если они есть)
+                cursor.execute("DELETE FROM normative_chunks WHERE document_id = %s", (document_id,))
+                deleted_chunks = cursor.rowcount
+                logger.info(f"✅ [DELETE_DOCUMENT] Deleted {deleted_chunks} chunks for document {document_id}")
                 
                 # Удаляем сам документ
                 cursor.execute("DELETE FROM uploaded_documents WHERE id = %s", (document_id,))

@@ -4,28 +4,76 @@ from contextlib import contextmanager
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
+import time
+import random
+from functools import wraps
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
 
+def retry_on_connection_error(max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 60.0, exponential_base: float = 2.0):
+    """Декоратор для повторных попыток при ошибках соединения"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except (psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.DatabaseError) as e:
+                    last_exception = e
+                    
+                    if attempt == max_retries:
+                        logger.error(f"❌ [RETRY] Max retries ({max_retries}) exceeded for {func.__name__}: {e}")
+                        raise e
+                    
+                    # Вычисляем задержку с экспоненциальным backoff и jitter
+                    delay = min(base_delay * (exponential_base ** attempt), max_delay)
+                    jitter = random.uniform(0.1, 0.3) * delay
+                    total_delay = delay + jitter
+                    
+                    logger.warning(f"⚠️ [RETRY] Attempt {attempt + 1}/{max_retries + 1} failed for {func.__name__}: {e}")
+                    logger.info(f"🔄 [RETRY] Retrying in {total_delay:.2f} seconds...")
+                    time.sleep(total_delay)
+                    
+                except Exception as e:
+                    # Для других типов ошибок не делаем повторные попытки
+                    logger.error(f"❌ [ERROR] Non-retryable error in {func.__name__}: {e}")
+                    raise e
+            
+            # Этот код никогда не должен выполниться, но на всякий случай
+            if last_exception:
+                raise last_exception
+                
+        return wrapper
+    return decorator
+
 class DatabaseManager:
     """Улучшенный менеджер для работы с базой данных PostgreSQL с разделением на чтение и запись"""
     
-    def __init__(self, connection_string: str, min_connections: int = 1, max_connections: int = 10):
+    def __init__(self, connection_string: str, min_connections: int = 1, max_connections: int = 10, 
+                 max_retries: int = 3, retry_delay: float = 1.0):
         self.connection_string = connection_string
         self.min_connections = min_connections
         self.max_connections = max_connections
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
         
         # Создаем пул соединений для записи
         self._write_pool = None
         # Создаем пул соединений для чтения (read-only)
         self._read_pool = None
         
+        # Флаг для отслеживания состояния пулов
+        self._pools_initialized = False
+        
         # Инициализируем пулы соединений
         self._init_connection_pools()
     
+    @retry_on_connection_error(max_retries=5, base_delay=2.0, max_delay=30.0)
     def _init_connection_pools(self):
-        """Инициализация пулов соединений"""
+        """Инициализация пулов соединений с повторными попытками"""
         try:
             # Пул для записи
             self._write_pool = SimpleConnectionPool(
@@ -41,49 +89,153 @@ class DatabaseManager:
                 self.connection_string
             )
             
+            self._pools_initialized = True
             logger.info(f"✅ [DB_MANAGER] Connection pools initialized (read: {self.min_connections}-{self.max_connections}, write: {self.min_connections}-{self.max_connections})")
             
         except Exception as e:
             logger.error(f"❌ [DB_MANAGER] Error initializing connection pools: {e}")
+            self._pools_initialized = False
+            raise
+    
+    def _ensure_pools_initialized(self):
+        """Проверка и переинициализация пулов соединений при необходимости"""
+        if not self._pools_initialized or not self._write_pool or not self._read_pool:
+            logger.warning("⚠️ [DB_MANAGER] Connection pools not initialized, attempting to reinitialize...")
+            self._init_connection_pools()
+    
+    def _recreate_pools(self):
+        """Пересоздание пулов соединений при критических ошибках"""
+        try:
+            logger.warning("🔄 [DB_MANAGER] Recreating connection pools...")
+            
+            # Закрываем существующие пулы
+            if self._write_pool:
+                try:
+                    self._write_pool.closeall()
+                except Exception as e:
+                    logger.warning(f"⚠️ [DB_MANAGER] Error closing write pool: {e}")
+            
+            if self._read_pool:
+                try:
+                    self._read_pool.closeall()
+                except Exception as e:
+                    logger.warning(f"⚠️ [DB_MANAGER] Error closing read pool: {e}")
+            
+            # Пересоздаем пулы
+            self._write_pool = None
+            self._read_pool = None
+            self._pools_initialized = False
+            
+            self._init_connection_pools()
+            logger.info("✅ [DB_MANAGER] Connection pools recreated successfully")
+            
+        except Exception as e:
+            logger.error(f"❌ [DB_MANAGER] Error recreating connection pools: {e}")
             raise
     
     @contextmanager
     def get_read_connection(self):
-        """Контекстный менеджер для получения соединения на чтение"""
+        """Контекстный менеджер для получения соединения на чтение с повторными попытками"""
         connection = None
-        try:
-            connection = self._read_pool.getconn()
-            yield connection
-        except Exception as e:
-            logger.error(f"❌ [DB_MANAGER] Error in read connection: {e}")
-            if connection:
-                try:
-                    connection.rollback()
-                except Exception as rollback_error:
-                    logger.error(f"❌ [DB_MANAGER] Error during read rollback: {rollback_error}")
-            raise
-        finally:
-            if connection:
-                self._read_pool.putconn(connection)
+        attempt = 0
+        max_attempts = self.max_retries + 1
+        
+        while attempt < max_attempts:
+            try:
+                self._ensure_pools_initialized()
+                connection = self._read_pool.getconn()
+                yield connection
+                return
+                
+            except (psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.DatabaseError) as e:
+                attempt += 1
+                logger.warning(f"⚠️ [READ_CONNECTION] Attempt {attempt}/{max_attempts} failed: {e}")
+                
+                if connection:
+                    try:
+                        self._read_pool.putconn(connection, close=True)
+                    except Exception as put_error:
+                        logger.warning(f"⚠️ [READ_CONNECTION] Error putting connection back: {put_error}")
+                    connection = None
+                
+                if attempt >= max_attempts:
+                    logger.error(f"❌ [READ_CONNECTION] Max attempts exceeded, recreating pools...")
+                    try:
+                        self._recreate_pools()
+                    except Exception as recreate_error:
+                        logger.error(f"❌ [READ_CONNECTION] Failed to recreate pools: {recreate_error}")
+                    raise e
+                
+                # Ждем перед следующей попыткой
+                delay = min(self.retry_delay * (2 ** (attempt - 1)), 30.0)
+                time.sleep(delay)
+                
+            except Exception as e:
+                logger.error(f"❌ [READ_CONNECTION] Non-retryable error: {e}")
+                if connection:
+                    try:
+                        connection.rollback()
+                    except Exception as rollback_error:
+                        logger.error(f"❌ [READ_CONNECTION] Error during rollback: {rollback_error}")
+                raise
+            finally:
+                if connection and attempt < max_attempts:
+                    try:
+                        self._read_pool.putconn(connection)
+                    except Exception as put_error:
+                        logger.warning(f"⚠️ [READ_CONNECTION] Error putting connection back in finally: {put_error}")
     
     @contextmanager
     def get_write_connection(self):
-        """Контекстный менеджер для получения соединения на запись"""
+        """Контекстный менеджер для получения соединения на запись с повторными попытками"""
         connection = None
-        try:
-            connection = self._write_pool.getconn()
-            yield connection
-        except Exception as e:
-            logger.error(f"❌ [DB_MANAGER] Error in write connection: {e}")
-            if connection:
-                try:
-                    connection.rollback()
-                except Exception as rollback_error:
-                    logger.error(f"❌ [DB_MANAGER] Error during write rollback: {rollback_error}")
-            raise
-        finally:
-            if connection:
-                self._write_pool.putconn(connection)
+        attempt = 0
+        max_attempts = self.max_retries + 1
+        
+        while attempt < max_attempts:
+            try:
+                self._ensure_pools_initialized()
+                connection = self._write_pool.getconn()
+                yield connection
+                return
+                
+            except (psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.DatabaseError) as e:
+                attempt += 1
+                logger.warning(f"⚠️ [WRITE_CONNECTION] Attempt {attempt}/{max_attempts} failed: {e}")
+                
+                if connection:
+                    try:
+                        self._write_pool.putconn(connection, close=True)
+                    except Exception as put_error:
+                        logger.warning(f"⚠️ [WRITE_CONNECTION] Error putting connection back: {put_error}")
+                    connection = None
+                
+                if attempt >= max_attempts:
+                    logger.error(f"❌ [WRITE_CONNECTION] Max attempts exceeded, recreating pools...")
+                    try:
+                        self._recreate_pools()
+                    except Exception as recreate_error:
+                        logger.error(f"❌ [WRITE_CONNECTION] Failed to recreate pools: {recreate_error}")
+                    raise e
+                
+                # Ждем перед следующей попыткой
+                delay = min(self.retry_delay * (2 ** (attempt - 1)), 30.0)
+                time.sleep(delay)
+                
+            except Exception as e:
+                logger.error(f"❌ [WRITE_CONNECTION] Non-retryable error: {e}")
+                if connection:
+                    try:
+                        connection.rollback()
+                    except Exception as rollback_error:
+                        logger.error(f"❌ [WRITE_CONNECTION] Error during rollback: {rollback_error}")
+                raise
+            finally:
+                if connection and attempt < max_attempts:
+                    try:
+                        self._write_pool.putconn(connection)
+                    except Exception as put_error:
+                        logger.warning(f"⚠️ [WRITE_CONNECTION] Error putting connection back in finally: {put_error}")
     
     @contextmanager
     def get_read_cursor(self):
@@ -390,7 +542,7 @@ class DatabaseManager:
             
             # Получаем чанки документа
             chunks = self.execute_read_query("""
-                SELECT chunk_id, content, chapter as section_title, chunk_type, page_number as page, section
+                SELECT chunk_id, content, chapter as section_title, page_number as page, section
                 FROM normative_chunks
                 WHERE document_id = %s
                 ORDER BY page_number, chunk_id
@@ -402,7 +554,7 @@ class DatabaseManager:
                     'chunk_id': chunk['chunk_id'],
                     'content': chunk['content'],
                     'section_title': chunk['section_title'],
-                    'chunk_type': chunk['chunk_type'],
+                    'chunk_type': 'paragraph',  # Устанавливаем тип по умолчанию
                     'page': chunk['page'],
                     'section': chunk['section'],
                     'document_title': document_title  # Добавляем название документа
@@ -450,3 +602,75 @@ class DatabaseManager:
                 'pending_documents': 0,
                 'total_tokens': 0
             }
+    
+    def get_pending_documents_for_indexing(self) -> List[Dict[str, Any]]:
+        """Получение документов, ожидающих индексации"""
+        try:
+            pending_docs = self.execute_read_query("""
+                SELECT id, original_filename, category, processing_status, upload_date
+                FROM uploaded_documents 
+                WHERE processing_status IN ('pending', 'failed')
+                ORDER BY upload_date ASC
+            """)
+            
+            logger.info(f"📋 [PENDING_DOCS] Found {len(pending_docs)} documents pending indexing")
+            return pending_docs
+            
+        except Exception as e:
+            logger.error(f"❌ [PENDING_DOCS] Error getting pending documents: {e}")
+            return []
+    
+    def mark_document_for_retry(self, document_id: int, error_message: str = None):
+        """Помечаем документ для повторной попытки индексации"""
+        try:
+            self.execute_write_query("""
+                UPDATE uploaded_documents 
+                SET processing_status = 'pending', 
+                    processing_error = %s,
+                    retry_count = COALESCE(retry_count, 0) + 1,
+                    last_retry_attempt = NOW()
+                WHERE id = %s
+            """, (error_message, document_id))
+            
+            logger.info(f"🔄 [RETRY_MARK] Document {document_id} marked for retry")
+            
+        except Exception as e:
+            logger.error(f"❌ [RETRY_MARK] Error marking document {document_id} for retry: {e}")
+            raise
+    
+    def get_documents_with_failed_indexing(self, max_retries: int = 3) -> List[Dict[str, Any]]:
+        """Получение документов с неудачной индексацией для повторной попытки"""
+        try:
+            failed_docs = self.execute_read_query("""
+                SELECT id, original_filename, category, processing_status, processing_error, 
+                       COALESCE(retry_count, 0) as retry_count, last_retry_attempt
+                FROM uploaded_documents 
+                WHERE processing_status = 'failed' 
+                  AND COALESCE(retry_count, 0) < %s
+                ORDER BY last_retry_attempt ASC NULLS FIRST, upload_date ASC
+            """, (max_retries,))
+            
+            logger.info(f"🔄 [FAILED_DOCS] Found {len(failed_docs)} documents for retry (max_retries={max_retries})")
+            return failed_docs
+            
+        except Exception as e:
+            logger.error(f"❌ [FAILED_DOCS] Error getting failed documents: {e}")
+            return []
+    
+    def update_indexing_progress(self, document_id: int, progress_percent: int, status_message: str = None):
+        """Обновление прогресса индексации документа"""
+        try:
+            self.execute_write_query("""
+                UPDATE uploaded_documents 
+                SET processing_status = 'indexing',
+                    indexing_progress = %s,
+                    processing_error = %s,
+                    last_processing_update = NOW()
+                WHERE id = %s
+            """, (progress_percent, status_message, document_id))
+            
+            logger.debug(f"📊 [PROGRESS] Document {document_id} indexing progress: {progress_percent}%")
+            
+        except Exception as e:
+            logger.error(f"❌ [PROGRESS] Error updating progress for document {document_id}: {e}")
+            raise

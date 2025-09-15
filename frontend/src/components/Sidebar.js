@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Home, 
   MessageSquare, 
@@ -19,7 +19,13 @@ import {
   Sun,
   Mountain,
   Shield,
-  FileCheck
+  FileCheck,
+  Building2,
+  Upload,
+  Search,
+  BarChart3,
+  ChevronDown,
+  ChevronRight
 } from 'lucide-react';
 
 const Sidebar = ({ 
@@ -32,9 +38,41 @@ const Sidebar = ({
   onLogout,
   onClose 
 }) => {
+  // Состояние для отслеживания открытых подменю
+  const [openSubmenus, setOpenSubmenus] = useState(new Set());
+
+  // Автоматически открываем подменю, если текущая страница находится в нем
+  useEffect(() => {
+    const newOpenSubmenus = new Set();
+    
+    // Проверяем, находится ли текущая страница в каком-либо подменю
+    navigationItems.forEach(item => {
+      if (item.submenu) {
+        const hasActiveSubItem = item.submenu.some(subItem => currentPage === subItem.id);
+        if (hasActiveSubItem) {
+          newOpenSubmenus.add(item.id);
+        }
+      }
+    });
+    
+    setOpenSubmenus(newOpenSubmenus);
+  }, [currentPage]);
+
   const handlePageClick = (page) => {
     console.log('🔍 [DEBUG] Sidebar.js: handlePageClick called with page:', page);
     onPageChange(page);
+  };
+
+  const toggleSubmenu = (itemId) => {
+    setOpenSubmenus(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(itemId)) {
+        newSet.delete(itemId);
+      } else {
+        newSet.add(itemId);
+      }
+      return newSet;
+    });
   };
 
 
@@ -62,6 +100,38 @@ const Sidebar = ({
       label: 'Консультация НТД от ИИ',
       icon: HelpCircle,
       onClick: () => handlePageClick('ntd-consultation')
+    },
+    {
+      id: 'analog-objects',
+      label: 'Объекты аналоги',
+      icon: Building2,
+      onClick: () => handlePageClick('analog-objects'),
+      submenu: [
+        {
+          id: 'analog-objects-list',
+          label: 'Список объектов',
+          icon: Building2,
+          onClick: () => handlePageClick('analog-objects-list')
+        },
+        {
+          id: 'analog-objects-upload',
+          label: 'Пакетная загрузка',
+          icon: Upload,
+          onClick: () => handlePageClick('analog-objects-upload')
+        },
+        {
+          id: 'analog-objects-search',
+          label: 'Поиск аналогов',
+          icon: Search,
+          onClick: () => handlePageClick('analog-objects-search')
+        },
+        {
+          id: 'analog-objects-analytics',
+          label: 'Аналитика',
+          icon: BarChart3,
+          onClick: () => handlePageClick('analog-objects-analytics')
+        }
+      ]
     },
     {
       id: 'calculations',
@@ -162,11 +232,18 @@ const Sidebar = ({
     const isActive = currentPage === item.id;
     const hasSubmenu = item.submenu && item.submenu.length > 0;
     const isSubmenuActive = hasSubmenu && item.submenu.some(subItem => currentPage === subItem.id);
+    const isSubmenuOpen = openSubmenus.has(item.id);
 
     return (
       <div key={item.id} className="space-y-1">
         <button
-          onClick={item.onClick}
+          onClick={() => {
+            if (hasSubmenu) {
+              toggleSubmenu(item.id);
+            } else {
+              item.onClick();
+            }
+          }}
           className={`w-full flex items-center px-4 py-3.5 rounded-xl text-sm font-medium transition-all duration-300 group ${
             isActive || isSubmenuActive
               ? 'bg-gradient-to-r from-primary-50 to-primary-100 text-primary-700 shadow-soft border border-primary-200'
@@ -182,46 +259,54 @@ const Sidebar = ({
           </div>
           <span className="flex-1 text-left">{item.label}</span>
           {hasSubmenu && (
-            <div className={`w-2 h-2 rounded-full transition-all duration-300 ${
-              isSubmenuActive ? 'bg-primary-500' : 'bg-gray-300'
-            }`}></div>
+            <div className="flex items-center">
+              {isSubmenuOpen ? (
+                <ChevronDown className="w-4 h-4 text-gray-400 transition-all duration-300" />
+              ) : (
+                <ChevronRight className="w-4 h-4 text-gray-400 transition-all duration-300" />
+              )}
+            </div>
           )}
           {isActive && !hasSubmenu && (
             <div className="w-2 h-2 bg-primary-500 rounded-full"></div>
           )}
         </button>
         
-        {/* Подменю */}
+        {/* Подменю с анимацией */}
         {hasSubmenu && (
-          <div className="ml-4 space-y-1">
-            {item.submenu.map((subItem) => {
-              const SubIcon = subItem.icon;
-              const isSubActive = currentPage === subItem.id;
-              
-              return (
-                <button
-                  key={subItem.id}
-                  onClick={subItem.onClick}
-                  className={`w-full flex items-center px-3 py-2 rounded-lg text-xs font-medium transition-all duration-300 group ${
-                    isSubActive
-                      ? 'bg-primary-100 text-primary-700 border border-primary-200'
-                      : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
-                  }`}
-                >
-                  <div className={`w-6 h-6 rounded-md flex items-center justify-center mr-2 transition-all duration-300 ${
-                    isSubActive
-                      ? 'bg-primary-500 text-white' 
-                      : 'bg-gray-100 text-gray-500 group-hover:bg-primary-100 group-hover:text-primary-600'
-                  }`}>
-                    <SubIcon className="w-3 h-3" />
-                  </div>
-                  <span className="flex-1 text-left">{subItem.label}</span>
-                  {isSubActive && (
-                    <div className="w-1.5 h-1.5 bg-primary-500 rounded-full"></div>
-                  )}
-                </button>
-              );
-            })}
+          <div className={`overflow-hidden transition-all duration-300 ease-in-out ${
+            isSubmenuOpen ? 'max-h-96 opacity-100' : 'max-h-0 opacity-0'
+          }`}>
+            <div className="ml-4 space-y-1 pt-1">
+              {item.submenu.map((subItem) => {
+                const SubIcon = subItem.icon;
+                const isSubActive = currentPage === subItem.id;
+                
+                return (
+                  <button
+                    key={subItem.id}
+                    onClick={subItem.onClick}
+                    className={`w-full flex items-center px-3 py-2 rounded-lg text-xs font-medium transition-all duration-300 group ${
+                      isSubActive
+                        ? 'bg-primary-100 text-primary-700 border border-primary-200'
+                        : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+                    }`}
+                  >
+                    <div className={`w-6 h-6 rounded-md flex items-center justify-center mr-2 transition-all duration-300 ${
+                      isSubActive
+                        ? 'bg-primary-500 text-white' 
+                        : 'bg-gray-100 text-gray-500 group-hover:bg-primary-100 group-hover:text-primary-600'
+                    }`}>
+                      <SubIcon className="w-3 h-3" />
+                    </div>
+                    <span className="flex-1 text-left">{subItem.label}</span>
+                    {isSubActive && (
+                      <div className="w-1.5 h-1.5 bg-primary-500 rounded-full"></div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         )}
       </div>
@@ -241,8 +326,8 @@ const Sidebar = ({
               <BookOpen className="h-6 w-6 text-white" />
             </div>
             <div className="ml-3">
-              <span className="text-xl font-bold text-gray-900 tracking-tight">AI-НК</span>
-              <p className="text-xs text-gray-500 font-medium">Система нормоконтроля</p>
+              <span className="text-xl font-bold text-gray-900 tracking-tight">AI-Engineering</span>
+              <p className="text-xs text-gray-500 font-medium">ИИ в проектировании</p>
             </div>
           </div>
           {onClose && (

@@ -182,10 +182,11 @@ class UniversalDocumentParser:
                 #result["text"] = cleaned_text
                 
                 # Обновляем страницы с очищенным текстом
-                if "pages" in result:
-                    for page in result["pages"]:
-                        if "text" in page:
-                            page["text"] = self.text_processor.clean_text(page["text"])
+                # if "pages" in result:
+                #     for page in result["pages"]:
+                #         if "text" in page:
+                #             page["text"] = self.text_processor.clean_text(page["text"])
+                pass
             
             return result
             
@@ -209,10 +210,11 @@ class UniversalDocumentParser:
                 #result["text"] = cleaned_text
                 
                 # Обновляем параграфы с очищенным текстом
-                if "paragraphs" in result:
-                    for para in result["paragraphs"]:
-                        if "text" in para:
-                            para["text"] = self.text_processor.clean_text(para["text"])
+                # if "paragraphs" in result:
+                #     for para in result["paragraphs"]:
+                #         if "text" in para:
+                #             para["text"] = self.text_processor.clean_text(para["text"])
+                pass
             
             return result
             
@@ -231,23 +233,23 @@ class UniversalDocumentParser:
                 text = file.read()
             
             # Очищаем текст
-            cleaned_text = self.text_processor.clean_text(text)
+            # cleaned_text = self.text_processor.clean_text(text)
             
             # Создаем структуру как у других форматов
             result = {
                 "success": True,
-                "text": cleaned_text,
+                "text": text,
                 "pages": [{
                     "page_number": 1,
-                    "text": cleaned_text,
-                    "char_count": len(cleaned_text),
-                    "word_count": len(cleaned_text.split())
+                    "text": text,
+                    "char_count": len(text),
+                    "word_count": len(text.split())
                 }],
                 "method": "txt",
                 "metadata": {
-                    "total_chars": len(cleaned_text),
-                    "total_words": len(cleaned_text.split()),
-                    "language": self.text_processor.detect_language(cleaned_text)
+                    "total_chars": len(text),
+                    "total_words": len(text.split()),
+                    "language": self.text_processor.detect_language(text)
                 }
             }
             
@@ -267,23 +269,23 @@ class UniversalDocumentParser:
             text = file_content.decode('utf-8')
             
             # Очищаем текст
-            cleaned_text = self.text_processor.clean_text(text)
+            # cleaned_text = self.text_processor.clean_text(text)
             
             # Создаем структуру как у других форматов
             result = {
                 "success": True,
-                "text": cleaned_text,
+                "text": text,
                 "pages": [{
                     "page_number": 1,
-                    "text": cleaned_text,
-                    "char_count": len(cleaned_text),
-                    "word_count": len(cleaned_text.split())
+                    "text": text,
+                    "char_count": len(text),
+                    "word_count": len(text.split())
                 }],
                 "method": "txt",
                 "metadata": {
-                    "total_chars": len(cleaned_text),
-                    "total_words": len(cleaned_text.split()),
-                    "language": self.text_processor.detect_language(cleaned_text)
+                    "total_chars": len(text),
+                    "total_words": len(text.split()),
+                    "language": self.text_processor.detect_language(text)
                 }
             }
             

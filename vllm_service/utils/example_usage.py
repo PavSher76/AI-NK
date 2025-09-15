@@ -135,13 +135,13 @@ def example_text_processing():
     print(repr(messy_text))
     
     # Очищаем текст
-    cleaned_text = processor.clean_text(messy_text)
+    # cleaned_text = processor.clean_text(messy_text)
     
     print("\n✨ Очищенный текст:")
-    print(repr(cleaned_text))
+    print(repr(messy_text))  # Используем исходный текст без очистки
     
     # Получаем статистику
-    stats = processor.get_text_statistics(cleaned_text)
+    stats = processor.get_text_statistics(messy_text)
     print(f"\n📊 Статистика текста:")
     for key, value in stats.items():
         print(f"  {key}: {value}")

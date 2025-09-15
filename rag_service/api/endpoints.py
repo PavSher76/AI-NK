@@ -2,10 +2,12 @@ from fastapi import HTTPException
 from datetime import datetime
 from typing import List, Dict, Any
 from services.rag_service import RAGService
+from services.ollama_rag_service_refactored import OllamaRAGService
 from core.config import logger
 
 # Глобальный экземпляр сервиса (ленивая инициализация)
 rag_service = None
+ollama_rag_service = None
 
 def get_rag_service():
     """Получение экземпляра RAG сервиса с ленивой инициализацией"""
@@ -13,6 +15,13 @@ def get_rag_service():
     if rag_service is None:
         rag_service = RAGService()
     return rag_service
+
+def get_ollama_rag_service():
+    """Получение экземпляра OllamaRAG сервиса с ленивой инициализацией"""
+    global ollama_rag_service
+    if ollama_rag_service is None:
+        ollama_rag_service = OllamaRAGService()
+    return ollama_rag_service
 
 # Глобальная переменная для хранения результатов реиндексации
 reindex_results = {}
@@ -281,9 +290,10 @@ def start_async_reindex():
     """Запуск асинхронной реиндексации документов"""
     logger.info("🚀 [ASYNC_REINDEX] Starting async reindexing...")
     try:
+        rag_service_instance = get_rag_service()
         # Получаем все документы из базы данных
         documents = []
-        with rag_service.db_manager.get_cursor() as cursor:
+        with rag_service_instance.db_manager.get_cursor() as cursor:
             cursor.execute("""
                 SELECT DISTINCT 
                     ud.id as document_id,
@@ -327,7 +337,7 @@ def start_async_reindex():
                         
                         # Получаем чанки документа
                         chunks = []
-                        with rag_service.db_manager.get_cursor() as cursor:
+                        with rag_service_instance.db_manager.get_cursor() as cursor:
                             cursor.execute("""
                                 SELECT 
                                     chunk_id,
@@ -350,7 +360,7 @@ def start_async_reindex():
                         chunks_for_indexing = []
                         for chunk in chunks:
                             # Извлекаем код документа из названия
-                            code = rag_service.extract_document_code(document_title)
+                            code = rag_service_instance.extract_document_code(document_title)
                             
                             chunk_data = {
                                 'id': chunk['chunk_id'],  # ID для Qdrant
@@ -369,7 +379,7 @@ def start_async_reindex():
                             chunks_for_indexing.append(chunk_data)
                         
                         # Индексируем чанки в векторную базу
-                        success = rag_service.index_document_chunks(document_id, chunks_for_indexing)
+                        success = rag_service_instance.index_document_chunks(document_id, chunks_for_indexing)
                         
                         if success:
                             reindexed_count += 1
@@ -706,3 +716,144 @@ def get_metrics():
             content="\n".join(error_metrics),
             media_type="text/plain; version=0.0.4; charset=utf-8"
         )
+
+# Новые endpoints для устойчивой индексации
+
+def start_indexing_service():
+    """Запуск сервиса устойчивой индексации"""
+    logger.info("🚀 [START_INDEXING_SERVICE] Starting resilient indexing service...")
+    try:
+        ollama_rag_service = get_ollama_rag_service()
+        success = ollama_rag_service.start_indexing_service()
+        
+        if success:
+            logger.info("✅ [START_INDEXING_SERVICE] Resilient indexing service started successfully")
+            return {
+                "status": "success",
+                "message": "Resilient indexing service started",
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            logger.error("❌ [START_INDEXING_SERVICE] Failed to start resilient indexing service")
+            raise HTTPException(status_code=500, detail="Failed to start indexing service")
+            
+    except Exception as e:
+        logger.error(f"❌ [START_INDEXING_SERVICE] Error starting indexing service: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+def stop_indexing_service():
+    """Остановка сервиса устойчивой индексации"""
+    logger.info("🛑 [STOP_INDEXING_SERVICE] Stopping resilient indexing service...")
+    try:
+        ollama_rag_service = get_ollama_rag_service()
+        success = ollama_rag_service.stop_indexing_service()
+        
+        if success:
+            logger.info("✅ [STOP_INDEXING_SERVICE] Resilient indexing service stopped successfully")
+            return {
+                "status": "success",
+                "message": "Resilient indexing service stopped",
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            logger.error("❌ [STOP_INDEXING_SERVICE] Failed to stop resilient indexing service")
+            raise HTTPException(status_code=500, detail="Failed to stop indexing service")
+            
+    except Exception as e:
+        logger.error(f"❌ [STOP_INDEXING_SERVICE] Error stopping indexing service: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+def get_indexing_service_status():
+    """Получение статуса сервиса устойчивой индексации"""
+    logger.info("📊 [INDEXING_SERVICE_STATUS] Getting indexing service status...")
+    try:
+        ollama_rag_service = get_ollama_rag_service()
+        status = ollama_rag_service.get_indexing_service_status()
+        
+        logger.info(f"✅ [INDEXING_SERVICE_STATUS] Indexing service status retrieved")
+        return {
+            "status": "success",
+            "data": status,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [INDEXING_SERVICE_STATUS] Error getting indexing service status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+def retry_failed_documents(max_retries: int = 3):
+    """Повторная попытка индексации неудачных документов"""
+    logger.info(f"🔄 [RETRY_FAILED_DOCUMENTS] Retrying failed documents (max_retries={max_retries})...")
+    try:
+        ollama_rag_service = get_ollama_rag_service()
+        retry_count = ollama_rag_service.retry_failed_documents(max_retries)
+        
+        logger.info(f"✅ [RETRY_FAILED_DOCUMENTS] Marked {retry_count} documents for retry")
+        return {
+            "status": "success",
+            "message": f"Marked {retry_count} documents for retry",
+            "retry_count": retry_count,
+            "max_retries": max_retries,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [RETRY_FAILED_DOCUMENTS] Error retrying failed documents: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+def get_pending_documents():
+    """Получение документов, ожидающих индексации"""
+    logger.info("📋 [GET_PENDING_DOCUMENTS] Getting pending documents...")
+    try:
+        ollama_rag_service = get_ollama_rag_service()
+        pending_docs = ollama_rag_service.db_manager.get_pending_documents_for_indexing()
+        
+        logger.info(f"✅ [GET_PENDING_DOCUMENTS] Retrieved {len(pending_docs)} pending documents")
+        return {
+            "status": "success",
+            "documents": pending_docs,
+            "count": len(pending_docs),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [GET_PENDING_DOCUMENTS] Error getting pending documents: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+def get_failed_documents(max_retries: int = 3):
+    """Получение документов с неудачной индексацией"""
+    logger.info(f"❌ [GET_FAILED_DOCUMENTS] Getting failed documents (max_retries={max_retries})...")
+    try:
+        ollama_rag_service = get_ollama_rag_service()
+        failed_docs = ollama_rag_service.db_manager.get_documents_with_failed_indexing(max_retries)
+        
+        logger.info(f"✅ [GET_FAILED_DOCUMENTS] Retrieved {len(failed_docs)} failed documents")
+        return {
+            "status": "success",
+            "documents": failed_docs,
+            "count": len(failed_docs),
+            "max_retries": max_retries,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [GET_FAILED_DOCUMENTS] Error getting failed documents: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+def get_database_health():
+    """Получение состояния здоровья базы данных"""
+    logger.info("🏥 [DATABASE_HEALTH] Getting database health status...")
+    try:
+        ollama_rag_service = get_ollama_rag_service()
+        health_status = ollama_rag_service.db_manager.health_check()
+        
+        logger.info(f"✅ [DATABASE_HEALTH] Database health status retrieved: {health_status['status']}")
+        return {
+            "status": "success",
+            "health": health_status,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ [DATABASE_HEALTH] Error getting database health: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

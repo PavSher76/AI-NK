@@ -1,0 +1,41 @@
+# Archive Service Requirements
+
+# FastAPI и веб-сервер
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# База данных
+psycopg2-binary==2.9.9
+sqlalchemy==2.0.23
+
+# Векторная база данных
+qdrant-client==1.7.0
+
+# Обработка документов
+PyMuPDF==1.23.8
+python-docx==1.1.0
+pandas==2.1.4
+openpyxl==3.1.2
+
+# PDF генерация
+reportlab==4.0.7
+
+# Утилиты
+python-dateutil==2.8.2
+pydantic==2.5.0
+numpy==1.24.4
+
+# Логирование
+structlog==23.2.0
+
+# HTTP клиент
+httpx==0.25.2
+requests==2.31.0
+
+# Конфигурация
+python-dotenv==1.0.0
+
+# Тестирование
+pytest==7.4.3
+pytest-asyncio==0.21.1

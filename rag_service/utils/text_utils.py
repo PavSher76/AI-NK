@@ -3,18 +3,18 @@ import hashlib
 from typing import List, Dict, Any
 from core.models import ChunkType
 
-def clean_text(text: str) -> str:
-    """Очистка текста от лишних символов"""
-    if not text:
-        return ""
-    
-    # Удаляем лишние пробелы и переносы строк
-    text = re.sub(r'\s+', ' ', text.strip())
-    
-    # Удаляем специальные символы, но оставляем кириллицу, латиницу, цифры и основные знаки
-    text = re.sub(r'[^\w\s\-\.\,\;\:\!\?\(\)\[\]\{\}\"\'\–\—\№\§\©\®\™\°\±\×\÷\=\+\-\*\/\^\|\&\<\>\~]', '', text)
-    
-    return text
+# def clean_text(text: str) -> str:
+#     """Очистка текста от лишних символов"""
+#     if not text:
+#         return ""
+#     
+#     # Удаляем лишние пробелы и переносы строк
+#     text = re.sub(r'\s+', ' ', text.strip())
+#     
+#     # Удаляем специальные символы, но оставляем кириллицу, латиницу, цифры и основные знаки
+#     text = re.sub(r'[^\w\s\-\.\,\;\:\!\?\(\)\[\]\{\}\"\'\–\—\№\§\©\®\™\°\±\×\÷\=\+\-\*\/\^\|\&\<\>\~]', '', text)
+#     
+#     return text
 
 def split_text_into_chunks(text: str, chunk_size: int = 500, overlap: int = 75) -> List[str]:
     """Разбиение текста на чанки с перекрытием"""

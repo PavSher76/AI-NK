@@ -21,8 +21,18 @@ const Header = ({
         return 'Расчеты';
       case 'ntd-consultation':
         return 'Консультация НТД';
+      case 'analog-objects':
+        return 'Объекты аналоги';
+      case 'analog-objects-list':
+        return 'Список объектов аналогов';
+      case 'analog-objects-upload':
+        return 'Пакетная загрузка объектов';
+      case 'analog-objects-search':
+        return 'Поиск аналогов';
+      case 'analog-objects-analytics':
+        return 'Аналитика объектов';
       default:
-        return 'AI-НК';
+        return 'AI-Engineering';
     }
   };
 
@@ -40,6 +50,15 @@ const Header = ({
         return '🧮';
       case 'ntd-consultation':
         return '🤖';
+      case 'analog-objects':
+      case 'analog-objects-list':
+        return '🏢';
+      case 'analog-objects-upload':
+        return '📤';
+      case 'analog-objects-search':
+        return '🔍';
+      case 'analog-objects-analytics':
+        return '📈';
       default:
         return '🏠';
     }
@@ -72,6 +91,11 @@ const Header = ({
               {currentPage === 'documents' && 'Управление нормативными документами'}
               {currentPage === 'calculations' && 'Инженерные расчеты'}
               {currentPage === 'ntd-consultation' && 'Консультации по нормативно-технической документации'}
+              {currentPage === 'analog-objects' && 'База данных объектов аналогов'}
+              {currentPage === 'analog-objects-list' && 'Просмотр и управление объектами аналогами'}
+              {currentPage === 'analog-objects-upload' && 'Пакетная загрузка объектов аналогов'}
+              {currentPage === 'analog-objects-search' && 'Поиск и сравнение объектов аналогов'}
+              {currentPage === 'analog-objects-analytics' && 'Аналитика и статистика по объектам'}
             </p>
           </div>
         </div>

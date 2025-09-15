@@ -16,6 +16,7 @@ from .hybrid_search_service import HybridSearchService
 from .mmr_service import MMRService
 from .intent_classifier_service import IntentClassifierService
 from .context_builder_service import ContextBuilderService
+from .indexing_service import ResilientIndexingService
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 _global_qdrant_service = None
 _global_db_manager = None
 _global_embedding_service = None
+_global_indexing_service = None
 
 def get_global_qdrant_service():
     """Получение глобального instance Qdrant сервиса"""
@@ -50,6 +52,23 @@ def get_global_embedding_service():
         logger.info(f"🌐 [GLOBAL_EMBEDDING] Created global EmbeddingService: {id(_global_embedding_service)}")
     return _global_embedding_service
 
+def get_global_indexing_service():
+    """Получение глобального instance ResilientIndexingService"""
+    global _global_indexing_service
+    if _global_indexing_service is None:
+        db_manager = get_global_db_manager()
+        qdrant_service = get_global_qdrant_service()
+        embedding_service = get_global_embedding_service()
+        
+        _global_indexing_service = ResilientIndexingService(
+            db_manager=db_manager,
+            qdrant_service=qdrant_service,
+            embedding_service=embedding_service,
+            max_concurrent_tasks=3
+        )
+        logger.info(f"🌐 [GLOBAL_INDEXING] Created global ResilientIndexingService: {id(_global_indexing_service)}")
+    return _global_indexing_service
+
 class OllamaRAGService:
     """RAG сервис с использованием Ollama BGE-M3 для эмбеддингов"""
     
@@ -74,6 +93,10 @@ class OllamaRAGService:
         logger.info(f"🔧 [OLLAMA_RAG_SERVICE] Using global EmbeddingService...")
         self.embedding_service = get_global_embedding_service()
         logger.info(f"✅ [OLLAMA_RAG_SERVICE] EmbeddingService instance: {id(self.embedding_service)}")
+        
+        logger.info(f"🔧 [OLLAMA_RAG_SERVICE] Using global ResilientIndexingService...")
+        self.indexing_service = get_global_indexing_service()
+        logger.info(f"✅ [OLLAMA_RAG_SERVICE] ResilientIndexingService instance: {id(self.indexing_service)}")
         
         self.document_parser = DocumentParser()
         self.metadata_extractor = MetadataExtractor()
@@ -298,13 +321,6 @@ class OllamaRAGService:
                 self.qdrant_service.delete_points_by_document(document_id)
                 logger.info(f"✅ [DELETE_INDEXES] Deleted points from Qdrant for document {document_id}")
             
-            # Удаляем чанки из PostgreSQL
-            with self.db_manager.get_write_cursor() as (cursor, connection):
-                cursor.execute("DELETE FROM normative_chunks WHERE document_id = %s", (document_id,))
-                deleted_chunks = cursor.rowcount
-                connection.commit()
-                logger.info(f"✅ [DELETE_INDEXES] Deleted {deleted_chunks} chunks from PostgreSQL for document {document_id}")
-            
             return True
             
         except Exception as e:
@@ -319,12 +335,17 @@ class OllamaRAGService:
             # 1. Удаляем индексы из Qdrant
             indexes_deleted = self.delete_document_indexes(document_id)
             
-            # 2. Удаляем извлеченные элементы и сам документ в одной транзакции
+            # 2. Удаляем все связанные данные и сам документ в одной транзакции
             with self.db_manager.get_write_cursor() as (cursor, connection):
                 # Удаляем извлеченные элементы
                 cursor.execute("DELETE FROM extracted_elements WHERE uploaded_document_id = %s", (document_id,))
                 deleted_elements = cursor.rowcount
                 logger.info(f"✅ [DELETE_DOCUMENT] Deleted {deleted_elements} extracted elements for document {document_id}")
+                
+                # Удаляем чанки документа (если они есть)
+                cursor.execute("DELETE FROM normative_chunks WHERE document_id = %s", (document_id,))
+                deleted_chunks = cursor.rowcount
+                logger.info(f"✅ [DELETE_DOCUMENT] Deleted {deleted_chunks} chunks for document {document_id}")
                 
                 # Удаляем сам документ
                 cursor.execute("DELETE FROM uploaded_documents WHERE id = %s", (document_id,))
@@ -401,6 +422,79 @@ class OllamaRAGService:
 
     def update_document_status(self, document_id: int, status: str, error_message: str = None):
         return self.db_manager.update_document_status(document_id, status, error_message)
+    
+    def start_indexing_service(self):
+        """Запуск сервиса устойчивой индексации"""
+        try:
+            self.indexing_service.start()
+            logger.info("✅ [INDEXING_SERVICE] Resilient indexing service started")
+            return True
+        except Exception as e:
+            logger.error(f"❌ [INDEXING_SERVICE] Failed to start indexing service: {e}")
+            return False
+    
+    def stop_indexing_service(self):
+        """Остановка сервиса устойчивой индексации"""
+        try:
+            self.indexing_service.stop()
+            logger.info("✅ [INDEXING_SERVICE] Resilient indexing service stopped")
+            return True
+        except Exception as e:
+            logger.error(f"❌ [INDEXING_SERVICE] Failed to stop indexing service: {e}")
+            return False
+    
+    def get_indexing_service_status(self) -> Dict[str, Any]:
+        """Получение статуса сервиса индексации"""
+        try:
+            return self.indexing_service.get_status()
+        except Exception as e:
+            logger.error(f"❌ [INDEXING_SERVICE] Error getting status: {e}")
+            return {"error": str(e)}
+    
+    def add_document_for_indexing(self, document_id: int, filename: str, content: bytes, 
+                                 category: str, priority: int = 0, max_retries: int = 3):
+        """Добавление документа для устойчивой индексации"""
+        try:
+            self.indexing_service.add_indexing_task(
+                document_id=document_id,
+                filename=filename,
+                content=content,
+                category=category,
+                priority=priority,
+                max_retries=max_retries
+            )
+            logger.info(f"✅ [INDEXING_SERVICE] Document {document_id} added to indexing queue")
+            return True
+        except Exception as e:
+            logger.error(f"❌ [INDEXING_SERVICE] Failed to add document {document_id} to queue: {e}")
+            return False
+    
+    def retry_failed_documents(self, max_retries: int = 3):
+        """Повторная попытка индексации неудачных документов"""
+        try:
+            failed_docs = self.db_manager.get_documents_with_failed_indexing(max_retries)
+            
+            retry_count = 0
+            for doc in failed_docs:
+                doc_id = doc['id']
+                filename = doc['original_filename']
+                category = doc['category']
+                
+                # Помечаем для повторной попытки
+                self.db_manager.mark_document_for_retry(doc_id, "Manual retry requested")
+                
+                # Добавляем в очередь индексации
+                # Здесь нужно будет загрузить контент документа
+                # Пока что просто логируем
+                logger.info(f"🔄 [INDEXING_SERVICE] Marked document {doc_id} for retry")
+                retry_count += 1
+            
+            logger.info(f"✅ [INDEXING_SERVICE] Marked {retry_count} documents for retry")
+            return retry_count
+            
+        except Exception as e:
+            logger.error(f"❌ [INDEXING_SERVICE] Error retrying failed documents: {e}")
+            return 0
 
     async def process_document_async(self, document_id: int, content: bytes, filename: str) -> bool:
         """Асинхронная обработка документа"""
@@ -453,14 +547,13 @@ class OllamaRAGService:
                 for chunk in chunks:
                     cursor.execute("""
                         INSERT INTO normative_chunks 
-                        (chunk_id, clause_id, document_id, document_title, chunk_type, content, page_number, chapter, section)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        (chunk_id, clause_id, document_id, title, content, page_number, chapter, section)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
                         chunk['chunk_id'][:255],  # chunk_id (ограничено 255 символами)
                         f"clause_{chunk['chunk_id']}"[:255],  # clause_id (ограничено 255 символами)
                         chunk['document_id'],
-                        chunk['document_title'],
-                        chunk['chunk_type'],
+                        chunk.get('document_title', '')[:255],  # title (ограничено 255 символами)
                         chunk['content'],
                         chunk.get('page', 1),  # page_number
                         (chunk.get('chapter', '') or '')[:255],  # chapter (ограничено 255 символами)
@@ -490,15 +583,21 @@ class OllamaRAGService:
                 # Создаем метаданные чанка
                 chunk_metadata = self.metadata_extractor.create_chunk_metadata(chunk, document_metadata)
                 
+                # Извлекаем код документа из названия
+                document_title = chunk.get('document_title', '')
+                code = self.extract_document_code(document_title)
+                
                 payload = {
                     'chunk_id': chunk['chunk_id'],
                     'document_id': chunk['document_id'],
-                    'document_title': chunk['document_title'],
+                    'title': document_title,  # Полное название документа
+                    'chapter': chunk.get('chapter', ''),  # Глава
+                    'clause_id': f"clause_{chunk['chunk_id']}",  # ID пункта
                     'content': chunk['content'],
-                    'chunk_type': chunk['chunk_type'],
+                    'chunk_type': chunk.get('chunk_type', 'paragraph'),
                     'page': chunk.get('page', 1),
-                    'chapter': chunk.get('chapter', ''),
                     'section': chunk.get('section', ''),
+                    'code': code,  # Код документа (ГОСТ, СП и т.д.)
                     'metadata': chunk_metadata
                 }
                 

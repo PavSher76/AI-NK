@@ -44,6 +44,10 @@ import UAVProtectionCalculationsPage from './pages/UAVProtectionCalculationsPage
 import OutgoingControlPage from './pages/OutgoingControlPage';
 import DocumentsPage from './pages/DocumentsPage';
 import NTDConsultation from './components/NTDConsultation';
+import AnalogObjectsPage from './pages/AnalogObjectsPage';
+import AnalogObjectsUploadPage from './pages/AnalogObjectsUploadPage';
+import AnalogObjectsSearchPage from './pages/AnalogObjectsSearchPage';
+import AnalogObjectsAnalyticsPage from './pages/AnalogObjectsAnalyticsPage';
 
 function App() {
   const [models, setModels] = useState([]);
@@ -704,6 +708,41 @@ function App() {
 
           {currentPage === 'ntd-consultation' && (
             <NTDConsultation
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
+            />
+          )}
+
+          {currentPage === 'analog-objects' && (
+            <AnalogObjectsPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
+            />
+          )}
+
+          {currentPage === 'analog-objects-list' && (
+            <AnalogObjectsPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
+            />
+          )}
+
+          {currentPage === 'analog-objects-upload' && (
+            <AnalogObjectsUploadPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
+            />
+          )}
+
+          {currentPage === 'analog-objects-search' && (
+            <AnalogObjectsSearchPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
+            />
+          )}
+
+          {currentPage === 'analog-objects-analytics' && (
+            <AnalogObjectsAnalyticsPage
               isAuthenticated={isAuthenticated}
               authToken={authToken}
             />

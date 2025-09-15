@@ -30,55 +30,55 @@ class TextProcessor:
         self.digit_pattern = re.compile(r'\d')
         self.punctuation_pattern = re.compile(r'[.,!?;:()[\]{}"\'-]')
     
-    def clean_text(self, text: str, preserve_structure: bool = True) -> str:
-        """
-        Очистка текста от лишних символов и нормализация
-        
-        Args:
-            text: Исходный текст
-            preserve_structure: Сохранять структуру документа (переносы строк)
-            
-        Returns:
-            Очищенный текст
-        """
-        if not text:
-            return ""
-        
-        # Удаляем невидимые символы и специальные пробелы
-        text = re.sub(r'[\u00A0\u2000-\u200F\u2028-\u202F\u205F\u3000]', ' ', text)
-        
-        # Исправляем разрывы слов в PDF (пробел между буквами одного слова)
-        if self.cyrillic_pattern.search(text):
-            text = self._fix_cyrillic_word_breaks(text)
-        
-        # Удаляем множественные пробелы в строках
-        text = re.sub(r'[ \t]+', ' ', text)
-        
-        if preserve_structure:
-            # Удаляем пробелы в начале и конце строк
-            lines = text.split('\n')
-            lines = [line.strip() for line in lines]
-            text = '\n'.join(lines)
-            
-            # Удаляем лишние переносы строк (более 2 подряд)
-            text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
-        else:
-            # Удаляем все переносы строк
-            text = re.sub(r'\s+', ' ', text)
-            text = text.strip()
-        
-        # Удаляем пробелы перед знаками препинания
-        text = re.sub(r'\s+([.,!?;:])', r'\1', text)
-        
-        # Удаляем пробелы после открывающих скобок и перед закрывающими
-        text = re.sub(r'\(\s+', '(', text)
-        text = re.sub(r'\s+\)', ')', text)
-        
-        # Удаляем пробелы в кавычках
-        text = re.sub(r'"\s+', '"', text)
-        text = re.sub(r'\s+"', '"', text)
-        
-        return text.strip()
+    # def clean_text(self, text: str, preserve_structure: bool = True) -> str:
+    #     """
+    #     Очистка текста от лишних символов и нормализация
+    #     
+    #     Args:
+    #         text: Исходный текст
+    #         preserve_structure: Сохранять структуру документа (переносы строк)
+    #         
+    #     Returns:
+    #         Очищенный текст
+    #     """
+    #     if not text:
+    #         return ""
+    #     
+    #     # Удаляем невидимые символы и специальные пробелы
+    #     text = re.sub(r'[\u00A0\u2000-\u200F\u2028-\u202F\u205F\u3000]', ' ', text)
+    #     
+    #     # Исправляем разрывы слов в PDF (пробел между буквами одного слова)
+    #     if self.cyrillic_pattern.search(text):
+    #         text = self._fix_cyrillic_word_breaks(text)
+    #     
+    #     # Удаляем множественные пробелы в строках
+    #     text = re.sub(r'[ \t]+', ' ', text)
+    #     
+    #     if preserve_structure:
+    #         # Удаляем пробелы в начале и конце строк
+    #         lines = text.split('\n')
+    #         lines = [line.strip() for line in lines]
+    #         text = '\n'.join(lines)
+    #         
+    #         # Удаляем лишние переносы строк (более 2 подряд)
+    #         text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
+    #     else:
+    #         # Удаляем все переносы строк
+    #         text = re.sub(r'\s+', ' ', text)
+    #         text = text.strip()
+    #     
+    #     # Удаляем пробелы перед знаками препинания
+    #     text = re.sub(r'\s+([.,!?;:])', r'\1', text)
+    #     
+    #     # Удаляем пробелы после открывающих скобок и перед закрывающими
+    #     text = re.sub(r'\(\s+', '(', text)
+    #     text = re.sub(r'\s+\)', ')', text)
+    #     
+    #     # Удаляем пробелы в кавычках
+    #     text = re.sub(r'"\s+', '"', text)
+    #     text = re.sub(r'\s+"', '"', text)
+    #     
+    #     return text.strip()
     
     def _fix_cyrillic_word_breaks(self, text: str) -> str:
         """

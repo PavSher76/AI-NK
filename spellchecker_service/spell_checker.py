@@ -108,7 +108,7 @@ class AdvancedSpellChecker:
             import time
             
             # Проверяем, доступен ли локальный LanguageTool сервис
-            self.language_tool_url = "http://localhost:8081"
+            self.language_tool_url = os.getenv("LANGUAGETOOL_URL", "http://localhost:8081")
             self.language_tool_available = False
             
             # Ждем запуска сервиса

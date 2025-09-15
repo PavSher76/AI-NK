@@ -97,6 +97,9 @@ app.add_middleware(
 # Инициализация Ollama RAG сервиса (ленивая загрузка)
 ollama_rag_service = None
 
+# Глобальная переменная для хранения статуса асинхронной реиндексации
+async_reindex_status = {}
+
 def get_ollama_rag_service():
     """Ленивая инициализация Ollama RAG сервиса"""
     global ollama_rag_service
@@ -297,13 +300,18 @@ async def async_reindex_documents_endpoint():
     try:
         logger.info("🔄 [ASYNC_REINDEX] Starting async document reindexing...")
         
+        # Создаем уникальный ID задачи
+        import uuid
+        task_id = str(uuid.uuid4())
+        
         # Запускаем реиндексацию в фоновом режиме
         import asyncio
-        asyncio.create_task(perform_async_reindex())
+        asyncio.create_task(perform_async_reindex_with_status(task_id))
         
         return {
-            "status": "accepted",
+            "status": "started",
             "message": "Async reindexing started",
+            "task_id": task_id,
             "timestamp": datetime.now().isoformat()
         }
         
@@ -311,8 +319,172 @@ async def async_reindex_documents_endpoint():
         logger.error(f"❌ [ASYNC_REINDEX] Error starting async reindexing: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/reindex/status/{task_id}")
+async def get_reindex_status_endpoint(task_id: str):
+    """Получение статуса асинхронной реиндексации"""
+    try:
+        logger.info(f"📊 [REINDEX_STATUS] Getting status for task {task_id}")
+        
+        # Проверяем статус задачи
+        if task_id in async_reindex_status:
+            return async_reindex_status[task_id]
+        else:
+            return {
+                "status": "not_found",
+                "message": "Task not found",
+                "timestamp": datetime.now().isoformat()
+            }
+        
+    except Exception as e:
+        logger.error(f"❌ [REINDEX_STATUS] Error getting status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def perform_async_reindex_with_status(task_id: str):
+    """Выполнение асинхронной реиндексации с обновлением статуса"""
+    try:
+        logger.info(f"🔄 [ASYNC_REINDEX] Performing async reindexing for task {task_id}...")
+        
+        # Обновляем статус на "running"
+        async_reindex_status[task_id] = {
+            "status": "running",
+            "message": "Reindexing in progress...",
+            "progress": 0,
+            "total_documents": 0,
+            "reindexed_count": 0,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        rag_service = get_ollama_rag_service()
+        
+        # 1. Очищаем Qdrant коллекцию
+        logger.info("🗑️ [ASYNC_REINDEX] Clearing Qdrant collection...")
+        try:
+            success = rag_service.qdrant_service.clear_collection()
+            if success:
+                logger.info("✅ [ASYNC_REINDEX] Qdrant collection cleared")
+            else:
+                logger.warning("⚠️ [ASYNC_REINDEX] Failed to clear Qdrant collection")
+        except Exception as e:
+            logger.warning(f"⚠️ [ASYNC_REINDEX] Error clearing Qdrant collection: {e}")
+        
+        # 2. Убеждаемся, что коллекция существует
+        logger.info("🆕 [ASYNC_REINDEX] Ensuring Qdrant collection exists...")
+        try:
+            rag_service.qdrant_service._ensure_collection_exists()
+            logger.info("✅ [ASYNC_REINDEX] Qdrant collection ensured")
+        except Exception as e:
+            logger.error(f"❌ [ASYNC_REINDEX] Error ensuring Qdrant collection: {e}")
+            async_reindex_status[task_id] = {
+                "status": "error",
+                "message": f"Failed to ensure Qdrant collection: {e}",
+                "timestamp": datetime.now().isoformat()
+            }
+            return
+        
+        # 3. Получаем все документы из базы данных
+        documents = rag_service.db_manager.execute_read_query("""
+            SELECT ud.id, ud.original_filename as document_title, ud.category
+            FROM uploaded_documents ud
+            WHERE ud.processing_status = 'completed'
+            ORDER BY ud.upload_date DESC
+        """)
+        
+        if not documents:
+            logger.info("ℹ️ [ASYNC_REINDEX] No documents to reindex")
+            async_reindex_status[task_id] = {
+                "status": "completed",
+                "message": "No documents to reindex",
+                "progress": 100,
+                "total_documents": 0,
+                "reindexed_count": 0,
+                "timestamp": datetime.now().isoformat()
+            }
+            return
+        
+        logger.info(f"🔄 [ASYNC_REINDEX] Found {len(documents)} documents to reindex")
+        
+        # Обновляем статус с общим количеством документов
+        async_reindex_status[task_id] = {
+            "status": "running",
+            "message": f"Reindexing {len(documents)} documents...",
+            "progress": 0,
+            "total_documents": len(documents),
+            "reindexed_count": 0,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        total_processed = 0
+        total_chunks = 0
+        
+        # 4. Индексируем каждый документ
+        for i, document in enumerate(documents):
+            try:
+                document_id = document['id']
+                document_title = document['document_title']
+                
+                logger.info(f"📝 [ASYNC_REINDEX] Processing document {document_id}: {document_title} ({i+1}/{len(documents)})")
+                
+                # Обновляем статус прогресса
+                progress = int((i / len(documents)) * 100)
+                async_reindex_status[task_id] = {
+                    "status": "running",
+                    "message": f"Processing document {i+1} of {len(documents)}: {document_title}",
+                    "progress": progress,
+                    "total_documents": len(documents),
+                    "reindexed_count": total_processed,
+                    "current_document": document_title,
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+                # Получаем чанки документа
+                chunks = rag_service.get_document_chunks(document_id)
+                
+                if chunks:
+                    # Добавляем информацию о документе к каждому чанку (убираем расширение)
+                    import re
+                    document_title_clean = re.sub(r'\.(pdf|txt|doc|docx)$', '', document_title, flags=re.IGNORECASE)
+                    for chunk in chunks:
+                        chunk['document_title'] = document_title_clean
+                    
+                    # Индексируем чанки
+                    success = rag_service.index_document_chunks(document_id, chunks)
+                    
+                    if success:
+                        total_processed += 1
+                        total_chunks += len(chunks)
+                        logger.info(f"✅ [ASYNC_REINDEX] Successfully indexed document {document_id} with {len(chunks)} chunks")
+                    else:
+                        logger.error(f"❌ [ASYNC_REINDEX] Failed to index document {document_id}")
+                else:
+                    logger.warning(f"⚠️ [ASYNC_REINDEX] No chunks found for document {document_id}")
+                    
+            except Exception as e:
+                logger.error(f"❌ [ASYNC_REINDEX] Error processing document {document.get('id', 'unknown')}: {e}")
+                continue
+        
+        # Обновляем финальный статус
+        async_reindex_status[task_id] = {
+            "status": "completed",
+            "message": f"Reindexing completed. {total_processed} documents reindexed with {total_chunks} chunks",
+            "progress": 100,
+            "total_documents": len(documents),
+            "reindexed_count": total_processed,
+            "total_chunks": total_chunks,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        logger.info(f"✅ [ASYNC_REINDEX] Async reindexing completed. Processed {total_processed} documents with {total_chunks} chunks")
+        
+    except Exception as e:
+        logger.error(f"❌ [ASYNC_REINDEX] Error during async reindexing: {e}")
+        async_reindex_status[task_id] = {
+            "status": "error",
+            "message": f"Reindexing failed: {e}",
+            "timestamp": datetime.now().isoformat()
+        }
+
 async def perform_async_reindex():
-    """Выполнение асинхронной реиндексации"""
+    """Выполнение асинхронной реиндексации (старая версия для совместимости)"""
     try:
         logger.info("🔄 [ASYNC_REINDEX] Performing async reindexing...")
         
@@ -1286,13 +1458,61 @@ async def clear_collection_endpoint():
 # Корневой эндпоинт
 # ============================================================================
 
+# Новые endpoints для устойчивой индексации
+@app.post("/indexing/start")
+async def start_indexing_service_endpoint():
+    """Запуск сервиса устойчивой индексации"""
+    from api.endpoints import start_indexing_service
+    return start_indexing_service()
+
+@app.post("/indexing/stop")
+async def stop_indexing_service_endpoint():
+    """Остановка сервиса устойчивой индексации"""
+    from api.endpoints import stop_indexing_service
+    return stop_indexing_service()
+
+@app.get("/indexing/status")
+async def get_indexing_service_status_endpoint():
+    """Получение статуса сервиса устойчивой индексации"""
+    from api.endpoints import get_indexing_service_status
+    return get_indexing_service_status()
+
+@app.post("/indexing/retry-failed")
+async def retry_failed_documents_endpoint(max_retries: int = 3):
+    """Повторная попытка индексации неудачных документов"""
+    from api.endpoints import retry_failed_documents
+    return retry_failed_documents(max_retries)
+
+@app.get("/indexing/pending")
+async def get_pending_documents_endpoint():
+    """Получение документов, ожидающих индексации"""
+    from api.endpoints import get_pending_documents
+    return get_pending_documents()
+
+@app.get("/indexing/failed")
+async def get_failed_documents_endpoint(max_retries: int = 3):
+    """Получение документов с неудачной индексацией"""
+    from api.endpoints import get_failed_documents
+    return get_failed_documents(max_retries)
+
+@app.get("/database/health")
+async def get_database_health_endpoint():
+    """Получение состояния здоровья базы данных"""
+    from api.endpoints import get_database_health
+    return get_database_health()
+
 @app.get("/")
 async def root_endpoint():
     """Корневой эндпоинт"""
     return {
         "service": "Ollama RAG Service",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "description": "RAG сервис для работы с нормативными документами с использованием Ollama BGE-M3",
+        "features": {
+            "resilient_indexing": True,
+            "connection_retry": True,
+            "automatic_recovery": True
+        },
         "endpoints": {
             "search": "/search",
             "chat": "/chat",
@@ -1302,7 +1522,18 @@ async def root_endpoint():
             "reindex": "/reindex",
             "health": "/health",
             "metrics": "/metrics",
-            "stats": "/stats"
+            "stats": "/stats",
+            "indexing": {
+                "start": "/indexing/start",
+                "stop": "/indexing/stop",
+                "status": "/indexing/status",
+                "retry_failed": "/indexing/retry-failed",
+                "pending": "/indexing/pending",
+                "failed": "/indexing/failed"
+            },
+            "database": {
+                "health": "/database/health"
+            }
         },
         "timestamp": datetime.now().isoformat()
     }

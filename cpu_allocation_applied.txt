@@ -1,0 +1,29 @@
+AI-NK CPU Allocation Applied
+============================
+Date: понедельник, 15 сентября 2025 г. 20:44:26 (MSK)
+Total Cores: 11
+
+High Priority (5.5 cores):
+- RAG Service: 2.5 cores, 1024 shares
+- Document Parser: 2.0 cores, 1024 shares  
+- VLLM Service: 1.0 cores, 1024 shares
+
+Medium Priority (3.0 cores):
+- Rule Engine: 0.8 cores, 512 shares
+- Calculation Service: 0.8 cores, 512 shares
+- SpellChecker Service: 0.6 cores, 512 shares
+- Archive Service: 0.8 cores, 512 shares
+
+Base Priority (1.5 cores):
+- PostgreSQL: 0.6 cores, 256 shares
+- Qdrant: 0.5 cores, 256 shares
+- Gateway: 0.4 cores, 256 shares
+
+Support Priority (1.0 cores):
+- Outgoing Control: 0.3 cores, 128 shares
+- LanguageTool: 0.3 cores, 128 shares
+- Analog Objects: 0.2 cores, 128 shares
+- Redis: 0.1 cores, 64 shares
+- Keycloak: 0.1 cores, 64 shares
+
+Total: 11.0 cores (100%)

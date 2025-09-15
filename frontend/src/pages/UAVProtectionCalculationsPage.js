@@ -438,7 +438,7 @@ const UAVProtectionCalculationsPage = ({ isAuthenticated, authToken }) => {
           `}
 
           <div class="footer">
-            <p>Отчет сгенерирован системой AI-NK</p>
+            <p>Отчет сгенерирован системой AI-Engineering</p>
             <p>Дата генерации: ${new Date().toLocaleString('ru-RU')}</p>
           </div>
         </body>
