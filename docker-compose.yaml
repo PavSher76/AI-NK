@@ -640,6 +640,43 @@ services:
       timeout: 10s
       retries: 3
 
+  # Сервис Нормоконтроль - 2
+  normcontrol2-service:
+    build: 
+      context: ./normcontrol2_service
+      dockerfile: Dockerfile
+    ports:
+      - "8010:8010"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-norms_user}:${POSTGRES_PASSWORD:-norms_password}@norms-db:5432/${POSTGRES_DB:-norms_db}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redispass}@redis:6379/0
+      - UPLOAD_DIR=/app/uploads/normcontrol2
+      - MAX_FILE_SIZE=104857600  # 100 MB
+      - NORMCONTROL2_LOG_LEVEL=INFO
+      - TZ=Europe/Moscow
+    volumes:
+      - normcontrol2_uploads:/app/uploads/normcontrol2
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    depends_on:
+      - norms-db
+      - redis
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+          cpus: '1.0'
+    # CPU Shares для macOS (средний приоритет)
+    cpu_shares: 512
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8010/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
 volumes:
   redis_data:
     driver: local
@@ -670,6 +707,8 @@ volumes:
   archive_merged:
     driver: local
   analog_objects_uploads:
+    driver: local
+  normcontrol2_uploads:
     driver: local
 
 networks:

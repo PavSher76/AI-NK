@@ -92,6 +92,7 @@ SERVICES = {
     "spellchecker-service": "http://spellchecker-service:8007",
     "archive-service": "http://archive-service:8008",
     "analog-objects-service": "http://analog-objects-service:8009",
+    "normcontrol2-service": "http://normcontrol2-service:8010",
     "ollama": "http://host.docker.internal:11434",  # Прямое подключение к Ollama
     "vllm": "http://vllm:8005"  # VLLM сервис в контейнере
 }
@@ -143,7 +144,9 @@ async def auth_middleware(request: Request, call_next):
         "/api/spellchecker/",      # Эндпоинт для проверки орфографии с слэшем
         "/api/reindex-documents",  # Эндпоинт для реиндексации документов
         "/api/reindex-documents/async",  # Эндпоинт для асинхронной реиндексации
-        "/api/reindex-documents/status"  # Эндпоинт для статуса реиндексации
+        "/api/reindex-documents/status",  # Эндпоинт для статуса реиндексации
+        "/api/normcontrol2",       # Эндпоинт для Нормоконтроль - 2
+        "/api/normcontrol2/"       # Эндпоинт для Нормоконтроль - 2 с слэшем
     ]
     
     print(f"🔍 [DEBUG] Gateway: Checking path '{request.url.path}' against public paths: {public_paths}")
@@ -169,7 +172,8 @@ async def auth_middleware(request: Request, call_next):
         "/api/vllm",
         "/api/outgoing-control",
         "/api/spellchecker",
-        "/api/reindex-documents"
+        "/api/reindex-documents",
+        "/api/normcontrol2"
     ]
     
     for prefix in api_prefixes:
@@ -603,6 +607,12 @@ async def proxy_api(request: Request, path: str):
         # Для чата передаем путь без префикса api/
         clean_path = path.replace("api/", "") if path.startswith("api/") else path
         return await proxy_request(request, service_url, f"/{clean_path}")
+    elif path.startswith("normcontrol2"):
+        service_url = SERVICES["normcontrol2-service"]
+        print(f"🔍 [DEBUG] Gateway: Routing normcontrol2 to service: {service_url}")
+        # Убираем префикс api/ если есть, но оставляем normcontrol2
+        clean_path = path.replace("api/", "") if path.startswith("api/") else path
+        return await proxy_request(request, service_url, f"/{clean_path}")
     else:
         print(f"🔍 [DEBUG] Gateway: Unknown path, defaulting to document-parser")
         service_url = SERVICES["document-parser"]
@@ -863,6 +873,73 @@ async def archive_proxy(path: str, request: Request):
         raise HTTPException(status_code=503, detail="Archive service unavailable")
     except Exception as e:
         print(f"🔍 [DEBUG] Gateway: Archive proxy exception: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# NormControl2 Service endpoints
+@app.api_route("/api/normcontrol2/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def normcontrol2_proxy(path: str, request: Request):
+    """Проксирование запросов к сервису Нормоконтроль - 2"""
+    print(f"🔍 [DEBUG] Gateway: NormControl2 proxy request to path: {path}")
+    
+    try:
+        # Получаем URL сервиса normcontrol2
+        service_url = SERVICES.get("normcontrol2-service")
+        if not service_url:
+            raise HTTPException(status_code=503, detail="NormControl2 service not available")
+        
+        # Формируем полный URL
+        full_url = f"{service_url}/normcontrol2/{path}"
+        
+        # Получаем тело запроса
+        body = None
+        if request.method in ["POST", "PUT", "PATCH"]:
+            body = await request.body()
+        
+        # Получаем заголовки
+        headers = dict(request.headers)
+        
+        # Удаляем заголовки, которые могут вызвать проблемы
+        headers_to_remove = ["host", "content-length"]
+        for header in headers_to_remove:
+            headers.pop(header, None)
+        
+        print(f"🔍 [DEBUG] Gateway: Forwarding to {full_url}")
+        
+        # Выполняем запрос к сервису normcontrol2
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.request(
+                method=request.method,
+                url=full_url,
+                headers=headers,
+                content=body,
+                params=request.query_params
+            )
+            
+            print(f"🔍 [DEBUG] Gateway: NormControl2 service response: {response.status_code}")
+            
+            # Возвращаем ответ
+            if response.headers.get("content-type", "").startswith("application/json"):
+                return JSONResponse(
+                    content=response.json(),
+                    status_code=response.status_code,
+                    headers=dict(response.headers)
+                )
+            else:
+                from fastapi.responses import Response
+                return Response(
+                    content=response.content,
+                    status_code=response.status_code,
+                    headers=dict(response.headers)
+                )
+            
+    except httpx.TimeoutException:
+        print(f"🔍 [DEBUG] Gateway: NormControl2 service timeout")
+        raise HTTPException(status_code=504, detail="NormControl2 service timeout")
+    except httpx.ConnectError:
+        print(f"🔍 [DEBUG] Gateway: NormControl2 service connection error")
+        raise HTTPException(status_code=503, detail="NormControl2 service unavailable")
+    except Exception as e:
+        print(f"🔍 [DEBUG] Gateway: NormControl2 proxy exception: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

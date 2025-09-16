@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Тест навигации AI-NK</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .test-item { margin: 10px 0; padding: 10px; border: 1px solid #ccc; border-radius: 5px; }
+        .success { background-color: #d4edda; border-color: #c3e6cb; }
+        .error { background-color: #f8d7da; border-color: #f5c6cb; }
+        .info { background-color: #d1ecf1; border-color: #bee5eb; }
+    </style>
+</head>
+<body>
+    <h1>Тест навигации AI-NK</h1>
+    
+    <div class="test-item info">
+        <h3>Инструкции:</h3>
+        <p>1. Откройте <a href="https://localhost" target="_blank">https://localhost</a></p>
+        <p>2. Проверьте левое навигационное меню</p>
+        <p>3. Найдите пункт "Нормоконтроль - 2"</p>
+        <p>4. Нажмите на него для перехода</p>
+    </div>
+    
+    <div class="test-item">
+        <h3>Ожидаемые элементы в навигации:</h3>
+        <ul>
+            <li>✅ Дашборд</li>
+            <li>✅ Чат с ИИ</li>
+            <li>✅ Выходной контроль корреспонденции</li>
+            <li>✅ Консультация НТД от ИИ</li>
+            <li>✅ Объекты аналоги</li>
+            <li>✅ Нормоконтроль</li>
+            <li>✅ <strong>Нормоконтроль - 2</strong> (новый модуль)</li>
+            <li>✅ Нормативные документы</li>
+        </ul>
+    </div>
+    
+    <div class="test-item">
+        <h3>Если модуль не виден:</h3>
+        <ol>
+            <li>Обновите страницу (Ctrl+F5 или Cmd+Shift+R)</li>
+            <li>Очистите кэш браузера</li>
+            <li>Проверьте консоль браузера на ошибки (F12)</li>
+            <li>Попробуйте в режиме инкогнито</li>
+        </ol>
+    </div>
+    
+    <div class="test-item">
+        <h3>Проверка API:</h3>
+        <p>API модуля доступен по адресу: <a href="http://localhost:8010/docs" target="_blank">http://localhost:8010/docs</a></p>
+        <p>Health check: <a href="http://localhost:8010/health" target="_blank">http://localhost:8010/health</a></p>
+    </div>
+    
+    <script>
+        // Проверка доступности API
+        fetch('http://localhost:8010/health')
+            .then(response => response.json())
+            .then(data => {
+                console.log('API доступен:', data);
+                document.body.insertAdjacentHTML('beforeend', 
+                    '<div class="test-item success"><h3>✅ API модуля работает</h3><p>Статус: ' + data.status + '</p></div>'
+                );
+            })
+            .catch(error => {
+                console.error('API недоступен:', error);
+                document.body.insertAdjacentHTML('beforeend', 
+                    '<div class="test-item error"><h3>❌ API модуля недоступен</h3><p>Ошибка: ' + error.message + '</p></div>'
+                );
+            });
+    </script>
+</body>
+</html>
+

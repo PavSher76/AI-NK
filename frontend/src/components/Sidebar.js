@@ -220,6 +220,12 @@ const Sidebar = ({
       onClick: () => handlePageClick('normcontrol')
     },
     {
+      id: 'normcontrol2',
+      label: 'Нормоконтроль - 2',
+      icon: FileCheck,
+      onClick: () => handlePageClick('normcontrol2')
+    },
+    {
       id: 'documents',
       label: 'Нормативные документы',
       icon: BookOpen,

@@ -28,6 +28,7 @@ import SystemSettings from './components/SystemSettings';
 import DashboardPage from './pages/DashboardPage';
 import ChatPage from './pages/ChatPage';
 import NormcontrolPage from './pages/NormcontrolPage';
+import NormControl2Page from './pages/NormControl2Page';
 import CalculationsPage from './pages/CalculationsPage';
 import StructuralCalculationsPage from './pages/StructuralCalculationsPage';
 import FoundationCalculationsPage from './pages/FoundationCalculationsPage';
@@ -571,6 +572,15 @@ function App() {
 
           {currentPage === 'normcontrol' && (
             <NormcontrolPage
+              isAuthenticated={isAuthenticated}
+              authToken={authToken}
+              refreshTrigger={refreshTabs}
+              onRefreshComplete={() => setRefreshTabs(false)}
+            />
+          )}
+
+          {currentPage === 'normcontrol2' && (
+            <NormControl2Page
               isAuthenticated={isAuthenticated}
               authToken={authToken}
               refreshTrigger={refreshTabs}
