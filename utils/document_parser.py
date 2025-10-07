@@ -22,7 +22,8 @@ class UniversalDocumentParser:
                  prefer_pdfminer: bool = True,
                  extract_tables: bool = True,
                  extract_headers: bool = True,
-                 create_hierarchical_chunks: bool = True):
+                 create_hierarchical_chunks: bool = True,
+                 use_ocr: bool = True):
         """
         Инициализация парсера
         
@@ -31,14 +32,16 @@ class UniversalDocumentParser:
             extract_tables: Извлекать таблицы из DOCX
             extract_headers: Извлекать заголовки отдельно
             create_hierarchical_chunks: Создавать иерархические чанки
+            use_ocr: Использовать OCR для распознавания таблиц и чертежей в PDF
         """
-        self.pdf_extractor = PDFTextExtractor(prefer_pdfminer=prefer_pdfminer)
+        self.pdf_extractor = PDFTextExtractor(prefer_pdfminer=prefer_pdfminer, use_ocr=use_ocr)
         self.docx_extractor = DOCXTextExtractor(
             extract_tables=extract_tables, 
             extract_headers=extract_headers
         )
         self.text_processor = TextProcessor()
         self.create_hierarchical_chunks = create_hierarchical_chunks
+        self.use_ocr = use_ocr
         
         # Поддерживаемые форматы
         self.supported_formats = {
@@ -171,9 +174,13 @@ class UniversalDocumentParser:
             }
     
     def _parse_pdf(self, file_path: str) -> Dict[str, Any]:
-        """Парсинг PDF файла"""
+        """Парсинг PDF файла с поддержкой OCR"""
         try:
-            result = self.pdf_extractor.extract_text_from_file(file_path)
+            # Используем OCR если включен
+            if self.use_ocr:
+                result = self.pdf_extractor.extract_with_ocr(file_path)
+            else:
+                result = self.pdf_extractor.extract_text_from_file(file_path)
             
             # Очищаем извлеченный текст
             if result.get("success", False) and result.get("text"):

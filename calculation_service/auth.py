@@ -39,6 +39,15 @@ class AuthService:
     def verify_token(self, token: str) -> Optional[TokenData]:
         """Проверка JWT токена"""
         try:
+            # Специальный токен для разработки
+            if token == "disabled-auth":
+                logger.info("🔍 [AUTH] Development token 'disabled-auth' accepted")
+                return TokenData(
+                    username="disabled_user",
+                    user_id="disabled",
+                    role="engineer"
+                )
+            
             payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
             username: str = payload.get("sub")
             user_id: str = payload.get("user_id")
@@ -71,6 +80,16 @@ class AuthService:
     def get_user_by_id(self, user_id: str) -> Optional[User]:
         """Получение пользователя по ID"""
         try:
+            # Специальный пользователь для разработки
+            if user_id == "disabled":
+                return User(
+                    id=user_id,
+                    username="disabled_user",
+                    email="disabled@example.com",
+                    role="engineer",
+                    permissions=["read", "write", "execute"]
+                )
+            
             # В реальном приложении здесь будет запрос к базе данных
             # Пока используем заглушку
             if user_id == "1":
@@ -101,14 +120,19 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
     )
     
     try:
+        logger.info(f"🔍 [AUTH] Received token: {token}")
         token_data = auth_service.verify_token(token)
         if token_data is None:
+            logger.error(f"🔍 [AUTH] Token verification failed for token: {token}")
             raise credentials_exception
         
+        logger.info(f"🔍 [AUTH] Token verified successfully for user: {token_data.username}")
         user = auth_service.get_user_by_id(token_data.user_id)
         if user is None:
+            logger.error(f"🔍 [AUTH] User not found for ID: {token_data.user_id}")
             raise credentials_exception
         
+        logger.info(f"🔍 [AUTH] User found: {user.username}")
         return user
     except Exception as e:
         logger.error(f"🔍 [AUTH] Error getting current user: {e}")

@@ -25,7 +25,7 @@ RUN mkdir -p /etc/nginx/ssl
 COPY --from=build /app/build /usr/share/nginx/html
 
 # Copy nginx configurations
-COPY nginx-simple.conf /etc/nginx/conf.d/default.conf
+COPY nginx-minimal.conf /etc/nginx/conf.d/default.conf
 COPY nginx-main.conf /etc/nginx/nginx.conf
 
 # Expose ports

@@ -74,7 +74,7 @@ class DOCXTextExtractor:
             logger.error(f"❌ [DOCX_EXTRACT] Ошибка извлечения текста из байтов: {e}")
             raise Exception(f"Ошибка извлечения текста из DOCX байтов: {e}")
     
-    def _extract_from_document(self, doc: DocumentType, source: str) -> Dict[str, Any]:
+    def _extract_from_document(self, doc, source: str) -> Dict[str, Any]:
         """
         Извлечение текста из объекта Document
         
@@ -153,7 +153,7 @@ class DOCXTextExtractor:
             logger.error(f"❌ [DOCX_EXTRACT] Ошибка обработки документа: {str(e)}")
             raise Exception(f"Ошибка обработки DOCX документа: {str(e)}")
     
-    def _get_paragraph_type(self, paragraph: Paragraph) -> str:
+    def _get_paragraph_type(self, paragraph) -> str:
         """
         Определение типа параграфа
         
@@ -179,7 +179,7 @@ class DOCXTextExtractor:
         else:
             return "normal"
     
-    def _extract_table_data(self, table: Table, table_num: int) -> Dict[str, Any]:
+    def _extract_table_data(self, table, table_num: int) -> Dict[str, Any]:
         """
         Извлечение данных из таблицы
         

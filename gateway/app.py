@@ -505,6 +505,43 @@ async def proxy_api_v1(request: Request, path: str):
         return await proxy_request(request, service_url, f"/{path}")
 
 
+# API Health check endpoint (должен быть перед общим /api/{path:path})
+@app.get("/api/health")
+async def api_health_check():
+    """Проверка здоровья API через RAG service"""
+    print("🔍 [DEBUG] Gateway: API Health check requested")
+    
+    try:
+        # Проверяем RAG service
+        rag_service_url = SERVICES["rag-service"]
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{rag_service_url}/health")
+            if response.status_code == 200:
+                rag_health = response.json()
+                health_status = {
+                    "status": "healthy",
+                    "service": "gateway",
+                    "rag_service": rag_health,
+                    "timestamp": time.time()
+                }
+            else:
+                health_status = {
+                    "status": "unhealthy",
+                    "service": "gateway",
+                    "rag_service": {"status": "unhealthy", "error": f"HTTP {response.status_code}"},
+                    "timestamp": time.time()
+                }
+    except Exception as e:
+        health_status = {
+            "status": "unhealthy",
+            "service": "gateway",
+            "rag_service": {"status": "unhealthy", "error": str(e)},
+            "timestamp": time.time()
+        }
+    
+    print(f"🔍 [DEBUG] Gateway: API Health check response: {health_status}")
+    return health_status
+
 # Проксирование запросов к document-parser
 @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy_api(request: Request, path: str):
@@ -756,6 +793,7 @@ async def health_check():
     
     print(f"🔍 [DEBUG] Gateway: Health check response: {health_status}")
     return health_status
+
 
 # Metrics endpoint
 @app.get("/metrics")

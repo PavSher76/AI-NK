@@ -139,10 +139,13 @@ function App() {
         }
       }
 
-      // Проверка Ollama через VLLM (авторизация отключена)
+      // Проверка Ollama через Gateway
       try {
-        const ollamaResponse = await axios.get('http://localhost:8005/health', {
-          timeout: 10000 // 10 секунд
+        const ollamaResponse = await axios.get('/ollama/api/tags', {
+          timeout: 10000, // 10 секунд
+          headers: {
+            'Authorization': 'Bearer disabled-auth'
+          }
         });
         setSystemStatus(prev => ({ ...prev, ollama: true }));
       } catch (error) {
@@ -337,7 +340,10 @@ function App() {
         turbo_mode: turboMode,
         reasoning_depth: reasoningDepth
       }, {
-        timeout: 120000 // 2 минуты
+        timeout: 120000, // 2 минуты
+        headers: {
+          'Authorization': 'Bearer disabled-auth'
+        }
       });
 
       if (response.data.status === 'success') {

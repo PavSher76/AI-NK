@@ -103,6 +103,16 @@ async def log_requests(request, call_next):
     request_id = f"req_{int(time.time() * 1000)}"
     logger.info(f"🔍 [REQUEST] {request_id}: {request.method} {request.url.path}")
     
+    # Логируем все заголовки
+    logger.info(f"🔍 [ALL_HEADERS] {request_id}: {dict(request.headers)}")
+    
+    # Логируем заголовки авторизации
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        logger.info(f"🔍 [AUTH_HEADER] {request_id}: {auth_header}")
+    else:
+        logger.info(f"🔍 [AUTH_HEADER] {request_id}: No authorization header")
+    
     start_time = time.time()
     response = await call_next(request)
     process_time = time.time() - start_time
@@ -235,14 +245,52 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
 
 
 @app.get("/me")
-async def read_users_me(current_user = Depends(get_current_active_user)):
-    """Получение информации о текущем пользователе"""
+async def read_users_me():
+    """Получение информации о текущем пользователе (авторизация отключена)"""
+    # Возвращаем информацию о disabled пользователе
     return {
-        "id": current_user.id,
-        "username": current_user.username,
-        "email": current_user.email,
-        "role": current_user.role,
-        "permissions": current_user.permissions
+        "id": "disabled",
+        "username": "disabled_user",
+        "email": "disabled@example.com",
+        "role": "engineer",
+        "permissions": ["read", "write", "execute"]
+    }
+
+@app.get("/test-auth")
+async def test_auth(request: Request):
+    """Тестовый эндпоинт для проверки авторизации"""
+    auth_header = request.headers.get("authorization")
+    return {
+        "auth_header": auth_header,
+        "all_headers": dict(request.headers)
+    }
+
+@app.get("/test-auth-simple")
+async def test_auth_simple(request: Request):
+    """Простой тестовый эндпоинт"""
+    return {"message": "Hello from calculation service"}
+
+@app.get("/test-auth-manual")
+async def test_auth_manual(request: Request):
+    """Тестовый эндпоинт с ручной проверкой авторизации"""
+    auth_header = request.headers.get("authorization")
+    if not auth_header:
+        raise HTTPException(status_code=401, detail="No authorization header")
+    
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization format")
+    
+    token = auth_header[7:]  # Убираем "Bearer "
+    
+    # Проверяем токен
+    token_data = auth_service.verify_token(token)
+    if not token_data:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    return {
+        "message": "Authorization successful",
+        "user": token_data.username,
+        "role": token_data.role
     }
 
 

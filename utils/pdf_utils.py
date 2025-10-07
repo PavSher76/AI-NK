@@ -1,6 +1,6 @@
 """
 Модуль для извлечения текста из PDF документов
-Содержит улучшенные функции извлечения текста с использованием pdfminer и PyPDF2
+Содержит улучшенные функции извлечения текста с использованием pdfminer, PyPDF2 и OCR
 """
 
 import logging
@@ -25,23 +25,43 @@ try:
 except ImportError:
     PDFMINER_AVAILABLE = False
 
+# Импорт OCR процессора
+try:
+    from .ocr_processor import OCRProcessor
+    OCR_AVAILABLE = True
+except ImportError:
+    OCR_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
 class PDFTextExtractor:
-    """Класс для извлечения текста из PDF документов"""
+    """Класс для извлечения текста из PDF документов с поддержкой OCR"""
     
-    def __init__(self, prefer_pdfminer: bool = True):
+    def __init__(self, prefer_pdfminer: bool = True, use_ocr: bool = True, ocr_languages: List[str] = None):
         """
         Инициализация экстрактора
         
         Args:
             prefer_pdfminer: Предпочитать pdfminer для извлечения текста (более точный)
+            use_ocr: Использовать OCR для распознавания таблиц и чертежей
+            ocr_languages: Языки для OCR (по умолчанию: rus+eng)
         """
         self.prefer_pdfminer = prefer_pdfminer
+        self.use_ocr = use_ocr and OCR_AVAILABLE
+        self.ocr_languages = ocr_languages or ["rus", "eng"]
         
         if not PDF2_AVAILABLE and not PDFMINER_AVAILABLE:
             raise ImportError("Необходимо установить PyPDF2 или pdfminer.six для работы с PDF")
+        
+        # Инициализируем OCR процессор если доступен
+        if self.use_ocr:
+            try:
+                self.ocr_processor = OCRProcessor(languages=self.ocr_languages)
+                logger.info("✅ [PDF_EXTRACT] OCR процессор инициализирован")
+            except Exception as e:
+                logger.warning(f"⚠️ [PDF_EXTRACT] Не удалось инициализировать OCR: {e}")
+                self.use_ocr = False
     
     def extract_text_from_file(self, file_path: str) -> Dict[str, Any]:
         """
@@ -294,6 +314,68 @@ class PDFTextExtractor:
             })
         
         return chunks
+    
+    def extract_with_ocr(self, file_path: str) -> Dict[str, Any]:
+        """
+        Извлечение текста с использованием OCR для распознавания таблиц и чертежей
+        
+        Args:
+            file_path: Путь к PDF файлу
+            
+        Returns:
+            Словарь с результатами OCR обработки
+        """
+        if not self.use_ocr:
+            logger.warning("⚠️ [PDF_EXTRACT] OCR не доступен, используем стандартное извлечение")
+            return self.extract_text_from_file(file_path)
+        
+        try:
+            logger.info(f"🔍 [PDF_EXTRACT] Начинаем OCR обработку: {file_path}")
+            
+            # Сначала пробуем стандартное извлечение
+            standard_result = self.extract_text_from_file(file_path)
+            
+            # Затем добавляем OCR обработку
+            ocr_result = self.ocr_processor.process_pdf_with_ocr(file_path)
+            
+            if ocr_result.get('success', False):
+                # Объединяем результаты
+                combined_result = {
+                    "success": True,
+                    "text": standard_result.get("text", ""),
+                    "pages": standard_result.get("pages", []),
+                    "total_pages": standard_result.get("total_pages", 0),
+                    "method": "standard+ocr",
+                    "ocr_data": {
+                        "tables": ocr_result.get("tables", []),
+                        "drawings": ocr_result.get("drawings", []),
+                        "processing_time": ocr_result.get("processing_time", 0)
+                    },
+                    "metadata": standard_result.get("metadata", {})
+                }
+                
+                # Добавляем OCR текст к основному тексту
+                ocr_text = ""
+                for table in ocr_result.get("tables", []):
+                    ocr_text += f"\n\n[ТАБЛИЦА {table.get('table_number', '')} на странице {table.get('page_number', '')}]:\n"
+                    ocr_text += table.get("text", "")
+                
+                for drawing in ocr_result.get("drawings", []):
+                    ocr_text += f"\n\n[ЧЕРТЕЖ {drawing.get('drawing_number', '')} на странице {drawing.get('page_number', '')}]:\n"
+                    ocr_text += drawing.get("text", "")
+                
+                combined_result["text"] += ocr_text
+                
+                logger.info(f"✅ [PDF_EXTRACT] OCR обработка завершена. Найдено {len(ocr_result.get('tables', []))} таблиц и {len(ocr_result.get('drawings', []))} чертежей")
+                return combined_result
+            else:
+                logger.warning(f"⚠️ [PDF_EXTRACT] OCR обработка не удалась: {ocr_result.get('error', 'Неизвестная ошибка')}")
+                return standard_result
+                
+        except Exception as e:
+            logger.error(f"❌ [PDF_EXTRACT] Ошибка OCR обработки: {e}")
+            # Возвращаем стандартный результат в случае ошибки OCR
+            return self.extract_text_from_file(file_path)
 
 
 # Функции для обратной совместимости
